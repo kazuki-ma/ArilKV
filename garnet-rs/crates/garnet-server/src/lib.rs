@@ -10,6 +10,7 @@ mod cluster_control_plane;
 mod cluster_live_view;
 pub mod command_dispatch;
 pub mod command_spec;
+mod config_paths;
 mod connection_handler;
 mod connection_owner_routing;
 mod connection_protocol;
@@ -91,6 +92,7 @@ use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -114,10 +116,32 @@ use tokio::net::TcpStream;
 #[cfg(test)]
 use crate::connection_routing::owner_routed_shard_for_command;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
     pub bind_addr: SocketAddr,
     pub read_buffer_size: usize,
+    pub startup_config_overrides: StartupConfigOverrides,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StartupConfigOverrides {
+    pub dir: Option<PathBuf>,
+    pub dbfilename: Option<String>,
+    pub appendonly: Option<bool>,
+    pub appendfsync: Option<String>,
+    pub appendfilename: Option<String>,
+    pub aclfile: Option<PathBuf>,
+}
+
+impl StartupConfigOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.dir.is_none()
+            && self.dbfilename.is_none()
+            && self.appendonly.is_none()
+            && self.appendfsync.is_none()
+            && self.appendfilename.is_none()
+            && self.aclfile.is_none()
+    }
 }
 
 impl Default for ServerConfig {
@@ -127,6 +151,7 @@ impl Default for ServerConfig {
                 .parse()
                 .expect("default bind address must parse"),
             read_buffer_size: 8 * 1024,
+            startup_config_overrides: StartupConfigOverrides::default(),
         }
     }
 }
@@ -171,6 +196,54 @@ pub struct ServerMetrics {
     monitor_broadcast: broadcast::Sender<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AclKeyPermissions(u8);
+
+impl AclKeyPermissions {
+    pub(crate) const READ: Self = Self(1 << 0);
+    pub(crate) const WRITE: Self = Self(1 << 1);
+    pub(crate) const ALL: Self = Self(Self::READ.0 | Self::WRITE.0);
+
+    pub(crate) const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub(crate) const fn contains_all(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+
+    pub(crate) const fn contains_any(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub(crate) const fn is_all(self) -> bool {
+        self.contains_all(Self::ALL)
+    }
+
+    pub(crate) fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AclKeyPatternRule {
+    pub(crate) pattern: Vec<u8>,
+    pub(crate) permissions: AclKeyPermissions,
+}
+
+impl AclKeyPatternRule {
+    pub(crate) fn new(pattern: Vec<u8>, permissions: AclKeyPermissions) -> Self {
+        Self {
+            pattern,
+            permissions,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct AclSelectorProfile {
     pub(crate) allow_all_commands: bool,
@@ -178,7 +251,8 @@ pub(crate) struct AclSelectorProfile {
     pub(crate) denied_categories: HashSet<Vec<u8>>,
     pub(crate) allowed_commands: HashSet<Vec<u8>>,
     pub(crate) denied_commands: HashSet<Vec<u8>>,
-    pub(crate) key_patterns: Vec<Vec<u8>>,
+    pub(crate) command_rules: Vec<Vec<u8>>,
+    pub(crate) key_patterns: Vec<AclKeyPatternRule>,
     pub(crate) allow_all_channels: bool,
     pub(crate) channel_patterns: Vec<Vec<u8>>,
     pub(crate) allow_all_databases: bool,
@@ -193,7 +267,11 @@ impl AclSelectorProfile {
             denied_categories: HashSet::new(),
             allowed_commands: HashSet::new(),
             denied_commands: HashSet::new(),
-            key_patterns: vec![b"*".to_vec()],
+            command_rules: Vec::new(),
+            key_patterns: vec![AclKeyPatternRule::new(
+                b"*".to_vec(),
+                AclKeyPermissions::ALL,
+            )],
             allow_all_channels: true,
             channel_patterns: Vec::new(),
             allow_all_databases: true,
@@ -202,18 +280,39 @@ impl AclSelectorProfile {
     }
 
     pub(crate) fn restricted() -> Self {
+        Self::restricted_with_pubsub_default(false)
+    }
+
+    pub(crate) fn restricted_with_pubsub_default(allow_all_channels: bool) -> Self {
         Self {
             allow_all_commands: false,
             allowed_categories: HashSet::new(),
             denied_categories: HashSet::new(),
             allowed_commands: HashSet::new(),
             denied_commands: HashSet::new(),
+            command_rules: Vec::new(),
             key_patterns: Vec::new(),
-            allow_all_channels: false,
+            allow_all_channels,
             channel_patterns: Vec::new(),
             allow_all_databases: true,
             allowed_databases: BTreeSet::new(),
         }
+    }
+
+    pub(crate) fn is_unrestricted_runtime(&self) -> bool {
+        self.allow_all_commands
+            && self.allowed_categories.is_empty()
+            && self.denied_categories.is_empty()
+            && self.allowed_commands.is_empty()
+            && self.denied_commands.is_empty()
+            && self.command_rules.is_empty()
+            && self.allow_all_channels
+            && self.channel_patterns.is_empty()
+            && self.allow_all_databases
+            && self.allowed_databases.is_empty()
+            && self.key_patterns.len() == 1
+            && self.key_patterns[0].pattern.as_slice() == b"*"
+            && self.key_patterns[0].permissions.is_all()
     }
 }
 
@@ -238,10 +337,14 @@ impl AclUserProfile {
     }
 
     pub(crate) fn restricted() -> Self {
+        Self::restricted_with_pubsub_default(false)
+    }
+
+    pub(crate) fn restricted_with_pubsub_default(allow_all_channels: bool) -> Self {
         Self {
             enabled: false,
             nopass: false,
-            root_selector: AclSelectorProfile::restricted(),
+            root_selector: AclSelectorProfile::restricted_with_pubsub_default(allow_all_channels),
             selectors: Vec::new(),
             password_hashes: HashSet::new(),
         }
@@ -250,6 +353,10 @@ impl AclUserProfile {
     pub(crate) fn password_matches(&self, password: &[u8]) -> bool {
         let password_hash = acl_password_hash_hex(password);
         self.password_hashes.contains(password_hash.as_slice())
+    }
+
+    pub(crate) fn is_unrestricted_runtime(&self) -> bool {
+        self.enabled && self.selectors.is_empty() && self.root_selector.is_unrestricted_runtime()
     }
 }
 
@@ -608,20 +715,19 @@ impl ServerMetrics {
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
         {
-            client.last_command = command_name
-                .iter()
-                .map(|byte| byte.to_ascii_lowercase())
-                .collect();
-            if let Some(subcommand) = subcommand_name
-                && !subcommand.is_empty()
-            {
+            let subcommand = subcommand_name.filter(|value| !value.is_empty());
+            let required_len = command_name.len() + subcommand.map_or(0, |value| value.len() + 1);
+
+            client.last_command.clear();
+            client.last_command.reserve(required_len);
+            client
+                .last_command
+                .extend(command_name.iter().map(|byte| byte.to_ascii_lowercase()));
+            if let Some(subcommand) = subcommand {
                 client.last_command.push(b'|');
-                client.last_command.extend(
-                    subcommand
-                        .iter()
-                        .map(|byte| byte.to_ascii_lowercase())
-                        .collect::<Vec<u8>>(),
-                );
+                client
+                    .last_command
+                    .extend(subcommand.iter().map(|byte| byte.to_ascii_lowercase()));
             }
             client.last_activity = Instant::now();
         }
@@ -667,6 +773,14 @@ impl ServerMetrics {
             .lock()
             .ok()
             .and_then(|clients| clients.get(&client_id).map(|client| client.user.clone()))
+    }
+
+    pub fn client_auth_state(&self, client_id: ClientId) -> Option<(bool, Vec<u8>)> {
+        self.clients.lock().ok().and_then(|clients| {
+            clients
+                .get(&client_id)
+                .map(|client| (client.authenticated, client.user.clone()))
+        })
     }
 
     pub fn client_is_authenticated(&self, client_id: ClientId) -> bool {
@@ -866,6 +980,16 @@ impl ServerMetrics {
             .collect()
     }
 
+    pub(crate) fn replica_client_count(&self) -> u64 {
+        let Ok(clients) = self.clients.lock() else {
+            return 0;
+        };
+        clients
+            .values()
+            .filter(|client| !client.killed && client.client_type == ClientTypeFilter::Replica)
+            .count() as u64
+    }
+
     pub fn connected_client_count(&self) -> u64 {
         let Ok(clients) = self.clients.lock() else {
             return 0;
@@ -937,6 +1061,10 @@ impl ServerMetrics {
 
     pub fn monitor_subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
         self.monitor_broadcast.subscribe()
+    }
+
+    pub fn has_monitor_subscribers(&self) -> bool {
+        self.monitor_broadcast.receiver_count() > 0
     }
 
     pub fn publish_monitor_event(&self, payload: Vec<u8>) {

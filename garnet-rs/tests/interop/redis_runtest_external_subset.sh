@@ -15,8 +15,15 @@ GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED:-1}"
 REDIS_RUNTEXT_MODE="${REDIS_RUNTEXT_MODE:-full}"
 RUNTEXT_ENABLE_CORE_DUMP="${RUNTEXT_ENABLE_CORE_DUMP:-1}"
 RUNTEXT_CAPTURE_CRASH_REPORT="${RUNTEXT_CAPTURE_CRASH_REPORT:-1}"
+RUNTEXT_ENABLE_LARGE_MEMORY="${RUNTEXT_ENABLE_LARGE_MEMORY:-0}"
 if [[ -z "${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-}" ]]; then
-    if [[ "${REDIS_RUNTEXT_MODE}" == "full" ]]; then
+    if [[ "${RUNTEXT_ENABLE_LARGE_MEMORY}" == "1" ]]; then
+        # Dedicated large-memory probes may legitimately materialize multi-GB
+        # values, so give them a much larger default page budget than the
+        # ordinary compatibility lanes. This is a ceiling, not an eager
+        # allocation, and callers can still override it explicitly.
+        GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="524288"
+    elif [[ "${REDIS_RUNTEXT_MODE}" == "full" ]]; then
         # Full external probes sweep many suites in one process, so keep
         # a higher default page budget to reduce false capacity failures.
         GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="16384"
@@ -35,16 +42,16 @@ RUNTEXT_SKIP_QUERYBUF_IN_FULL="${RUNTEXT_SKIP_QUERYBUF_IN_FULL:-0}"
 RUNTEXT_RUN_QUERYBUF_ISOLATED="${RUNTEXT_RUN_QUERYBUF_ISOLATED:-0}"
 RUNTEXT_SKIP_SCRIPTING_IN_FULL="${RUNTEXT_SKIP_SCRIPTING_IN_FULL:-0}"
 RUNTEXT_RUN_SCRIPTING_ISOLATED="${RUNTEXT_RUN_SCRIPTING_ISOLATED:-0}"
-RUNTEXT_SKIP_SCRIPTING_NOREPLICAS_TEST_IN_FULL="${RUNTEXT_SKIP_SCRIPTING_NOREPLICAS_TEST_IN_FULL:-1}"
-RUNTEXT_RUN_SCRIPTING_NOREPLICAS_TEST_ISOLATED="${RUNTEXT_RUN_SCRIPTING_NOREPLICAS_TEST_ISOLATED:-1}"
+RUNTEXT_SKIP_SCRIPTING_NOREPLICAS_TEST_IN_FULL="${RUNTEXT_SKIP_SCRIPTING_NOREPLICAS_TEST_IN_FULL:-0}"
+RUNTEXT_RUN_SCRIPTING_NOREPLICAS_TEST_ISOLATED="${RUNTEXT_RUN_SCRIPTING_NOREPLICAS_TEST_ISOLATED:-0}"
 RUNTEXT_SKIP_OTHER_IN_FULL="${RUNTEXT_SKIP_OTHER_IN_FULL:-0}"
-RUNTEXT_SKIP_OTHER_PIPELINE_STRESSER_IN_FULL="${RUNTEXT_SKIP_OTHER_PIPELINE_STRESSER_IN_FULL:-1}"
+RUNTEXT_SKIP_OTHER_PIPELINE_STRESSER_IN_FULL="${RUNTEXT_SKIP_OTHER_PIPELINE_STRESSER_IN_FULL:-0}"
 RUNTEXT_OTHER_PIPELINE_STRESSER_TEST_NAME="${RUNTEXT_OTHER_PIPELINE_STRESSER_TEST_NAME:-PIPELINING stresser (also a regression for the old epoll bug)}"
 RUNTEXT_RUN_OTHER_ISOLATED="${RUNTEXT_RUN_OTHER_ISOLATED:-0}"
-RUNTEXT_RUN_OTHER_PIPELINE_STRESSER_ISOLATED="${RUNTEXT_RUN_OTHER_PIPELINE_STRESSER_ISOLATED:-1}"
+RUNTEXT_RUN_OTHER_PIPELINE_STRESSER_ISOLATED="${RUNTEXT_RUN_OTHER_PIPELINE_STRESSER_ISOLATED:-0}"
 RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS="${RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS:-180}"
-RUNTEXT_SKIP_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_IN_FULL="${RUNTEXT_SKIP_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_IN_FULL:-1}"
-RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED="${RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED:-1}"
+RUNTEXT_SKIP_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_IN_FULL="${RUNTEXT_SKIP_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_IN_FULL:-0}"
+RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED="${RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED:-0}"
 RUNTEXT_RUN_ONLY_ISOLATED_UNIT="${RUNTEXT_RUN_ONLY_ISOLATED_UNIT:-}"
 RUNTEXT_ALLOW_EXTERNAL_SKIP="${RUNTEXT_ALLOW_EXTERNAL_SKIP:-0}"
 
@@ -54,8 +61,22 @@ if [[ -z "${RUNTEXT_TIMEOUT_SECONDS}" && "${REDIS_RUNTEXT_MODE}" == "full" ]]; t
     RUNTEXT_TIMEOUT_SECONDS="120"
 fi
 
+if [[ "${RUNTEXT_ENABLE_LARGE_MEMORY}" == "1" ]]; then
+    if [[ -z "${RUNTEXT_TIMEOUT_SECONDS}" ]]; then
+        RUNTEXT_TIMEOUT_SECONDS="900"
+    fi
+    if [[ -z "${RUNTEXT_WALL_TIMEOUT_SECONDS}" || "${RUNTEXT_WALL_TIMEOUT_SECONDS}" == "1800" ]]; then
+        RUNTEXT_WALL_TIMEOUT_SECONDS="14400"
+    fi
+fi
+
 if [[ "${RUNTEXT_SINGLEDB}" != "0" && "${RUNTEXT_SINGLEDB}" != "1" ]]; then
     echo "RUNTEXT_SINGLEDB must be 0 or 1" >&2
+    exit 2
+fi
+
+if [[ "${RUNTEXT_ENABLE_LARGE_MEMORY}" != "0" && "${RUNTEXT_ENABLE_LARGE_MEMORY}" != "1" ]]; then
+    echo "RUNTEXT_ENABLE_LARGE_MEMORY must be 0 or 1" >&2
     exit 2
 fi
 
@@ -68,10 +89,23 @@ if [[ "${RUNTEXT_SINGLEDB}" == "1" ]]; then
     RUNTEXT_DB_MODE_ARGS+=(--singledb)
 fi
 
+RUNTEXT_COMMON_ARGS=()
+if [[ "${RUNTEXT_ENABLE_LARGE_MEMORY}" == "1" ]]; then
+    RUNTEXT_COMMON_ARGS+=(--large-memory)
+fi
+
 mkdir -p "${RESULT_DIR}"
 SUMMARY_CSV="${RESULT_DIR}/summary.csv"
 GARNET_LOG_FILE="${RESULT_DIR}/garnet-server.log"
 echo "case,status,details" > "${SUMMARY_CSV}"
+
+resolved_garnet_server_cmd() {
+    if [[ "${GARNET_SERVER_CMD}" == "cargo run -p garnet-server --release" ]]; then
+        echo "cargo run --manifest-path '${GARNET_RS_ROOT}/Cargo.toml' -p garnet-server --release"
+        return 0
+    fi
+    echo "${GARNET_SERVER_CMD}"
+}
 
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -118,15 +152,25 @@ garnet_process_id() {
 
 install_redis_external_pid_patch() {
     local server_tcl="${REDIS_REPO_ROOT}/tests/support/server.tcl"
+    local test_tcl="${REDIS_REPO_ROOT}/tests/support/test.tcl"
     local pid_patch_marker="# garnet-rs external pid injection"
     local skip_patch_marker="# garnet-rs external skip override"
+    local block_skip_marker="# garnet-rs external block fallback"
+    local test_skip_marker="# garnet-rs external test fallback"
+    local test_cleanup_marker="# garnet-rs external exact-test cleanup"
 
-    if grep -Fq "${pid_patch_marker}" "${server_tcl}" && grep -Fq "${skip_patch_marker}" "${server_tcl}"; then
+    if grep -Fq "${pid_patch_marker}" "${server_tcl}" \
+        && grep -Fq "${skip_patch_marker}" "${server_tcl}" \
+        && grep -Fq "${block_skip_marker}" "${server_tcl}" \
+        && grep -Fq "${test_skip_marker}" "${test_tcl}" \
+        && grep -Fq "${test_cleanup_marker}" "${test_tcl}"; then
         return 0
     fi
 
     REDIS_SERVER_TCL_BACKUP="${RESULT_DIR}/server.tcl.before-garnet-external-pid-patch"
     cp "${server_tcl}" "${REDIS_SERVER_TCL_BACKUP}"
+    REDIS_TEST_TCL_BACKUP="${RESULT_DIR}/test.tcl.before-garnet-external-skip-patch"
+    cp "${test_tcl}" "${REDIS_TEST_TCL_BACKUP}"
 
     if ! grep -Fq "${pid_patch_marker}" "${server_tcl}"; then
         perl -0pi -e '
@@ -136,12 +180,106 @@ install_redis_external_pid_patch() {
 
     if ! grep -Fq "${skip_patch_marker}" "${server_tcl}"; then
         perl -0pi -e '
-            s/    if \{\$::external && \[lsearch \$tags "external:skip"\] >= 0\} \{\n        set err "Not supported on external server"\n        return 0\n    \}/    if {\$::external && [lsearch \$tags "external:skip"] >= 0} {\n        # garnet-rs external skip override\n        if {![info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] || \$::env(GARNET_EXTERNAL_ALLOW_SKIP) ne "1"} {\n            set err "Not supported on external server"\n            return 0\n        }\n    }/
+            s/    if \{\$::external && \[lsearch \$tags "external:skip"\] >= 0\} \{\n        set err "Not supported on external server"\n        return 0\n    \}/    if {\$::external && [lsearch \$tags "external:skip"] >= 0} {\n        # garnet-rs external skip override\n        # Keep upstream skip behavior for replication-tagged blocks until the\n        # external harness supports nested multi-server topologies.\n        if {![info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] || \$::env(GARNET_EXTERNAL_ALLOW_SKIP) ne "1" || [lsearch \$tags "repl"] >= 0} {\n            set err "Not supported on external server"\n            return 0\n        }\n    }/
         ' "${server_tcl}"
     fi
 
-    if ! grep -Fq "${pid_patch_marker}" "${server_tcl}" || ! grep -Fq "${skip_patch_marker}" "${server_tcl}"; then
+    if ! grep -Fq "${block_skip_marker}" "${server_tcl}"; then
+        SERVER_TCL_PATH="${server_tcl}" python3 <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ["SERVER_TCL_PATH"])
+text = path.read_text()
+old = """    # If we are running against an external server, we just push the
+    # host/port pair in the stack the first time
+    if {$::external} {
+        run_external_server_test $code $overrides
+
+        set ::tags [lrange $::tags 0 end-[llength $tags]]
+        return
+    }
+"""
+new = """    # If we are running against an external server, we just push the
+    # host/port pair in the stack the first time
+    if {$::external} {
+        # garnet-rs external block fallback
+        # restart_server still assumes a dedicated spawned process. Keep the
+        # upstream external:skip behavior for those blocks until the harness
+        # can emulate restart semantics.
+        if {[lsearch $::tags "external:skip"] >= 0 && [info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] && $::env(GARNET_EXTERNAL_ALLOW_SKIP) eq "1" && [string first "restart_server" $code] >= 0} {
+            incr ::num_aborted
+            send_data_packet $::test_server_fd ignore "Not supported on external server"
+            set ::tags [lrange $::tags 0 end-[llength $tags]]
+            return
+        }
+        run_external_server_test $code $overrides
+
+        set ::tags [lrange $::tags 0 end-[llength $tags]]
+        return
+    }
+"""
+if old not in text:
+    raise SystemExit(f"expected external start_server block not found in {path}")
+path.write_text(text.replace(old, new, 1))
+PY
+    fi
+
+    if ! grep -Fq "${test_skip_marker}" "${test_tcl}"; then
+        TEST_TCL_PATH="${test_tcl}" python3 <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ["TEST_TCL_PATH"])
+text = path.read_text()
+old = """    set tags [concat $::tags $tags]
+    if {![tags_acceptable $tags err]} {
+"""
+new = """    set tags [concat $::tags $tags]
+    # garnet-rs external test fallback
+    # Some external:skip tests shell out to src/redis-server and validate
+    # startup-only behavior that the shared external server cannot emulate.
+    if {$::external && [lsearch $tags "external:skip"] >= 0 && [info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] && $::env(GARNET_EXTERNAL_ALLOW_SKIP) eq "1" && [string first "exec src/redis-server" $code] >= 0} {
+        incr ::num_aborted
+        send_data_packet $::test_server_fd ignore "$name: Not supported on external server"
+        return
+    }
+    if {![tags_acceptable $tags err]} {
+"""
+if old not in text:
+    raise SystemExit(f"expected test tag guard block not found in {path}")
+path.write_text(text.replace(old, new, 1))
+PY
+    fi
+
+    if ! grep -Fq "${test_cleanup_marker}" "${test_tcl}"; then
+        TEST_TCL_PATH="${test_tcl}" python3 <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ["TEST_TCL_PATH"])
+text = path.read_text()
+old = """proc test {name code {okpattern undefined} {tags {}}} {\n"""
+new = """proc garnet_external_prepare_exact_test {name} {\n    # garnet-rs external exact-test cleanup\n    if {!$::external} {\n        return\n    }\n\n    set exact_tests [list \\\n        \"not enough good replicas\" \\\n        \"Connecting as a replica\" \\\n        \"PIPELINING stresser (also a regression for the old epoll bug)\"]\n    if {[lsearch -exact $exact_tests $name] < 0} {\n        return\n    }\n\n    catch {r client unpause}\n    catch {r script kill}\n    catch {r function kill}\n    catch {r flushall}\n    catch {r function flush}\n    catch {r script flush}\n    catch {r config resetstat}\n\n    set cleanup_settled 0\n    for {set attempt 0} {$attempt < 50} {incr attempt} {\n        catch {r replicaof no one}\n        catch {r client kill type replica}\n        catch {r client kill type slave}\n        set replication_info [r info replication]\n        if {[string match {*connected_slaves:0*} $replication_info] ||\n            [string match {*connected_replicas:0*} $replication_info]} {\n            set cleanup_settled 1\n            break\n        }\n        after 100\n    }\n\n    if {!$cleanup_settled} {\n        fail \"External replication cleanup did not settle before '$name'\"\n    }\n}\n\nproc test {name code {okpattern undefined} {tags {}}} {\n"""
+if old not in text:
+    raise SystemExit(f"expected proc test header not found in {path}")
+text = text.replace(old, new, 1)
+
+old = """    if {![tags_acceptable $tags err]} {\n        incr ::num_aborted\n        send_data_packet $::test_server_fd ignore \"$name: $err\"\n        return\n    }\n\n    incr ::num_tests\n"""
+new = """    if {![tags_acceptable $tags err]} {\n        incr ::num_aborted\n        send_data_packet $::test_server_fd ignore \"$name: $err\"\n        return\n    }\n\n    garnet_external_prepare_exact_test $name\n\n    incr ::num_tests\n"""
+if old not in text:
+    raise SystemExit(f"expected tags_acceptable block not found in {path}")
+path.write_text(text.replace(old, new, 1))
+PY
+    fi
+
+    if ! grep -Fq "${pid_patch_marker}" "${server_tcl}" \
+        || ! grep -Fq "${skip_patch_marker}" "${server_tcl}" \
+        || ! grep -Fq "${block_skip_marker}" "${server_tcl}" \
+        || ! grep -Fq "${test_skip_marker}" "${test_tcl}" \
+        || ! grep -Fq "${test_cleanup_marker}" "${test_tcl}"; then
         cp "${REDIS_SERVER_TCL_BACKUP}" "${server_tcl}"
+        cp "${REDIS_TEST_TCL_BACKUP}" "${test_tcl}"
         echo "failed to install Redis external pid patch into ${server_tcl}" >&2
         return 1
     fi
@@ -151,9 +289,14 @@ install_redis_external_pid_patch() {
 
 restore_redis_external_pid_patch() {
     local server_tcl="${REDIS_REPO_ROOT}/tests/support/server.tcl"
+    local test_tcl="${REDIS_REPO_ROOT}/tests/support/test.tcl"
     if [[ -n "${REDIS_SERVER_TCL_BACKUP:-}" && -f "${REDIS_SERVER_TCL_BACKUP}" ]]; then
         cp "${REDIS_SERVER_TCL_BACKUP}" "${server_tcl}"
         REDIS_SERVER_TCL_BACKUP=""
+    fi
+    if [[ -n "${REDIS_TEST_TCL_BACKUP:-}" && -f "${REDIS_TEST_TCL_BACKUP}" ]]; then
+        cp "${REDIS_TEST_TCL_BACKUP}" "${test_tcl}"
+        REDIS_TEST_TCL_BACKUP=""
     fi
 }
 
@@ -275,8 +418,12 @@ start_garnet_server() {
         return 0
     fi
 
+    local server_cmd
+    server_cmd="$(resolved_garnet_server_cmd)"
+
     (
-        cd "${GARNET_RS_ROOT}"
+        # Match Redis runtest relative-path behavior for CONFIG dir / test assets.
+        cd "${REDIS_REPO_ROOT}"
         if [[ "${RUNTEXT_ENABLE_CORE_DUMP}" == "1" ]]; then
             ulimit -c unlimited >/dev/null 2>&1 || true
         fi
@@ -284,7 +431,7 @@ start_garnet_server() {
         RUST_BACKTRACE="${RUST_BACKTRACE}" \
         GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED}" \
         GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}" \
-        bash -lc "${GARNET_SERVER_CMD}"
+        bash -lc "${server_cmd}"
     ) >>"${GARNET_LOG_FILE}" 2>&1 &
     GARNET_PID="$!"
 
@@ -443,6 +590,7 @@ run_runtest_case() {
         --host 127.0.0.1
         --port "${GARNET_PORT}"
         "${RUNTEXT_DB_MODE_ARGS[@]}"
+        "${RUNTEXT_COMMON_ARGS[@]}"
         --dont-clean
         --single "${unit}"
     )
@@ -488,6 +636,7 @@ run_full_runtest_case() {
         --host 127.0.0.1
         --port "${GARNET_PORT}"
         "${RUNTEXT_DB_MODE_ARGS[@]}"
+        "${RUNTEXT_COMMON_ARGS[@]}"
         --dont-clean
         --durable
     )
@@ -655,7 +804,7 @@ run_full_runtest_case() {
     fi
 
     local details
-    details="mode=full; tsavorite_pages=${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}; skipunit_querybuf=${skip_querybuf_applied}; skipunit_scripting=${skip_scripting_applied}; skiptest_scripting_noreplicas=${skiptest_scripting_noreplicas_applied}; skipunit_other=${skip_other_applied}; skiptest_other_pipeline=${skiptest_other_pipeline_applied}; skiptest_redis_cli_connecting_as_replica=${skiptest_redis_cli_connecting_as_replica_applied}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
+    details="mode=full; large_memory=${RUNTEXT_ENABLE_LARGE_MEMORY}; tsavorite_pages=${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}; skipunit_querybuf=${skip_querybuf_applied}; skipunit_scripting=${skip_scripting_applied}; skiptest_scripting_noreplicas=${skiptest_scripting_noreplicas_applied}; skipunit_other=${skip_other_applied}; skiptest_other_pipeline=${skiptest_other_pipeline_applied}; skiptest_redis_cli_connecting_as_replica=${skiptest_redis_cli_connecting_as_replica_applied}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
 
     if [[ "${RUNTEXT_CAPTURE_CRASH_REPORT}" == "1" ]]; then
         local crash_report
@@ -697,6 +846,7 @@ run_isolated_unit_case() {
         --host 127.0.0.1
         --port "${GARNET_PORT}"
         "${RUNTEXT_DB_MODE_ARGS[@]}"
+        "${RUNTEXT_COMMON_ARGS[@]}"
         --dont-clean
         --durable
         --single "${unit}"
@@ -794,7 +944,7 @@ run_isolated_unit_case() {
     fi
 
     local details
-    details="mode=full; isolated_unit=${unit}; timeout_seconds=${effective_timeout:-default}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}"
+    details="mode=full; large_memory=${RUNTEXT_ENABLE_LARGE_MEMORY}; isolated_unit=${unit}; timeout_seconds=${effective_timeout:-default}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}"
     record_result "${case_name}" "${status}" "${details}"
 }
 

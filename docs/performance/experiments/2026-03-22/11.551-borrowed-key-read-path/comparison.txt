@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=borrowed_key_baseline
+new_label=borrowed_key_read_path
+borrowed_key_baseline.median_set_ops=102224.000
+borrowed_key_baseline.median_get_ops=110274.000
+borrowed_key_baseline.median_set_p99_ms=0.11100
+borrowed_key_baseline.median_get_p99_ms=0.10300
+borrowed_key_read_path.median_set_ops=83317.000
+borrowed_key_read_path.median_get_ops=91518.000
+borrowed_key_read_path.median_set_p99_ms=0.13500
+borrowed_key_read_path.median_get_p99_ms=0.11900
+delta.set_ops_pct=-18.50
+delta.get_ops_pct=-17.01
+delta.set_p99_ms_pct=21.62
+delta.get_p99_ms_pct=15.53

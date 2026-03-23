@@ -494,14 +494,21 @@ fn command_uses_subcommand_stats(command: CommandId) -> bool {
     )
 }
 
-fn command_call_name_for_stats(
+fn command_stats_subcommand_name(
     command: CommandId,
-    command_name: &[u8],
     subcommand_name: Option<&[u8]>,
-) -> Vec<u8> {
+) -> Option<&[u8]> {
     if !command_uses_subcommand_stats(command) {
-        return command_name.to_vec();
+        return None;
     }
+    let subcommand_name = subcommand_name?;
+    if subcommand_name.is_empty() {
+        return None;
+    }
+    Some(subcommand_name)
+}
+
+fn command_call_name_for_stats(command_name: &[u8], subcommand_name: Option<&[u8]>) -> Vec<u8> {
     let Some(subcommand_name) = subcommand_name else {
         return command_name.to_vec();
     };
@@ -514,6 +521,16 @@ fn command_call_name_for_stats(
     combined.push(b'|');
     combined.extend_from_slice(subcommand_name);
     combined
+}
+
+fn ensure_command_call_name<'a>(
+    cached_name: &'a mut Option<Vec<u8>>,
+    command_name: &[u8],
+    subcommand_name: Option<&[u8]>,
+) -> &'a [u8] {
+    cached_name
+        .get_or_insert_with(|| command_call_name_for_stats(command_name, subcommand_name))
+        .as_slice()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -701,11 +718,13 @@ fn apply_reset_command_side_effects(
     processor: &RequestProcessor,
     client_id: ClientId,
     transaction: &mut ConnectionTransactionState,
+    watch_registration: &mut ConnectionWatchRegistration<'_>,
     client_state: &mut ClientConnectionState,
     monitor_receiver: &mut Option<broadcast::Receiver<Vec<u8>>>,
     allow_asking_once: &mut bool,
 ) {
     transaction.reset();
+    watch_registration.sync_from_transaction(transaction);
     *client_state = ClientConnectionState::default();
     *monitor_receiver = None;
     *allow_asking_once = false;
@@ -713,6 +732,46 @@ fn apply_reset_command_side_effects(
     metrics.set_client_authenticated(client_id, processor.default_user_starts_authenticated());
     metrics.set_client_selected_db(client_id, client_state.selected_db);
     processor.unregister_pubsub_client(client_id);
+}
+
+struct ConnectionWatchRegistration<'a> {
+    processor: &'a RequestProcessor,
+    active: bool,
+}
+
+impl ConnectionWatchRegistration<'_> {
+    fn new(processor: &RequestProcessor) -> ConnectionWatchRegistration<'_> {
+        ConnectionWatchRegistration {
+            processor,
+            active: false,
+        }
+    }
+
+    fn sync_from_transaction(&mut self, transaction: &ConnectionTransactionState) {
+        self.set_active(transaction.has_watches());
+    }
+
+    fn set_active(&mut self, active: bool) {
+        if self.active == active {
+            return;
+        }
+        self.active = active;
+        if active {
+            self.processor.register_watching_client();
+        } else {
+            self.processor.unregister_watching_client();
+        }
+    }
+}
+
+impl Drop for ConnectionWatchRegistration<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.processor.unregister_watching_client();
+        self.active = false;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -765,6 +824,7 @@ pub(crate) async fn handle_connection(
     let mut responses = Vec::with_capacity(read_buffer_size.max(1));
     let mut args = vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
     let mut transaction = ConnectionTransactionState::default();
+    let mut watch_registration = ConnectionWatchRegistration::new(processor.as_ref());
     let mut allow_asking_once = false;
     let mut client_state = ClientConnectionState::default();
     let mut disconnect_after_write = false;
@@ -772,6 +832,7 @@ pub(crate) async fn handle_connection(
     let mut wait_target_offset_for_connection = 0u64;
     let mut local_aof_wait_target_offset_for_connection = 0u64;
     let mut replica_rdb_functions_only = false;
+    let mut replica_rdb_only = false;
 
     loop {
         processor.set_connected_clients(metrics.connected_client_count());
@@ -795,6 +856,9 @@ pub(crate) async fn handle_connection(
             {
                 ConnectionReadWake::BytesRead(bytes_read) => bytes_read,
                 ConnectionReadWake::PendingPubsub | ConnectionReadWake::KilledClientPoll => {
+                    if metrics.is_client_killed(client_id) {
+                        return Ok(());
+                    }
                     flush_pending_pubsub_messages(
                         &mut stream,
                         &processor,
@@ -838,7 +902,7 @@ pub(crate) async fn handle_connection(
         let mut consumed = 0usize;
         responses.clear();
         let mut switch_to_replica_stream = false;
-        let mut replica_subscriber = None;
+        let mut replica_fullsync_session = None;
 
         loop {
             if receive_buffer[consumed..].starts_with(b"\r\n") {
@@ -995,10 +1059,13 @@ pub(crate) async fn handle_connection(
             processor.set_resp_protocol_version(client_state.resp_protocol_version);
             metrics.add_client_input_bytes(client_id, frame_bytes_consumed as u64);
             metrics.set_client_last_command(client_id, command_name, subcommand_name);
-            let command_call_name =
-                command_call_name_for_stats(command, command_name, subcommand_name);
-            processor.record_command_call(&command_call_name);
-            if command != CommandId::Monitor && command != CommandId::Unknown {
+            let stats_subcommand_name = command_stats_subcommand_name(command, subcommand_name);
+            processor.record_command_call_with_subcommand(command_name, stats_subcommand_name);
+            let mut command_call_name = None;
+            let should_publish_monitor_event = command != CommandId::Monitor
+                && command != CommandId::Unknown
+                && metrics.has_monitor_subscribers();
+            if should_publish_monitor_event {
                 metrics.publish_monitor_event(build_monitor_event_line(&args[..argument_count]));
                 if let Some(lua_event) = build_monitor_lua_event_line(&args[..argument_count]) {
                     metrics.publish_monitor_event(lua_event);
@@ -1033,7 +1100,11 @@ pub(crate) async fn handle_connection(
                             append_acl_denial_response(
                                 &processor,
                                 client_id,
-                                &command_call_name,
+                                ensure_command_call_name(
+                                    &mut command_call_name,
+                                    command_name,
+                                    stats_subcommand_name,
+                                ),
                                 &mut responses,
                                 &error,
                                 AclLogContext::Toplevel,
@@ -1250,6 +1321,9 @@ pub(crate) async fn handle_connection(
                     if ascii_eq_ignore_case(option, b"RDB-FILTER-ONLY") {
                         replica_rdb_functions_only = ascii_eq_ignore_case(value, b"FUNCTIONS");
                     }
+                    if ascii_eq_ignore_case(option, b"RDB-ONLY") {
+                        replica_rdb_only = ascii_eq_ignore_case(value, b"1");
+                    }
                     index += 2;
                 }
                 append_simple_string(&mut responses, b"OK");
@@ -1271,11 +1345,13 @@ pub(crate) async fn handle_connection(
             }
 
             if ascii_eq_ignore_case(command_name, b"PSYNC") {
-                match replication.build_fullresync_payload(replica_rdb_functions_only) {
-                    Ok(payload) => {
+                match replication
+                    .prepare_downstream_fullresync(replica_rdb_functions_only, replica_rdb_only)
+                {
+                    Ok(prepared) => {
                         metrics.set_client_type(client_id, ClientTypeFilter::Replica);
-                        replica_subscriber = Some(replication.subscribe_downstream());
-                        responses.extend_from_slice(&payload);
+                        replica_fullsync_session = Some(prepared.session);
+                        responses.extend_from_slice(&prepared.response);
                         switch_to_replica_stream = true;
                     }
                     Err(error) => {
@@ -1297,11 +1373,13 @@ pub(crate) async fn handle_connection(
             }
 
             if ascii_eq_ignore_case(command_name, b"SYNC") {
-                match replication.build_sync_payload(replica_rdb_functions_only) {
-                    Ok(payload) => {
+                match replication
+                    .prepare_downstream_sync(replica_rdb_functions_only, replica_rdb_only)
+                {
+                    Ok(prepared) => {
                         metrics.set_client_type(client_id, ClientTypeFilter::Replica);
-                        replica_subscriber = Some(replication.subscribe_downstream());
-                        responses.extend_from_slice(&payload);
+                        replica_fullsync_session = Some(prepared.session);
+                        responses.extend_from_slice(&prepared.response);
                         switch_to_replica_stream = true;
                     }
                     Err(error) => {
@@ -1414,7 +1492,11 @@ pub(crate) async fn handle_connection(
                                 append_acl_denial_response(
                                     &processor,
                                     client_id,
-                                    &command_call_name,
+                                    ensure_command_call_name(
+                                        &mut command_call_name,
+                                        command_name,
+                                        stats_subcommand_name,
+                                    ),
                                     &mut responses,
                                     &error,
                                     AclLogContext::Multi,
@@ -1448,6 +1530,7 @@ pub(crate) async fn handle_connection(
                             {
                                 Ok(true) => {
                                     transaction.reset();
+                                    watch_registration.sync_from_transaction(&transaction);
                                     responses.extend_from_slice(
                                         b"-EXECABORT Transaction discarded because of previous errors: BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.\r\n",
                                     );
@@ -1458,11 +1541,13 @@ pub(crate) async fn handle_connection(
                                         &transaction.watched_keys,
                                     ) {
                                         transaction.reset();
+                                        watch_registration.sync_from_transaction(&transaction);
                                         responses.extend_from_slice(b"*-1\r\n");
                                     } else if transaction.aborted {
                                         let aborted_due_to_busy_script =
                                             transaction.aborted_due_to_busy_script;
                                         transaction.reset();
+                                        watch_registration.sync_from_transaction(&transaction);
                                         if aborted_due_to_busy_script {
                                             responses.extend_from_slice(
                                                 b"-EXECABORT Transaction discarded because of previous errors: BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.\r\n",
@@ -1476,18 +1561,23 @@ pub(crate) async fn handle_connection(
                                         match transaction_runtime_abort_reason(
                                             &processor,
                                             &replication,
+                                            &metrics,
                                             client_state.selected_db,
                                             &transaction.queued_frames,
                                             max_resp_arguments,
                                         ) {
                                             Ok(Some(reason)) => {
                                                 transaction.reset();
+                                                watch_registration
+                                                    .sync_from_transaction(&transaction);
                                                 responses.extend_from_slice(
                                                     transaction_runtime_execabort_message(reason),
                                                 );
                                             }
                                             Err(error) => {
                                                 transaction.reset();
+                                                watch_registration
+                                                    .sync_from_transaction(&transaction);
                                                 processor
                                                     .record_error_reply(error.info_error_name());
                                                 error.append_resp_error(&mut responses);
@@ -1524,6 +1614,8 @@ pub(crate) async fn handle_connection(
                                                     Some(client_id),
                                                     client_state.selected_db,
                                                 );
+                                                watch_registration
+                                                    .sync_from_transaction(&transaction);
                                                 if let Some(wait_target_offset) =
                                                     publish_transaction_replication_frames(
                                                         &processor,
@@ -1591,6 +1683,7 @@ pub(crate) async fn handle_connection(
                             append_wrong_arity_error_for_command(&mut responses, command);
                         } else {
                             transaction.reset();
+                            watch_registration.sync_from_transaction(&transaction);
                             append_simple_string(&mut responses, b"OK");
                         }
                     }
@@ -1617,6 +1710,7 @@ pub(crate) async fn handle_connection(
                                 &processor,
                                 client_id,
                                 &mut transaction,
+                                &mut watch_registration,
                                 &mut client_state,
                                 &mut monitor_receiver,
                                 &mut allow_asking_once,
@@ -1730,7 +1824,11 @@ pub(crate) async fn handle_connection(
                                         append_acl_denial_response(
                                             &processor,
                                             client_id,
-                                            &command_call_name,
+                                            ensure_command_call_name(
+                                                &mut command_call_name,
+                                                command_name,
+                                                stats_subcommand_name,
+                                            ),
                                             &mut responses,
                                             &error,
                                             AclLogContext::Multi,
@@ -1824,7 +1922,10 @@ pub(crate) async fn handle_connection(
                                 continue;
                             }
                         }
-                        if replication.is_replica_mode() && command_mutating {
+                        if replication.is_replica_mode()
+                            && command_mutating
+                            && !command_allowed_on_read_only_replica(command, subcommand)
+                        {
                             responses.extend_from_slice(
                                 b"-READONLY You can't write against a read only replica.\r\n",
                             );
@@ -1883,6 +1984,7 @@ pub(crate) async fn handle_connection(
                                 &processor,
                                 client_id,
                                 &mut transaction,
+                                &mut watch_registration,
                                 &mut client_state,
                                 &mut monitor_receiver,
                                 &mut allow_asking_once,
@@ -1908,12 +2010,17 @@ pub(crate) async fn handle_connection(
                         if !command_has_valid_arity(command, argument_count) {
                             append_wrong_arity_error_for_command(&mut responses, command);
                         } else {
+                            if !transaction.has_watches() {
+                                watch_registration.set_active(true);
+                            }
                             let mut watch_error: Option<RequestExecutionError> = None;
                             for key_arg in &args[1..argument_count] {
                                 // SAFETY: `args` points to the live command frame.
                                 let key = arg_slice_bytes(key_arg);
                                 match processor.capture_watched_key(client_state.selected_db, key) {
-                                    Ok(watched_key) => transaction.watch_key(watched_key),
+                                    Ok(watched_key) => {
+                                        transaction.watch_key(watched_key);
+                                    }
                                     Err(error) => {
                                         watch_error = Some(error);
                                         break;
@@ -1922,6 +2029,7 @@ pub(crate) async fn handle_connection(
                             }
                             if let Some(error) = watch_error {
                                 transaction.clear_watches();
+                                watch_registration.sync_from_transaction(&transaction);
                                 processor.record_error_reply(error.info_error_name());
                                 error.append_resp_error(&mut responses);
                             } else {
@@ -1934,6 +2042,7 @@ pub(crate) async fn handle_connection(
                             append_wrong_arity_error_for_command(&mut responses, command);
                         } else {
                             transaction.clear_watches();
+                            watch_registration.sync_from_transaction(&transaction);
                             append_simple_string(&mut responses, b"OK");
                         }
                     }
@@ -1963,7 +2072,10 @@ pub(crate) async fn handle_connection(
                             }
                             continue;
                         }
-                        if replication.is_replica_mode() && command_mutating {
+                        if replication.is_replica_mode()
+                            && command_mutating
+                            && !command_allowed_on_read_only_replica(command, subcommand)
+                        {
                             responses.extend_from_slice(
                                 b"-READONLY You can't write against a read only replica.\r\n",
                             );
@@ -1991,7 +2103,7 @@ pub(crate) async fn handle_connection(
                         let min_replicas_to_write = processor.min_replicas_to_write();
                         if requires_good_replicas
                             && min_replicas_to_write > 0
-                            && replication.downstream_replica_count() < min_replicas_to_write
+                            && metrics.replica_client_count() < min_replicas_to_write
                         {
                             responses.extend_from_slice(
                                 b"-NOREPLICAS Not enough good replicas to write.\r\n",
@@ -2225,7 +2337,11 @@ pub(crate) async fn handle_connection(
                                         Some(client_id),
                                     );
                                 }
-                                processor.record_command_failure(&command_call_name);
+                                processor.record_command_failure(ensure_command_call_name(
+                                    &mut command_call_name,
+                                    command_name,
+                                    stats_subcommand_name,
+                                ));
                                 processor.record_error_reply(error.info_error_name());
                                 error.append_resp_error(&mut responses);
                             }
@@ -2344,17 +2460,17 @@ pub(crate) async fn handle_connection(
             if !responses.is_empty() {
                 stream.write_all(&responses).await?;
             }
-            if let Some(subscriber) = replica_subscriber {
+            if let Some(session) = replica_fullsync_session {
                 return replication
                     .serve_downstream_replica_with_metrics(
                         stream,
-                        subscriber,
+                        session,
                         Arc::clone(&metrics),
                         client_id,
                     )
                     .await;
             }
-            return replication.serve_downstream_replica(stream).await;
+            return Ok(());
         }
 
         let observed_query_buffer_bytes = logical_query_buffer_bytes(&receive_buffer);
@@ -2758,6 +2874,7 @@ async fn execute_blocking_frame_on_owner_thread(
                         );
                     }
                 }
+                processor.undo_recorded_command_call(command_name_upper(command));
                 return Ok(BlockingExecutionOutcome {
                     frame_response,
                     should_replicate: false,
@@ -3170,6 +3287,7 @@ struct ScriptingReplicaExecutionFlags {
 fn transaction_runtime_abort_reason(
     processor: &RequestProcessor,
     replication: &RedisReplicationCoordinator,
+    metrics: &ServerMetrics,
     selected_db: DbName,
     queued_frames: &[Vec<u8>],
     max_resp_arguments: usize,
@@ -3215,7 +3333,7 @@ fn transaction_runtime_abort_reason(
         }
         if command_mutating {
             has_mutating_command = true;
-            if replica_mode {
+            if replica_mode && !command_allowed_on_read_only_replica(command, subcommand) {
                 return Ok(Some(TransactionRuntimeAbortReason::ReadOnlyReplica));
             }
         } else if reject_reads_on_stale_replica {
@@ -3229,7 +3347,7 @@ fn transaction_runtime_abort_reason(
     let min_replicas_to_write = processor.min_replicas_to_write();
     if requires_good_replicas
         && min_replicas_to_write > 0
-        && replication.downstream_replica_count() < min_replicas_to_write
+        && metrics.replica_client_count() < min_replicas_to_write
     {
         return Ok(Some(TransactionRuntimeAbortReason::NoReplicas));
     }
@@ -4994,6 +5112,11 @@ fn command_bypasses_acl(command: CommandId) -> bool {
     )
 }
 
+fn command_allowed_on_read_only_replica(command: CommandId, subcommand: Option<&[u8]>) -> bool {
+    matches!(command, CommandId::Acl)
+        && subcommand.is_some_and(|token| ascii_eq_ignore_case(token, b"LOAD"))
+}
+
 fn append_acl_denial_response(
     processor: &RequestProcessor,
     client_id: ClientId,
@@ -5042,10 +5165,6 @@ fn maybe_apply_hello_side_effects(
     while idx < args.len() {
         let token = arg_slice_bytes(&args[idx]);
         if ascii_eq_ignore_case(token, b"AUTH") {
-            if idx + 2 < args.len() {
-                metrics.set_client_user(client_id, arg_slice_bytes(&args[idx + 1]).to_vec());
-                metrics.set_client_authenticated(client_id, true);
-            }
             idx += 3;
         } else if ascii_eq_ignore_case(token, b"SETNAME") {
             if idx + 1 < args.len() {
@@ -5071,18 +5190,7 @@ fn maybe_apply_auth_side_effects(
     metrics: &ServerMetrics,
     client_id: ClientId,
 ) {
-    if command != CommandId::Auth || frame_response != b"+OK\r\n" {
-        return;
-    }
-    let user = if args.len() == 2 {
-        b"default".to_vec()
-    } else if args.len() == 3 {
-        arg_slice_bytes(&args[1]).to_vec()
-    } else {
-        return;
-    };
-    metrics.set_client_user(client_id, user);
-    metrics.set_client_authenticated(client_id, true);
+    let _ = (command, args, frame_response, metrics, client_id);
 }
 
 #[allow(clippy::too_many_arguments)]

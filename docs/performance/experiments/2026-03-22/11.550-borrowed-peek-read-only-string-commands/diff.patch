@@ -1,0 +1,170 @@
+--- /tmp/garnet-11.550-baseline.4ZuLK1/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs	2026-03-22 23:18:26
++++ /Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs	2026-03-22 23:16:44
+@@ -191,19 +191,20 @@
+         let mut store = self.lock_string_store_for_shard(shard_index);
+         crate::debug_sync_point!("request_processor.handle_get.after_store_lock");
+         let mut session = store.session(&self.functions);
+-        let mut output = Vec::new();
+-        let status = session
+-            .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
+-            .map_err(map_read_error)?;
++        let status = with_visible_main_runtime_string(&mut session, &key, |value| {
++            append_bulk_string(response_out, value);
++        })?;
+ 
+         match status {
+-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
++            PeekOperationStatus::FoundInMemory(Some(()))
++            | PeekOperationStatus::FoundOnDisk(Some(())) => {
+                 self.track_read_key_for_current_client(&key);
+                 self.record_key_access(db_key, false);
+-                append_bulk_string(response_out, &output);
+                 Ok(())
+             }
+-            ReadOperationStatus::NotFound => {
++            PeekOperationStatus::FoundInMemory(None)
++            | PeekOperationStatus::FoundOnDisk(None)
++            | PeekOperationStatus::NotFound => {
+                 self.track_read_key_for_current_client(&key);
+                 if self.object_key_exists(db_key)? {
+                     return Err(RequestExecutionError::WrongType);
+@@ -217,7 +218,7 @@
+                 }
+                 Ok(())
+             }
+-            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
++            PeekOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+         }
+     }
+ 
+@@ -251,27 +252,26 @@
+ 
+         let mut store = self.lock_string_store_for_shard(shard_index);
+         let mut session = store.session(&self.functions);
+-        let mut output = Vec::new();
+-        let status = session
+-            .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
+-            .map_err(map_read_error)?;
++        let status = with_visible_main_runtime_string(&mut session, &key, |value| {
++            string_value_len_for_keysizes(self, value)
++        })?;
+ 
+         match status {
+-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+-                append_integer(
+-                    response_out,
+-                    string_value_len_for_keysizes(self, &output) as i64,
+-                );
++            PeekOperationStatus::FoundInMemory(Some(length))
++            | PeekOperationStatus::FoundOnDisk(Some(length)) => {
++                append_integer(response_out, length as i64);
+                 Ok(())
+             }
+-            ReadOperationStatus::NotFound => {
++            PeekOperationStatus::FoundInMemory(None)
++            | PeekOperationStatus::FoundOnDisk(None)
++            | PeekOperationStatus::NotFound => {
+                 if self.object_key_exists(db_key)? {
+                     return Err(RequestExecutionError::WrongType);
+                 }
+                 append_integer(response_out, 0);
+                 Ok(())
+             }
+-            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
++            PeekOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+         }
+     }
+ 
+@@ -332,28 +332,27 @@
+ 
+         let mut store = self.lock_string_store_for_shard(shard_index);
+         let mut session = store.session(&self.functions);
+-        let mut output = Vec::new();
+-        let status = session
+-            .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
+-            .map_err(map_read_error)?;
++        let status = with_visible_main_runtime_string(&mut session, &key, |value| {
++            if let Some(range) = normalize_string_range(value.len(), start, end) {
++                append_bulk_string(response_out, &value[range.start..=range.end_inclusive]);
++            } else {
++                append_bulk_string(response_out, b"");
++            }
++        })?;
+ 
+         match status {
+-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+-                if let Some(range) = normalize_string_range(output.len(), start, end) {
+-                    append_bulk_string(response_out, &output[range.start..=range.end_inclusive]);
+-                } else {
+-                    append_bulk_string(response_out, b"");
+-                }
+-                Ok(())
+-            }
+-            ReadOperationStatus::NotFound => {
++            PeekOperationStatus::FoundInMemory(Some(()))
++            | PeekOperationStatus::FoundOnDisk(Some(())) => Ok(()),
++            PeekOperationStatus::FoundInMemory(None)
++            | PeekOperationStatus::FoundOnDisk(None)
++            | PeekOperationStatus::NotFound => {
+                 if self.object_key_exists(db_key)? {
+                     return Err(RequestExecutionError::WrongType);
+                 }
+                 append_bulk_string(response_out, b"");
+                 Ok(())
+             }
+-            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
++            PeekOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+         }
+     }
+ 
+@@ -4462,22 +4461,44 @@
+     }
+ }
+ 
+-fn string_write_condition_matches_visible_stored_value(
+-    stored_value: &[u8],
+-    condition: &StringWriteCondition,
+-) -> Result<Option<bool>, RequestExecutionError> {
++fn visible_string_user_value(stored_value: &[u8]) -> Option<&[u8]> {
+     let decoded = decode_stored_value(stored_value);
+     if !allow_expired_data_access()
+         && let Some(expiration) = decoded.expiration_unix_millis
+         && let Some(now) = current_unix_time_millis()
+         && now > expiration
+     {
+-        return Ok(None);
++        return None;
+     }
++    Some(decoded.user_value)
++}
+ 
+-    string_write_condition_matches(Some(decoded.user_value), condition).map(Some)
++fn with_visible_main_runtime_string<D: tsavorite::PageDevice, T>(
++    session: &mut tsavorite::TsavoriteSession<'_, Vec<u8>, Vec<u8>, D, KvSessionFunctions>,
++    key: &RedisKey,
++    on_visible: impl FnOnce(&[u8]) -> T,
++) -> Result<PeekOperationStatus<Option<T>>, RequestExecutionError> {
++    session
++        .peek(
++            key,
++            &ReadInfo::default(),
++            |stored_value, _record_info, _read_info| {
++                visible_string_user_value(stored_value).map(on_visible)
++            },
++        )
++        .map_err(map_read_error)
+ }
+ 
++fn string_write_condition_matches_visible_stored_value(
++    stored_value: &[u8],
++    condition: &StringWriteCondition,
++) -> Result<Option<bool>, RequestExecutionError> {
++    let Some(current_value) = visible_string_user_value(stored_value) else {
++        return Ok(None);
++    };
++    string_write_condition_matches(Some(current_value), condition).map(Some)
++}
++
+ #[cold]
+ #[inline(never)]
+ fn string_write_condition_matches_with_peek<D: tsavorite::PageDevice>(

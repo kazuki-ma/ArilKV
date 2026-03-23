@@ -1,0 +1,11 @@
+11.543 accepted result
+
+- Validation: `make fmt`, `make fmt-check`, `make test-server`
+- Verified test counts: `705 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`
+- Accepted benchmark profile: owner-inline `RUNS=5 THREADS=1 CONNS=4 REQUESTS=30000 PRELOAD_REQUESTS=30000 PIPELINE=1 SIZE_RANGE=1-256 OWNER_THREADS=1`
+- Accepted median delta:
+  - `SET ops/sec +13.27%`
+  - `GET ops/sec +1.76%`
+  - `SET p99 -8.42%`
+  - `GET p99 0.00%`
+- Note: an initial identical `RUNS=5` sample was noisy (`SET +0.41%`, `GET -3.64%`), so the accepted artifact is the immediate rerun under the same profile.

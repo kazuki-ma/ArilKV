@@ -1,6 +1,8 @@
 use super::*;
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::RespProtocolVersion;
+use crate::server_runtime::apply_startup_config_overrides_to_processor;
+use crate::server_runtime::isolate_default_persistence_dir_for_tests;
 use garnet_cluster::AsyncGossipEngine;
 use garnet_cluster::ChannelReplicationTransport;
 use garnet_cluster::CheckpointId;
@@ -59,6 +61,207 @@ fn runnable_repo_redis_cli() -> Option<PathBuf> {
         return None;
     }
     Some(cli)
+}
+
+fn docker_available() -> bool {
+    Command::new("docker")
+        .arg("version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn system_redis_server_available() -> bool {
+    Command::new("redis-server")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn system_redis_server_supports_hash_field_expiration() -> bool {
+    let output = match Command::new("redis-server").arg("--version").output() {
+        Ok(output) if output.status.success() => output,
+        _ => return false,
+    };
+    let version_text = String::from_utf8_lossy(&output.stdout);
+    version_text
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("v="))
+        .and_then(|version| version.split('.').next())
+        .and_then(|major| major.parse::<u64>().ok())
+        .is_some_and(|major| major >= 8)
+}
+
+fn current_unix_time_millis_for_test() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+struct TestServerHandle {
+    addr: std::net::SocketAddr,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    server: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TestServerHandle {
+    fn reserve_local_test_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn spawn_with_config(config: ServerConfig) -> Self {
+        let addr = config.bind_addr;
+        let metrics = Arc::new(ServerMetrics::default());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            run_with_shutdown(config, metrics, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+        Self {
+            addr,
+            shutdown_tx: Some(shutdown_tx),
+            server: Some(server),
+        }
+    }
+
+    async fn start_with_processor(processor: Arc<RequestProcessor>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let metrics = Arc::new(ServerMetrics::default());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server_processor = Arc::clone(&processor);
+        let isolated_dir = isolate_default_persistence_dir_for_tests(&processor);
+
+        let server_metrics = Arc::clone(&metrics);
+        let server = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster_with_processor(
+                listener,
+                1024,
+                server_metrics,
+                async move {
+                    let _ = shutdown_rx.await;
+                },
+                None,
+                server_processor,
+            )
+            .await
+            .unwrap();
+            if let Some(dir) = isolated_dir {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        });
+
+        Self {
+            addr,
+            shutdown_tx: Some(shutdown_tx),
+            server: Some(server),
+        }
+    }
+
+    fn into_parts(
+        mut self,
+    ) -> (
+        std::net::SocketAddr,
+        oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        (
+            self.addr,
+            self.shutdown_tx
+                .take()
+                .expect("test server handle missing shutdown sender"),
+            self.server
+                .take()
+                .expect("test server handle missing join handle"),
+        )
+    }
+
+    async fn wait_ready(&self) {
+        wait_for_server_ping(self.addr).await;
+    }
+
+    async fn connect(&self) -> TcpStream {
+        self.wait_ready().await;
+        TcpStream::connect(self.addr).await.unwrap()
+    }
+
+    async fn shutdown(mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        if let Some(server) = self.server.take() {
+            server.await.unwrap();
+        }
+    }
+}
+
+struct DockerContainerGuard {
+    name: String,
+}
+
+impl DockerContainerGuard {
+    fn new(name: String) -> Self {
+        Self { name }
+    }
+}
+
+impl Drop for DockerContainerGuard {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", self.name.as_str()])
+            .output();
+    }
+}
+
+struct LocalRedisServerGuard {
+    child: Option<std::process::Child>,
+}
+
+impl LocalRedisServerGuard {
+    fn spawn(port: u16, log_prefix: &str) -> Self {
+        let log_dir = unique_test_temp_dir(log_prefix);
+        let dir_arg = log_dir.to_string_lossy().into_owned();
+        let log_path = log_dir.join("redis-server.log");
+        let log_file = std::fs::File::create(&log_path).unwrap();
+        let log_file_err = log_file.try_clone().unwrap();
+        let child = Command::new("redis-server")
+            .args([
+                "--port",
+                &port.to_string(),
+                "--dir",
+                dir_arg.as_str(),
+                "--save",
+                "",
+                "--appendonly",
+                "no",
+            ])
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_file_err))
+            .spawn()
+            .unwrap_or_else(|error| {
+                panic!(
+                    "failed to start local redis-server on port {port} (log: {})\n{error}",
+                    log_path.display()
+                )
+            });
+        Self { child: Some(child) }
+    }
+}
+
+impl Drop for LocalRedisServerGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 fn redis_cli_hint_suite_path() -> Option<PathBuf> {
@@ -1176,7 +1379,7 @@ async fn acl_auth_password_rotation_and_hello_auth_match_external_scenarios() {
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"AUTH", b"newuser", b"passwd1"]),
-        b"-WRONGPASS invalid username-password pair or user is disabled\r\n",
+        b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
     )
     .await;
     send_and_expect(
@@ -1218,7 +1421,7 @@ async fn acl_auth_password_rotation_and_hello_auth_match_external_scenarios() {
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"AUTH", b"newuser", b"passwd3"]),
-        b"-WRONGPASS invalid username-password pair or user is disabled\r\n",
+        b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
     )
     .await;
     send_and_expect(
@@ -1230,7 +1433,7 @@ async fn acl_auth_password_rotation_and_hello_auth_match_external_scenarios() {
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"AUTH", b"newuser", b"passwd1"]),
-        b"-WRONGPASS invalid username-password pair or user is disabled\r\n",
+        b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
     )
     .await;
 
@@ -1538,6 +1741,494 @@ async fn acl_current_connection_and_hello_chain_match_external_scenarios() {
 }
 
 #[tokio::test]
+async fn acl_runtime_aclfile_reload_and_metrics_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let temp_dir = unique_test_temp_dir("acl-runtime-file");
+    let aclfile_path = temp_dir.join("user.acl");
+    std::fs::write(
+        &aclfile_path,
+        concat!(
+            "user alice on allcommands allkeys &* >alice\n",
+            "user bob on -@all +@set +acl ~set* &* >bob\n",
+            "user doug on resetchannels &test* +@all ~* >doug\n",
+            "user default on nopass ~* &* +@all\n",
+        ),
+    )
+    .unwrap();
+    let dir_bytes = temp_dir.to_string_lossy().into_owned().into_bytes();
+
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"dir", dir_bytes.as_slice()]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"acl-pubsub-default", b"allchannels"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"aclfile", b"user.acl"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut alice = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut alice,
+        &encode_resp_command(&[b"AUTH", b"alice", b"alice"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut alice,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$5\r\nalice\r\n",
+    )
+    .await;
+
+    let mut bob = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut bob,
+        &encode_resp_command(&[b"AUTH", b"bob", b"bob"]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut bob,
+            &encode_resp_command(&[b"SADD", b"set", b"1", b"2", b"3"]),
+            timeout,
+        )
+        .await,
+        3
+    );
+    let bob_denied = send_and_read_error_line(
+        &mut bob,
+        &encode_resp_command(&[b"SET", b"key", b"value"]),
+        timeout,
+    )
+    .await;
+    assert!(bob_denied.contains("NOPERM"));
+    assert!(bob_denied.contains("set"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"default", b"reset", b"on", b"nopass", b"~*", b"+@all",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut allchannels_client = TcpStream::connect(addr).await.unwrap();
+    let subscribe_ok = send_and_read_resp_value(
+        &mut allchannels_client,
+        &encode_resp_command(&[b"SUBSCRIBE", b"foo"]),
+        timeout,
+    )
+    .await;
+    let subscribe_ok_items = resp_socket_array(&subscribe_ok);
+    assert_eq!(resp_socket_bulk(&subscribe_ok_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&subscribe_ok_items[1]), b"foo");
+    drop(allchannels_client);
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"acl-pubsub-default", b"resetchannels"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"default", b"reset", b"on", b"nopass", b"~*", b"+@all",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut resetchannels_client = TcpStream::connect(addr).await.unwrap();
+    let denied_channel = send_and_read_error_line(
+        &mut resetchannels_client,
+        &encode_resp_command(&[b"SUBSCRIBE", b"foo"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_channel.contains("NOPERM"));
+    assert!(denied_channel.contains("channel"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"user", b"default on nopass ~* +@all"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut config_user_denied = TcpStream::connect(addr).await.unwrap();
+    let config_user_denied_error = send_and_read_error_line(
+        &mut config_user_denied,
+        &encode_resp_command(&[b"SUBSCRIBE", b"foo"]),
+        timeout,
+    )
+    .await;
+    assert!(config_user_denied_error.contains("NOPERM"));
+    assert!(config_user_denied_error.contains("channel"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"user", b"default on nopass ~* &* +@all"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut config_user_allowed = TcpStream::connect(addr).await.unwrap();
+    let config_user_allowed_subscribe = send_and_read_resp_value(
+        &mut config_user_allowed,
+        &encode_resp_command(&[b"SUBSCRIBE", b"foo"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&resp_socket_array(&config_user_allowed_subscribe)[1]),
+        b"foo"
+    );
+    let config_user_allowed_psubscribe = send_and_read_resp_value(
+        &mut config_user_allowed,
+        &encode_resp_command(&[b"PSUBSCRIBE", b"bar*"]),
+        timeout,
+    )
+    .await;
+    let config_user_allowed_psubscribe_items = resp_socket_array(&config_user_allowed_psubscribe);
+    assert_eq!(
+        resp_socket_bulk(&config_user_allowed_psubscribe_items[0]),
+        b"psubscribe"
+    );
+    assert_eq!(
+        resp_socket_bulk(&config_user_allowed_psubscribe_items[1]),
+        b"bar*"
+    );
+    drop(config_user_allowed);
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"RESETSTAT"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let auth_failed = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[b"HELLO", b"2", b"AUTH", b"notrealuser", b"1233456"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        auth_failed,
+        "WRONGPASS invalid username-password pair or user is disabled."
+    );
+    let auth_failed_resp3 = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[b"HELLO", b"3", b"AUTH", b"notrealuser", b"1233456"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        auth_failed_resp3,
+        "WRONGPASS invalid username-password pair or user is disabled."
+    );
+    let auth_failed_plain = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[b"AUTH", b"notrealuser", b"1233456"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        auth_failed_plain,
+        "WRONGPASS invalid username-password pair or user is disabled."
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"invalidcmduser",
+            b"on",
+            b">passwd",
+            b"nocommands",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut invalid_cmd = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut invalid_cmd,
+        &encode_resp_command(&[b"AUTH", b"invalidcmduser", b"passwd"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let invalid_cmd_error = send_and_read_error_line(
+        &mut invalid_cmd,
+        &encode_resp_command(&[b"ACL", b"LIST"]),
+        timeout,
+    )
+    .await;
+    assert!(invalid_cmd_error.contains("no permissions to run"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"invalidkeyuser",
+            b"on",
+            b">passwd",
+            b"resetkeys",
+            b"allcommands",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut invalid_key = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut invalid_key,
+        &encode_resp_command(&[b"AUTH", b"invalidkeyuser", b"passwd"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let invalid_key_error = send_and_read_error_line(
+        &mut invalid_key,
+        &encode_resp_command(&[b"GET", b"x"]),
+        timeout,
+    )
+    .await;
+    assert!(invalid_key_error.contains("NOPERM"));
+    assert!(invalid_key_error.contains("key"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"invalidchanneluser",
+            b"on",
+            b">passwd",
+            b"resetchannels",
+            b"allcommands",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut invalid_channel = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut invalid_channel,
+        &encode_resp_command(&[b"AUTH", b"invalidchanneluser", b"passwd"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let invalid_channel_error = send_and_read_error_line(
+        &mut invalid_channel,
+        &encode_resp_command(&[b"SUBSCRIBE", b"x"]),
+        timeout,
+    )
+    .await;
+    assert!(invalid_channel_error.contains("NOPERM"));
+    assert!(invalid_channel_error.contains("channel"));
+
+    let stats = send_and_read_bulk_payload(
+        &mut admin,
+        &encode_resp_command(&[b"INFO", b"STATS"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(read_info_u64(&stats, "acl_access_denied_auth"), Some(3));
+    assert_eq!(read_info_u64(&stats, "acl_access_denied_cmd"), Some(1));
+    assert_eq!(read_info_u64(&stats, "acl_access_denied_key"), Some(1));
+    assert_eq!(read_info_u64(&stats, "acl_access_denied_channel"), Some(1));
+
+    let mut alice_subscriber = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut alice_subscriber,
+        &encode_resp_command(&[b"AUTH", b"alice", b"alice"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut alice_subscriber,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"alice-subscriber"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let alice_subscribe = send_and_read_resp_value(
+        &mut alice_subscriber,
+        &encode_resp_command(&[b"SUBSCRIBE", b"test1"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&resp_socket_array(&alice_subscribe)[1]),
+        b"test1"
+    );
+
+    let mut doug_subscriber = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut doug_subscriber,
+        &encode_resp_command(&[b"AUTH", b"doug", b"doug"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut doug_subscriber,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"doug-subscriber"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let doug_subscribe = send_and_read_resp_value(
+        &mut doug_subscriber,
+        &encode_resp_command(&[b"SUBSCRIBE", b"test1"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&resp_socket_array(&doug_subscribe)[1]),
+        b"test1"
+    );
+
+    std::fs::write(
+        &aclfile_path,
+        concat!(
+            "user alice on allcommands allkeys &* >alice\n",
+            "user bob on -@all +@set +acl ~set* &* >bob\n",
+            "user doug on resetchannels &test +@all ~* >doug\n",
+            "user default on nopass ~* &* +@all\n",
+        ),
+    )
+    .unwrap();
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOAD"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let client_list_after_load = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let client_list_text = std::str::from_utf8(&client_list_after_load).unwrap();
+    assert!(client_list_line_with_name(client_list_text, "alice-subscriber").is_some());
+    assert!(client_list_line_with_name(client_list_text, "doug-subscriber").is_none());
+
+    let publish = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"PUBLISH", b"test1", b"test-message"]),
+        timeout,
+    )
+    .await;
+    assert!(
+        resp_socket_integer(&publish) >= 1,
+        "PUBLISH should still reach the unaffected subscriber, got {publish:?}"
+    );
+    let delivered = read_resp_value_with_timeout(&mut alice_subscriber, timeout).await;
+    let delivered_items = resp_socket_array(&delivered);
+    assert_eq!(resp_socket_bulk(&delivered_items[0]), b"message");
+    assert_eq!(resp_socket_bulk(&delivered_items[1]), b"test1");
+    assert_eq!(resp_socket_bulk(&delivered_items[2]), b"test-message");
+    let mut killed_subscriber_byte = [0u8; 1];
+    let killed_subscriber_read = tokio::time::timeout(
+        Duration::from_secs(1),
+        doug_subscriber.read_exact(&mut killed_subscriber_byte),
+    )
+    .await;
+    assert!(
+        matches!(killed_subscriber_read, Ok(Err(_))),
+        "ACL LOAD should disconnect the affected subscriber socket: {killed_subscriber_read:?}"
+    );
+
+    std::fs::write(
+        &aclfile_path,
+        concat!(
+            "user alice on allcommands allkeys &* >alice\n",
+            "user bob on -@all +@set +acl ~set* &* >bob\n",
+            "user doug on resetchannels &test* +@all ~* >doug\n",
+            "user default on nopass ~* &* +@all\n",
+        ),
+    )
+    .unwrap();
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOAD"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut self_loader = TcpStream::connect(addr).await.unwrap();
+    let self_loader_hello = send_and_read_resp_value(
+        &mut self_loader,
+        &encode_resp_command(&[b"HELLO", b"3", b"AUTH", b"doug", b"doug"]),
+        timeout,
+    )
+    .await;
+    assert!(
+        matches!(self_loader_hello, RespSocketValue::Map(_)),
+        "HELLO 3 AUTH should return a RESP3 map, got {self_loader_hello:?}"
+    );
+    send_and_expect(
+        &mut self_loader,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"self-loader"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let self_subscribe = send_and_read_resp_value(
+        &mut self_loader,
+        &encode_resp_command(&[b"SUBSCRIBE", b"test1"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&resp_socket_array(&self_subscribe)[1]),
+        b"test1"
+    );
+    std::fs::write(
+        &aclfile_path,
+        concat!(
+            "user alice on allcommands allkeys &* >alice\n",
+            "user bob on -@all +@set +acl ~set* &* >bob\n",
+            "user doug on resetchannels &test +@all ~* >doug\n",
+            "user default on nopass ~* &* +@all\n",
+        ),
+    )
+    .unwrap();
+    let self_load = send_and_read_resp_value(
+        &mut self_loader,
+        &encode_resp_command(&[b"ACL", b"LOAD"]),
+        timeout,
+    )
+    .await;
+    match self_load {
+        RespSocketValue::Simple(message) => assert_eq!(message, b"OK"),
+        other => panic!("expected ACL LOAD to return +OK, got {other:?}"),
+    }
+    let client_list_after_self_load = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let client_list_after_self_load_text =
+        std::str::from_utf8(&client_list_after_self_load).unwrap();
+    assert!(client_list_line_with_name(client_list_after_self_load_text, "self-loader").is_none());
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn acl_deluser_disconnects_current_client_after_reply_like_external_scenario() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let timeout = Duration::from_secs(5);
@@ -1581,6 +2272,52 @@ async fn acl_deluser_disconnects_current_client_after_reply_like_external_scenar
             panic!("deleted-user client should disconnect after DELUSER reply: {other:?}");
         }
     }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_load_is_allowed_while_server_is_replica() {
+    let (addr, shutdown_tx, server) = start_test_server_with_scripting_enabled().await;
+    let timeout = Duration::from_secs(5);
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let set_response = send_and_read_resp_value(
+            &mut client,
+            &encode_resp_command(&[b"SET", b"replica-probe", b"1"]),
+            timeout,
+        )
+        .await;
+        if matches!(&set_response, RespSocketValue::Error(message) if String::from_utf8_lossy(message).contains("READONLY"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for read-only replica mode; last response: {set_response:?}"
+        );
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    let load_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"LOAD"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        load_error,
+        "ERR This Redis instance is not configured to use an ACL file"
+    );
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -1849,14 +2586,18 @@ async fn acl_command_key_channel_and_dryrun_permissions_match_external_scenarios
         b"+OK\r\n",
     )
     .await;
-    let dryrun_error = send_and_read_error_line(
+    let dryrun_error = send_and_read_resp_value(
         &mut client,
         &encode_resp_command(&[b"ACL", b"DRYRUN", b"scripter", b"EVAL_RO", b"", b"0"]),
         timeout,
     )
     .await;
-    assert!(dryrun_error.contains("NOPERM"));
-    assert!(dryrun_error.contains("eval_ro"));
+    let dryrun_error_text = match dryrun_error {
+        RespSocketValue::Bulk(message) => String::from_utf8(message).unwrap(),
+        other => panic!("expected ACL DRYRUN denial as bulk string, got {other:?}"),
+    };
+    assert!(dryrun_error_text.contains("NOPERM"));
+    assert!(dryrun_error_text.contains("eval_ro"));
 
     send_and_expect(
         &mut client,
@@ -1941,6 +2682,304 @@ async fn acl_command_key_channel_and_dryrun_permissions_match_external_scenarios
     assert!(queued_publish.contains("NOPERM"));
     assert!(queued_publish.contains("channel"));
     send_and_expect(&mut client, &encode_resp_command(&[b"DISCARD"]), b"+OK\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn oidc_auth_bearer_token_and_hello_auth_match_configured_jwks_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let oidc_auth_user = crate::request_lifecycle::OIDC_AUTH_SENTINEL_USERNAME;
+    let temp_dir = unique_test_temp_dir("oidc-auth-jwks");
+    let jwks_path = temp_dir.join("oidc-jwks.json");
+    std::fs::write(&jwks_path, TEST_OIDC_RSA_JWKS).unwrap();
+    let dir_bytes = temp_dir.to_string_lossy().into_owned().into_bytes();
+    let issuer = "https://issuer.example.test";
+    let audience = "garnet-auth-tests";
+
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut hello_client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"workload", b"on", b"+@all", b"allkeys"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"app-oid", b"on", b"+@all", b"allkeys"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"dir", dir_bytes.as_slice()]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"auth-oidc-issuer", issuer.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"CONFIG",
+            b"SET",
+            b"auth-oidc-audience",
+            audience.as_bytes(),
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"auth-oidc-jwks-file", b"oidc-jwks.json"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let config = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"GET", b"auth-oidc-*"]),
+        timeout,
+    )
+    .await;
+    let config_map = resp_socket_map_or_flat_map(&config);
+    assert_eq!(
+        resp_socket_bulk(config_map[&b"auth-oidc-issuer".to_vec()]),
+        issuer.as_bytes()
+    );
+    assert_eq!(
+        resp_socket_bulk(config_map[&b"auth-oidc-audience".to_vec()]),
+        audience.as_bytes()
+    );
+    assert_eq!(
+        resp_socket_bulk(config_map[&b"auth-oidc-jwks-file".to_vec()]),
+        b"oidc-jwks.json"
+    );
+    assert_eq!(
+        resp_socket_bulk(config_map[&b"auth-oidc-principal-claim".to_vec()]),
+        b"sub"
+    );
+    assert_eq!(
+        resp_socket_bulk(config_map[&b"auth-oidc-algorithms".to_vec()]),
+        b"RS256"
+    );
+
+    let workload_token = issue_test_oidc_token(Some("workload"), None, issuer, audience);
+    let implicit_oidc = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[b"AUTH", b"workload", workload_token.as_bytes()]),
+        timeout,
+    )
+    .await;
+    assert!(implicit_oidc.contains("WRONGPASS"));
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"AUTH", oidc_auth_user, workload_token.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$8\r\nworkload\r\n",
+    )
+    .await;
+
+    let hello = send_and_read_resp_value(
+        &mut hello_client,
+        &encode_resp_command(&[
+            b"HELLO",
+            b"3",
+            b"AUTH",
+            oidc_auth_user,
+            workload_token.as_bytes(),
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        matches!(hello, RespSocketValue::Map(_) | RespSocketValue::Array(_)),
+        "HELLO AUTH with OIDC token should return server info, got {hello:?}"
+    );
+    send_and_expect(
+        &mut hello_client,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$8\r\nworkload\r\n",
+    )
+    .await;
+
+    let wrong_audience_token =
+        issue_test_oidc_token(Some("workload"), None, issuer, "wrong-audience");
+    let wrong_audience = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[b"AUTH", oidc_auth_user, wrong_audience_token.as_bytes()]),
+        timeout,
+    )
+    .await;
+    assert!(wrong_audience.contains("WRONGPASS"));
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$8\r\nworkload\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"auth-oidc-principal-claim", b"oid"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let oid_token = issue_test_oidc_token(None, Some("app-oid"), issuer, audience);
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"AUTH", oidc_auth_user, oid_token.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$7\r\napp-oid\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"app-oid", b"off"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let disabled_principal = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[b"AUTH", oidc_auth_user, oid_token.as_bytes()]),
+        timeout,
+    )
+    .await;
+    assert!(disabled_principal.contains("WRONGPASS"));
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"app-oid", b"on", b"+@all", b"allkeys"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$7\r\napp-oid\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn oidc_auth_config_validation_rejects_incomplete_or_unsafe_settings() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let temp_dir = unique_test_temp_dir("oidc-auth-config");
+    std::fs::write(temp_dir.join("oidc-jwks.json"), TEST_OIDC_RSA_JWKS).unwrap();
+    std::fs::write(temp_dir.join("invalid-jwks.json"), b"{not-json").unwrap();
+    let dir_bytes = temp_dir.to_string_lossy().into_owned().into_bytes();
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"dir", dir_bytes.as_slice()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let incomplete = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"auth-oidc-jwks-file", b"oidc-jwks.json"]),
+        timeout,
+    )
+    .await;
+    assert!(incomplete.contains("auth-oidc-issuer and auth-oidc-audience"));
+
+    let invalid_algorithms = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"auth-oidc-algorithms", b"HS256"]),
+        timeout,
+    )
+    .await;
+    assert!(invalid_algorithms.contains("symmetric JWT algorithms are not allowed"));
+
+    let empty_claim = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"auth-oidc-principal-claim", b""]),
+        timeout,
+    )
+    .await;
+    assert!(empty_claim.contains("non-empty UTF-8 string"));
+
+    let reserved_username = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"__OIDC__", b"on"]),
+        timeout,
+    )
+    .await;
+    assert!(reserved_username.contains("'__OIDC__' is reserved"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"CONFIG",
+            b"SET",
+            b"auth-oidc-issuer",
+            b"https://issuer.example.test",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"CONFIG",
+            b"SET",
+            b"auth-oidc-audience",
+            b"garnet-auth-tests",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let missing_file = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[
+            b"CONFIG",
+            b"SET",
+            b"auth-oidc-jwks-file",
+            b"missing-jwks.json",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(missing_file.contains("unable to read JWKS file"));
+
+    let invalid_file = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[
+            b"CONFIG",
+            b"SET",
+            b"auth-oidc-jwks-file",
+            b"invalid-jwks.json",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(invalid_file.contains("invalid JWKS JSON"));
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -2195,6 +3234,219 @@ async fn acl_pubsub_revocation_and_blocking_recheck_match_external_scenarios() {
 }
 
 #[tokio::test]
+async fn acl_channel_matching_and_shard_subscriptions_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"hpuser",
+            b"on",
+            b"nopass",
+            b"resetchannels",
+            b"&foo",
+            b"+@all",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let acl_list = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let acl_list_lines = resp_socket_array(&acl_list)
+        .iter()
+        .map(resp_socket_bulk)
+        .collect::<Vec<_>>();
+    assert!(
+        acl_list_lines.iter().any(|line| {
+            *line == b"user hpuser on nopass sanitize-payload resetchannels &foo +@all"
+        }),
+        "ACL LIST should omit alldbs for root all-database access: {acl_list_lines:?}"
+    );
+
+    let mut hpuser = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut hpuser,
+        &encode_resp_command(&[b"AUTH", b"hpuser", b"pass"]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut hpuser,
+            &encode_resp_command(&[b"PUBLISH", b"foo", b"bar"]),
+            timeout,
+        )
+        .await,
+        0
+    );
+    let denied_publish = send_and_read_error_line(
+        &mut hpuser,
+        &encode_resp_command(&[b"PUBLISH", b"bar", b"game"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_publish.contains("NOPERM"));
+    assert!(denied_publish.contains("channel"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"psuser",
+            b"reset",
+            b"on",
+            b">pspass",
+            b"+acl",
+            b"+client",
+            b"+@pubsub",
+            b"resetchannels",
+            b"&foo:1",
+            b"&bar:*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut shard_subscriber = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut shard_subscriber,
+        &encode_resp_command(&[b"AUTH", b"psuser", b"pspass"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut shard_subscriber,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"deathrow"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let shard_ack_one = send_and_read_resp_value(
+        &mut shard_subscriber,
+        &encode_resp_command(&[b"SSUBSCRIBE", b"foo:1"]),
+        timeout,
+    )
+    .await;
+    let shard_ack_one_items = resp_socket_array(&shard_ack_one);
+    assert_eq!(resp_socket_bulk(&shard_ack_one_items[0]), b"ssubscribe");
+    assert_eq!(resp_socket_bulk(&shard_ack_one_items[1]), b"foo:1");
+    assert_eq!(resp_socket_integer(&shard_ack_one_items[2]), 1);
+    let shard_ack_two = send_and_read_resp_value(
+        &mut shard_subscriber,
+        &encode_resp_command(&[b"SSUBSCRIBE", b"bar:2"]),
+        timeout,
+    )
+    .await;
+    let shard_ack_two_items = resp_socket_array(&shard_ack_two);
+    assert_eq!(resp_socket_bulk(&shard_ack_two_items[1]), b"bar:2");
+    assert_eq!(resp_socket_integer(&shard_ack_two_items[2]), 2);
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"psuser", b"resetchannels"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let client_list_after_shard_revoke = send_and_read_bulk_payload(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let client_list_after_shard_revoke =
+        std::str::from_utf8(&client_list_after_shard_revoke).unwrap();
+    assert!(client_list_line_with_name(client_list_after_shard_revoke, "deathrow").is_none());
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"psuser",
+            b"reset",
+            b"on",
+            b">pspass",
+            b"+acl",
+            b"+client",
+            b"+@pubsub",
+            b"resetchannels",
+            b"&foo:1",
+            b"&bar:*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut pattern_subscriber = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut pattern_subscriber,
+        &encode_resp_command(&[b"AUTH", b"psuser", b"pspass"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut pattern_subscriber,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"patternrow"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let pattern_ack_one = send_and_read_resp_value(
+        &mut pattern_subscriber,
+        &encode_resp_command(&[b"PSUBSCRIBE", b"foo:1"]),
+        timeout,
+    )
+    .await;
+    let pattern_ack_one_items = resp_socket_array(&pattern_ack_one);
+    assert_eq!(resp_socket_bulk(&pattern_ack_one_items[0]), b"psubscribe");
+    assert_eq!(resp_socket_bulk(&pattern_ack_one_items[1]), b"foo:1");
+    assert_eq!(resp_socket_integer(&pattern_ack_one_items[2]), 1);
+    let pattern_ack_two = send_and_read_resp_value(
+        &mut pattern_subscriber,
+        &encode_resp_command(&[b"PSUBSCRIBE", b"bar:*"]),
+        timeout,
+    )
+    .await;
+    let pattern_ack_two_items = resp_socket_array(&pattern_ack_two);
+    assert_eq!(resp_socket_bulk(&pattern_ack_two_items[1]), b"bar:*");
+    assert_eq!(resp_socket_integer(&pattern_ack_two_items[2]), 2);
+    let denied_pattern = send_and_read_error_line(
+        &mut pattern_subscriber,
+        &encode_resp_command(&[b"PSUBSCRIBE", b"bar:baz"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_pattern.contains("NOPERM"));
+    assert!(denied_pattern.contains("channel"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"psuser", b"resetchannels"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let client_list_after_pattern_revoke = send_and_read_bulk_payload(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let client_list_after_pattern_revoke =
+        std::str::from_utf8(&client_list_after_pattern_revoke).unwrap();
+    assert!(client_list_line_with_name(client_list_after_pattern_revoke, "patternrow").is_none());
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn acl_log_tracks_auth_and_acl_denials_like_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let timeout = Duration::from_secs(5);
@@ -2432,6 +3684,75 @@ async fn acl_log_distinguishes_multi_context_like_external_scenario() {
         b"multi"
     );
     assert_eq!(resp_socket_bulk(multi_entry[&b"object".to_vec()]), b"incr");
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"antirez", b"reset", b"on", b">foo", b"+multi", b"+exec",
+            b"+incr", b"allkeys",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"antirez", b"foo"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut user, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"INCR", b"object:1234"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"antirez", b"-incr"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let exec = send_and_read_resp_value(&mut user, &encode_resp_command(&[b"EXEC"]), timeout).await;
+    let exec_items = resp_socket_array(&exec);
+    assert_eq!(exec_items.len(), 1);
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(&exec_items[0])).contains("NOPERM"),
+        "EXEC should re-check ACLs at execution time: {exec:?}"
+    );
+
+    let get_after_exec = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"GET", b"object:1234"]),
+        timeout,
+    )
+    .await;
+    assert!(
+        matches!(get_after_exec, RespSocketValue::Null),
+        "revoked INCR should not execute at EXEC time: {get_after_exec:?}"
+    );
+
+    let exec_log = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"1"]),
+        timeout,
+    )
+    .await;
+    let exec_entry = resp_socket_map_or_flat_map(&resp_socket_array(&exec_log)[0]);
+    assert_eq!(resp_socket_bulk(exec_entry[&b"context".to_vec()]), b"multi");
+    assert_eq!(resp_socket_bulk(exec_entry[&b"object".to_vec()]), b"incr");
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(exec_entry[&b"client-info".to_vec()]))
+            .contains("cmd=exec"),
+        "EXEC-time ACL log should keep EXEC in client-info"
+    );
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -2717,7 +4038,7 @@ async fn acl_selectors_match_valkey_semantics_for_or_permissions_and_rendering()
     let selector_one = resp_socket_map_or_flat_map(&selectors[0]);
     assert_eq!(
         resp_socket_bulk(selector_one[&b"commands".to_vec()]),
-        b"+get +select|1"
+        b"-@all +get +select|1"
     );
     assert_eq!(resp_socket_bulk(selector_one[&b"keys".to_vec()]), b"~foo:*");
     assert_eq!(resp_socket_bulk(selector_one[&b"channels".to_vec()]), b"");
@@ -2729,7 +4050,7 @@ async fn acl_selectors_match_valkey_semantics_for_or_permissions_and_rendering()
     let selector_two = resp_socket_map_or_flat_map(&selectors[1]);
     assert_eq!(
         resp_socket_bulk(selector_two[&b"commands".to_vec()]),
-        b"+publish"
+        b"-@all +publish"
     );
     assert_eq!(resp_socket_bulk(selector_two[&b"keys".to_vec()]), b"");
     assert_eq!(
@@ -2756,8 +4077,8 @@ async fn acl_selectors_match_valkey_semantics_for_or_permissions_and_rendering()
         .map(|line| String::from_utf8_lossy(line))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(acl_list_text.contains("(~foo:* resetchannels db=1 +get +select|1)"));
-    assert!(acl_list_text.contains("(resetchannels &alerts:* alldbs +publish)"));
+    assert!(acl_list_text.contains("(~foo:* resetchannels db=1 -@all +get +select|1)"));
+    assert!(acl_list_text.contains("(resetchannels &alerts:* alldbs -@all +publish)"));
 
     send_and_expect(
         &mut user,
@@ -2849,6 +4170,597 @@ async fn acl_selectors_match_valkey_semantics_for_or_permissions_and_rendering()
             .await;
     assert!(denied_select_after_clear.contains("NOPERM"));
     assert!(denied_select_after_clear.contains("select|1"));
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_v2_key_permissions_and_rendering_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"command-test",
+            b"on",
+            b"nopass",
+            b"+@all",
+            b"%R~read*",
+            b"%W~write*",
+            b"%RW~rw*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let getuser = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"GETUSER", b"command-test"]),
+        timeout,
+    )
+    .await;
+    let getuser_map = resp_socket_map_or_flat_map(&getuser);
+    assert_eq!(
+        resp_socket_bulk(getuser_map[&b"keys".to_vec()]),
+        b"%R~read* %W~write* ~rw*"
+    );
+
+    let acl_list = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let acl_list_text = resp_socket_array(&acl_list)
+        .iter()
+        .map(resp_socket_bulk)
+        .map(String::from_utf8_lossy)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(acl_list_text.contains("%R~read* %W~write* ~rw*"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"SET", b"readstr", b"bar"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"SET", b"read", b"copy-source"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"command-test", b"password"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut user, &encode_resp_command(&[b"PING"]), b"+PONG\r\n").await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"GET", b"readstr"]),
+        b"$3\r\nbar\r\n",
+    )
+    .await;
+
+    let denied_set = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"SET", b"readstr", b"bar"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_set.contains("NOPERM"));
+    assert!(denied_set.contains("key"));
+
+    assert_eq!(
+        send_and_read_integer(
+            &mut user,
+            &encode_resp_command(&[b"LPUSH", b"writelist", b"10"]),
+            timeout,
+        )
+        .await,
+        1
+    );
+
+    let denied_get = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"GET", b"writestr"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_get.contains("NOPERM"));
+    assert!(denied_get.contains("key"));
+
+    assert_eq!(
+        send_and_read_integer(
+            &mut user,
+            &encode_resp_command(&[b"COPY", b"read", b"write"]),
+            timeout,
+        )
+        .await,
+        1
+    );
+
+    let denied_copy = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"COPY", b"write", b"read"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_copy.contains("NOPERM"));
+    assert!(denied_copy.contains("key"));
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_v2_dryrun_key_permissions_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"command-test",
+            b"on",
+            b"nopass",
+            b"+@all",
+            b"%R~read*",
+            b"%W~write*",
+            b"%RW~rw*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"DRYRUN", b"command-test", b"GET", b"read"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let missing_user = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"DRYRUN", b"not-a-user", b"GET", b"read"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(missing_user, "ERR User 'not-a-user' not found");
+
+    let missing_command = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"command-test",
+            b"not-a-command",
+            b"read",
+        ]),
+        timeout,
+    )
+    .await;
+    assert_eq!(missing_command, "ERR Command 'not-a-command' not found");
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"test-dry-run",
+            b"on",
+            b"nopass",
+            b"+@all",
+            b"~v*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let wrong_arity = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"DRYRUN", b"test-dry-run", b"SET", b"v"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        wrong_arity,
+        "ERR wrong number of arguments for 'set' command"
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"command-test",
+            b"MIGRATE",
+            b"whatever",
+            b"whatever",
+            b"rw",
+            b"0",
+            b"5000",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let migrate_read_denied = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"command-test",
+            b"MIGRATE",
+            b"whatever",
+            b"whatever",
+            b"read",
+            b"0",
+            b"5000",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(&migrate_read_denied))
+            .contains("access the 'read' key")
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"command-test",
+            b"EVAL_RO",
+            b"",
+            b"1",
+            b"read",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let eval_denied = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"command-test",
+            b"EVAL",
+            b"",
+            b"1",
+            b"read",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(&eval_denied)).contains("access the 'read' key")
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"command-test",
+            b"SORT",
+            b"read",
+            b"STORE",
+            b"write",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let sort_denied = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"command-test",
+            b"SORT",
+            b"read",
+            b"STORE",
+            b"read",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(&sort_denied)).contains("access the 'read' key")
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"set-key-permission-W",
+            b"on",
+            b"nopass",
+            b"%W~write*",
+            b"+@all",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"set-key-permission-W",
+            b"SET",
+            b"writestr",
+            b"bar",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let set_get_denied = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"set-key-permission-W",
+            b"SET",
+            b"writestr",
+            b"bar",
+            b"GET",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(&set_get_denied))
+            .contains("access the 'writestr' key")
+    );
+    let set_invalid_ex_denied = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"DRYRUN",
+            b"set-key-permission-W",
+            b"SET",
+            b"writestr",
+            b"bar",
+            b"EX",
+            b"get",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(&set_invalid_ex_denied))
+            .contains("access the 'writestr' key")
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_v2_sort_by_and_get_require_unrestricted_read_access_like_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"SET", b"v1", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut admin,
+            &encode_resp_command(&[b"LPUSH", b"mylist", b"1"]),
+            timeout,
+        )
+        .await,
+        1
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"test-sort-acl",
+            b"on",
+            b"nopass",
+            b"(+sort",
+            b"~mylist)",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"test-sort-acl", b"nopass"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let by_denied = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"SORT", b"mylist", b"BY", b"v*"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        by_denied,
+        "ERR BY option of SORT denied due to insufficient ACL permissions."
+    );
+    let get_denied = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"SORT", b"mylist", b"GET", b"v*"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        get_denied,
+        "ERR GET option of SORT denied due to insufficient ACL permissions."
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"test-sort-acl",
+            b"(+sort",
+            b"~mylist",
+            b"~v*)",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let by_still_denied = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"SORT", b"mylist", b"BY", b"v*"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        by_still_denied,
+        "ERR BY option of SORT denied due to insufficient ACL permissions."
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"test-sort-acl",
+            b"(+sort",
+            b"~mylist",
+            b"%W~*)",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let get_write_only_denied = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"SORT", b"mylist", b"GET", b"v*"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        get_write_only_denied,
+        "ERR GET option of SORT denied due to insufficient ACL permissions."
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"test-sort-acl",
+            b"(+sort",
+            b"~mylist",
+            b"%R~*)",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let sorted = send_and_read_resp_value(
+        &mut user,
+        &encode_resp_command(&[b"SORT", b"mylist", b"BY", b"v*"]),
+        timeout,
+    )
+    .await;
+    let sorted_items = resp_socket_array(&sorted);
+    assert_eq!(sorted_items.len(), 1);
+    assert_eq!(resp_socket_bulk(&sorted_items[0]), b"1");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_v2_aclfile_selector_key_permissions_load_match_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let temp_dir = unique_test_temp_dir("acl-v2-file");
+    let aclfile_path = temp_dir.join("userwithselectors.acl");
+    std::fs::write(
+        &aclfile_path,
+        "user alice on (+get ~rw*)\nuser bob on (+set %W~w*) (+get %R~r*)\n",
+    )
+    .unwrap();
+
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let dir_bytes = temp_dir.to_string_lossy().into_owned().into_bytes();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"dir", dir_bytes.as_slice()]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"aclfile", b"userwithselectors.acl"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOAD"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let alice = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"GETUSER", b"alice"]),
+        timeout,
+    )
+    .await;
+    let alice_map = resp_socket_map_or_flat_map(&alice);
+    let alice_selectors = resp_socket_array(alice_map[&b"selectors".to_vec()]);
+    assert_eq!(alice_selectors.len(), 1);
+    let alice_selector = resp_socket_map_or_flat_map(&alice_selectors[0]);
+    assert_eq!(
+        resp_socket_bulk(alice_selector[&b"commands".to_vec()]),
+        b"-@all +get"
+    );
+    assert_eq!(resp_socket_bulk(alice_selector[&b"keys".to_vec()]), b"~rw*");
+
+    let bob = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"GETUSER", b"bob"]),
+        timeout,
+    )
+    .await;
+    let bob_map = resp_socket_map_or_flat_map(&bob);
+    let bob_selectors = resp_socket_array(bob_map[&b"selectors".to_vec()]);
+    assert_eq!(bob_selectors.len(), 2);
+    let bob_writer = resp_socket_map_or_flat_map(&bob_selectors[0]);
+    assert_eq!(
+        resp_socket_bulk(bob_writer[&b"commands".to_vec()]),
+        b"-@all +set"
+    );
+    assert_eq!(resp_socket_bulk(bob_writer[&b"keys".to_vec()]), b"%W~w*");
+    let bob_reader = resp_socket_map_or_flat_map(&bob_selectors[1]);
+    assert_eq!(
+        resp_socket_bulk(bob_reader[&b"commands".to_vec()]),
+        b"-@all +get"
+    );
+    assert_eq!(resp_socket_bulk(bob_reader[&b"keys".to_vec()]), b"%R~r*");
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -4758,6 +6670,96 @@ async fn multidb_info_keysizes_swapdb_and_debug_reload_match_external_scenarios_
     let info_after_second_reload = String::from_utf8(info_after_second_reload).unwrap();
     assert!(info_after_second_reload.contains("db0_distrib_strings_sizes:8=1\r\n"));
     assert!(!info_after_second_reload.contains("db0_distrib_lists_items:4=1\r\n"));
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn info_clients_updates_watch_and_tracking_counts_on_disable_and_disconnect() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(1);
+    let mut observer = TcpStream::connect(addr).await.unwrap();
+    let mut watcher = TcpStream::connect(addr).await.unwrap();
+    let mut tracker = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut watcher,
+        &encode_resp_command(&[b"WATCH", b"watched"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut tracker,
+        &encode_resp_command(&[b"CLIENT", b"TRACKING", b"ON", b"BCAST", b"PREFIX", b"wat"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let info_with_both = send_and_read_bulk_payload(
+        &mut observer,
+        &encode_resp_command(&[b"INFO", b"clients"]),
+        timeout,
+    )
+    .await;
+    let info_with_both = String::from_utf8(info_with_both).unwrap();
+    assert!(
+        info_with_both.contains("watching_clients:1\r\n"),
+        "INFO clients should report one watcher, got: {info_with_both}"
+    );
+    assert!(
+        info_with_both.contains("tracking_clients:1\r\n"),
+        "INFO clients should report one tracking client, got: {info_with_both}"
+    );
+
+    send_and_expect(
+        &mut tracker,
+        &encode_resp_command(&[b"CLIENT", b"TRACKING", b"OFF"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let info_after_tracking_off = send_and_read_bulk_payload(
+        &mut observer,
+        &encode_resp_command(&[b"INFO", b"clients"]),
+        timeout,
+    )
+    .await;
+    let info_after_tracking_off = String::from_utf8(info_after_tracking_off).unwrap();
+    assert!(
+        info_after_tracking_off.contains("watching_clients:1\r\n"),
+        "INFO clients should keep one watcher after TRACKING OFF, got: {info_after_tracking_off}"
+    );
+    assert!(
+        info_after_tracking_off.contains("tracking_clients:0\r\n"),
+        "INFO clients should drop tracking count after TRACKING OFF, got: {info_after_tracking_off}"
+    );
+
+    drop(watcher);
+    let mut final_info = String::new();
+    for _ in 0..20 {
+        let payload = send_and_read_bulk_payload(
+            &mut observer,
+            &encode_resp_command(&[b"INFO", b"clients"]),
+            timeout,
+        )
+        .await;
+        final_info = String::from_utf8(payload).unwrap();
+        if final_info.contains("watching_clients:0\r\n")
+            && final_info.contains("tracking_clients:0\r\n")
+        {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        final_info.contains("watching_clients:0\r\n"),
+        "INFO clients should drop watcher count after disconnect, got: {final_info}"
+    );
+    assert!(
+        final_info.contains("tracking_clients:0\r\n"),
+        "INFO clients should keep tracking count at zero after disconnect, got: {final_info}"
+    );
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -8535,7 +10537,10 @@ async fn xreadgroup_dirty_semantics_match_stream_cgroups_external_scenarios() {
 #[tokio::test]
 async fn consumer_without_pel_is_present_after_aofrw_external_scenario_runs_as_tcp_integration_test()
  {
-    let (addr, shutdown_tx, server) = start_test_server().await;
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let temp_dir = configure_processor_aof_for_test(processor.as_ref(), "consumer-aofrw");
+    let (addr, shutdown_tx, server) = start_test_server_with_processor(processor).await;
     let mut controller = TcpStream::connect(addr).await.unwrap();
     let mut inspector = TcpStream::connect(addr).await.unwrap();
     let mut blocked = TcpStream::connect(addr).await.unwrap();
@@ -8666,11 +10671,15 @@ async fn consumer_without_pel_is_present_after_aofrw_external_scenario_runs_as_t
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[tokio::test]
 async fn stream_aof_rewrite_after_xdel_lastid_matches_external_scenario() {
-    let (addr, shutdown_tx, server) = start_test_server().await;
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let temp_dir = configure_processor_aof_for_test(processor.as_ref(), "stream-aofrw");
+    let (addr, shutdown_tx, server) = start_test_server_with_processor(processor).await;
     let mut client = TcpStream::connect(addr).await.unwrap();
 
     // Redis tests/unit/type/stream.tcl:
@@ -8761,6 +10770,7 @@ async fn stream_aof_rewrite_after_xdel_lastid_matches_external_scenario() {
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[tokio::test]
@@ -9871,47 +11881,16 @@ async fn bzmpop_illegal_arguments_match_redis_external_scenario() {
 
 #[tokio::test]
 async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
-
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
     let master_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let master_server = TestServerHandle::start_with_processor(master_processor).await;
+    let replica_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            master_listener,
-            1024,
-            master_metrics_task,
-            async move {
-                let _ = master_shutdown_rx.await;
-            },
-            None,
-            master_processor,
-        )
-        .await
-        .unwrap();
-    });
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
-            let _ = replica_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
     send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
 
@@ -9961,55 +11940,22 @@ async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     )
     .await;
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
 }
 
 #[tokio::test]
 async fn wait_returns_ack_count_after_replica_applies_write() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
-
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
     let master_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let master_server = TestServerHandle::start_with_processor(master_processor).await;
+    let replica_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            master_listener,
-            1024,
-            master_metrics_task,
-            async move {
-                let _ = master_shutdown_rx.await;
-            },
-            None,
-            master_processor,
-        )
-        .await
-        .unwrap();
-    });
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
-            let _ = replica_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
     send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
 
@@ -10052,46 +11998,21 @@ async fn wait_returns_ack_count_after_replica_applies_write() {
         "expected WAIT to observe at least one acknowledged replica, got {acknowledged}"
     );
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
 }
 
 #[tokio::test]
 async fn failover_promotes_connected_replica_and_demotes_source() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
+    let master_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
+    let replica_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
 
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
-            let _ = master_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
-            let _ = replica_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     send_and_expect(
         &mut replica_client,
         &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
@@ -10102,7 +12023,7 @@ async fn failover_promotes_connected_replica_and_demotes_source() {
         wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
     assert!(
         String::from_utf8_lossy(&replication_info)
-            .contains(format!("port={}", replica_addr.port()).as_str()),
+            .contains(format!("port={}", replica_server.addr.port()).as_str()),
         "INFO REPLICATION did not expose replica listening port: {}",
         String::from_utf8_lossy(&replication_info)
     );
@@ -10210,46 +12131,21 @@ async fn failover_promotes_connected_replica_and_demotes_source() {
     )
     .await;
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
 }
 
 #[tokio::test]
 async fn failover_rejects_unknown_target_even_with_connected_replica() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
+    let master_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
+    let replica_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
 
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
-            let _ = master_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
-            let _ = replica_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     send_and_expect(
         &mut replica_client,
         &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
@@ -10293,10 +12189,8 @@ async fn failover_rejects_unknown_target_even_with_connected_replica() {
     )
     .await;
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
 }
 
 #[tokio::test]
@@ -10537,22 +12431,368 @@ async fn cluster_failover_command_updates_source_and_target_redirections() {
 }
 
 #[tokio::test]
-async fn publish_write_frame_advances_local_aof_frontiers_when_appendonly_enabled() {
-    let temp_dir = std::env::temp_dir().join(format!(
-        "garnet-live-aof-integration-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+async fn cluster_failover_command_converges_observer_redirections_via_gossip_manager() {
+    let primary_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let primary_addr = primary_listener.local_addr().unwrap();
+    let observer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let observer_addr = observer_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let key = b"cluster-failover-observer-key".to_vec();
+    let slot = redis_hash_slot(&key);
+
+    let mut primary_config = ClusterConfig::new_local("node-1", "127.0.0.1", primary_addr.port());
+    let (next, observer_id_in_primary) = primary_config
+        .add_worker(Worker::new(
+            "node-2",
+            "127.0.0.1",
+            observer_addr.port(),
+            WorkerRole::Primary,
+        ))
+        .unwrap();
+    primary_config = next;
+    let (next, replica_id_in_primary) = primary_config
+        .add_worker(Worker::new(
+            "node-3",
+            "127.0.0.1",
+            replica_addr.port(),
+            WorkerRole::Replica,
+        ))
+        .unwrap();
+    primary_config = next
+        .set_worker_replica_of(replica_id_in_primary, "node-1")
+        .unwrap()
+        .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+        .unwrap();
+
+    let mut observer_config = ClusterConfig::new_local("node-2", "127.0.0.1", observer_addr.port());
+    let (next, primary_id_in_observer) = observer_config
+        .add_worker(Worker::new(
+            "node-1",
+            "127.0.0.1",
+            primary_addr.port(),
+            WorkerRole::Primary,
+        ))
+        .unwrap();
+    observer_config = next;
+    let (next, replica_id_in_observer) = observer_config
+        .add_worker(Worker::new(
+            "node-3",
+            "127.0.0.1",
+            replica_addr.port(),
+            WorkerRole::Replica,
+        ))
+        .unwrap();
+    observer_config = next
+        .set_worker_replica_of(replica_id_in_observer, "node-1")
+        .unwrap()
+        .set_slot_state(slot, primary_id_in_observer, SlotState::Stable)
+        .unwrap();
+
+    let mut replica_config = ClusterConfig::new_local("node-3", "127.0.0.1", replica_addr.port())
+        .set_local_worker_role(WorkerRole::Replica)
+        .unwrap()
+        .set_worker_replica_of(LOCAL_WORKER_ID, "node-1")
+        .unwrap();
+    let (next, primary_id_in_replica) = replica_config
+        .add_worker(Worker::new(
+            "node-1",
+            "127.0.0.1",
+            primary_addr.port(),
+            WorkerRole::Primary,
+        ))
+        .unwrap();
+    replica_config = next;
+    let (next, observer_id_in_replica) = replica_config
+        .add_worker(Worker::new(
+            "node-2",
+            "127.0.0.1",
+            observer_addr.port(),
+            WorkerRole::Primary,
+        ))
+        .unwrap();
+    replica_config = next
+        .set_slot_state(slot, primary_id_in_replica, SlotState::Stable)
+        .unwrap();
+
+    let primary_store = Arc::new(ClusterConfigStore::new(primary_config));
+    let observer_store = Arc::new(ClusterConfigStore::new(observer_config));
+    let replica_store = Arc::new(ClusterConfigStore::new(replica_config));
+
+    let (primary_shutdown_tx, primary_shutdown_rx) = oneshot::channel::<()>();
+    let (observer_shutdown_tx, observer_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let primary_server = {
+        let metrics = Arc::new(ServerMetrics::default());
+        let cluster_store = Arc::clone(&primary_store);
+        tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                primary_listener,
+                1024,
+                metrics,
+                async move {
+                    let _ = primary_shutdown_rx.await;
+                },
+                Some(cluster_store),
+            )
+            .await
+            .unwrap();
+        })
+    };
+
+    let observer_server = {
+        let metrics = Arc::new(ServerMetrics::default());
+        let cluster_store = Arc::clone(&observer_store);
+        tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                observer_listener,
+                1024,
+                metrics,
+                async move {
+                    let _ = observer_shutdown_rx.await;
+                },
+                Some(cluster_store),
+            )
+            .await
+            .unwrap();
+        })
+    };
+
+    let replica_server = {
+        let metrics = Arc::new(ServerMetrics::default());
+        let cluster_store = Arc::clone(&replica_store);
+        tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                replica_listener,
+                1024,
+                metrics,
+                async move {
+                    let _ = replica_shutdown_rx.await;
+                },
+                Some(cluster_store),
+            )
+            .await
+            .unwrap();
+        })
+    };
+
+    let mut primary_client = TcpStream::connect(primary_addr).await.unwrap();
+    let mut observer_client = TcpStream::connect(observer_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let primary_port = primary_addr.port().to_string();
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", primary_port.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = wait_for_replica_info_line(&mut primary_client, 1, Duration::from_secs(5)).await;
+
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"READONLY"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut primary_client,
+        &encode_resp_command(&[b"SET", &key, b"seed"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let acknowledged = send_and_read_integer(
+        &mut primary_client,
+        &encode_resp_command(&[b"WAIT", b"1", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        acknowledged >= 1,
+        "expected WAIT to observe the downstream replica before cluster FAILOVER, got {acknowledged}"
+    );
+
+    let moved_to_primary = format!("-MOVED {} 127.0.0.1:{}\r\n", slot, primary_addr.port());
+    send_and_expect(
+        &mut observer_client,
+        &encode_resp_command(&[b"GET", &key]),
+        moved_to_primary.as_bytes(),
+    )
+    .await;
+
+    let (observer_updates_tx, observer_updates_rx) =
+        tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+
+    let mut primary_transport = InMemoryGossipTransport::new(Arc::clone(&primary_store));
+    primary_transport.add_peer(observer_id_in_primary, observer_updates_tx.clone());
+    let primary_gossip_engine = AsyncGossipEngine::new(
+        GossipCoordinator::new(vec![GossipNode::new(observer_id_in_primary, 0)], 1),
+        primary_transport,
+        100,
+        0,
+    );
+    let mut primary_manager = ClusterManager::new(primary_gossip_engine, Duration::from_millis(2));
+
+    let mut replica_transport = InMemoryGossipTransport::new(Arc::clone(&replica_store));
+    replica_transport.add_peer(observer_id_in_replica, observer_updates_tx.clone());
+    let replica_gossip_engine = AsyncGossipEngine::new(
+        GossipCoordinator::new(vec![GossipNode::new(observer_id_in_replica, 0)], 1),
+        replica_transport,
+        100,
+        0,
+    );
+    let mut replica_manager = ClusterManager::new(replica_gossip_engine, Duration::from_millis(2));
+
+    let observer_manager_store = Arc::clone(&observer_store);
+    let (observer_manager_shutdown_tx, observer_manager_shutdown_rx) = oneshot::channel::<()>();
+    let observer_manager = tokio::spawn(async move {
+        let gossip_engine = AsyncGossipEngine::new(
+            GossipCoordinator::new(Vec::new(), 1),
+            InMemoryGossipTransport::new(Arc::clone(&observer_manager_store)),
+            100,
+            0,
+        );
+        let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
+        let mut failure_detector = FailureDetector::new(1_000);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(
+            Some(CheckpointId::new(7)),
+            ReplicationOffset::new(2_000),
+            ReplicationOffset::new(2_200),
+        )
+        .unwrap();
+        let (repl_tx, _repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        let mut replication_transport =
+            ChannelReplicationTransport::new(repl_tx, ReplicationOffset::new(1_980));
+
+        manager
+            .run_with_config_updates_and_failover_report(
+                observer_manager_store.as_ref(),
+                observer_updates_rx,
+                &mut failure_detector,
+                &mut failover_controller,
+                &mut replication_manager,
+                &mut replication_transport,
+                async move {
+                    let _ = observer_manager_shutdown_rx.await;
+                },
+            )
+            .await
             .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&temp_dir).unwrap();
+    });
+
+    let replica_port = replica_addr.port().to_string();
+    send_and_expect(
+        &mut primary_client,
+        &encode_resp_command(&[
+            b"FAILOVER",
+            b"TO",
+            b"127.0.0.1",
+            replica_port.as_bytes(),
+            b"TIMEOUT",
+            b"2000",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    wait_until(
+        || {
+            let primary_snapshot = primary_store.load();
+            let replica_snapshot = replica_store.load();
+            primary_snapshot.local_worker().unwrap().role == WorkerRole::Replica
+                && primary_snapshot.slot_assigned_owner(slot).unwrap() == replica_id_in_primary
+                && primary_snapshot.worker(replica_id_in_primary).unwrap().role
+                    == WorkerRole::Primary
+                && primary_snapshot
+                    .local_worker()
+                    .unwrap()
+                    .replica_of_node_id
+                    .as_deref()
+                    == Some("node-3")
+                && replica_snapshot.local_worker().unwrap().role == WorkerRole::Primary
+                && replica_snapshot.slot_assigned_owner(slot).unwrap() == LOCAL_WORKER_ID
+                && replica_snapshot.worker(primary_id_in_replica).unwrap().role
+                    == WorkerRole::Replica
+                && replica_snapshot
+                    .worker(primary_id_in_replica)
+                    .unwrap()
+                    .replica_of_node_id
+                    .as_deref()
+                    == Some("node-3")
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    primary_manager.run_for_rounds(1).await;
+    replica_manager.run_for_rounds(1).await;
+
+    wait_until(
+        || {
+            let observer_snapshot = observer_store.load();
+            observer_snapshot.slot_assigned_owner(slot).unwrap() == replica_id_in_observer
+                && observer_snapshot
+                    .worker(replica_id_in_observer)
+                    .unwrap()
+                    .role
+                    == WorkerRole::Primary
+                && observer_snapshot
+                    .worker(primary_id_in_observer)
+                    .unwrap()
+                    .role
+                    == WorkerRole::Replica
+                && observer_snapshot
+                    .worker(primary_id_in_observer)
+                    .unwrap()
+                    .replica_of_node_id
+                    .as_deref()
+                    == Some("node-3")
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let moved_to_replica = format!("-MOVED {} 127.0.0.1:{}\r\n", slot, replica_addr.port());
+    send_and_expect(
+        &mut observer_client,
+        &encode_resp_command(&[b"GET", &key]),
+        moved_to_replica.as_bytes(),
+    )
+    .await;
+
+    let expected_get = b"$4\r\nseed\r\n";
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"GET", &key]),
+        expected_get,
+    )
+    .await;
+
+    let _ = observer_manager_shutdown_tx.send(());
+    observer_manager.await.unwrap();
+
+    let _ = primary_shutdown_tx.send(());
+    let _ = observer_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    primary_server.await.unwrap();
+    observer_server.await.unwrap();
+    replica_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn publish_write_frame_advances_local_aof_frontiers_when_appendonly_enabled() {
+    let temp_dir = unique_test_temp_dir("live-aof-integration");
 
     let processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
-    processor.set_config_value(b"appendonly", b"yes".to_vec());
-    processor.set_config_value(b"appendfsync", b"always".to_vec());
-    processor.set_config_value(b"dir", temp_dir.to_string_lossy().into_owned().into_bytes());
-    processor.set_config_value(b"appendfilename", b"integration.aof".to_vec());
+    apply_test_startup_config_overrides(
+        processor.as_ref(),
+        aof_test_startup_overrides(&temp_dir, "integration.aof", "always"),
+    );
     let runtime = processor
         .ensure_live_aof_durability_runtime()
         .unwrap()
@@ -10598,45 +12838,616 @@ async fn publish_write_frame_advances_local_aof_frontiers_when_appendonly_enable
 }
 
 #[tokio::test]
+async fn config_set_appendonly_yes_persists_live_writes_for_debug_loadaof() {
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let temp_dir = configure_processor_aof_for_test(processor.as_ref(), "config-appendonly");
+    let (addr, shutdown_tx, server) =
+        start_test_server_with_processor(Arc::clone(&processor)).await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"appendfsync", b"always"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"appendonly", b"yes"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"cfg:aof", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"LOADAOF"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"cfg:aof"]),
+        b"$5\r\nvalue\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn startup_with_appendonly_replays_configured_aof_before_serving_traffic() {
+    let temp_dir = unique_test_temp_dir("startup-appendonly-replay");
+    let appendfilename = "startup-replay.aof";
+    let startup_overrides = aof_test_startup_overrides(&temp_dir, appendfilename, "always");
+
+    let first_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(first_processor.as_ref(), startup_overrides.clone());
+    let first_server = TestServerHandle::start_with_processor(Arc::clone(&first_processor)).await;
+    let mut first_client = first_server.connect().await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"boot:key:db0", b"value:db0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"boot:key:db1", b"value:db1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"1000"]),
+        b"*2\r\n:1\r\n:0\r\n",
+    )
+    .await;
+
+    first_server.shutdown().await;
+    first_processor.stop_live_aof_durability_runtime();
+    drop(first_processor);
+
+    let second_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(second_processor.as_ref(), startup_overrides.clone());
+    let second_server = TestServerHandle::start_with_processor(Arc::clone(&second_processor)).await;
+    let mut second_client = second_server.connect().await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"boot:key:db0"]),
+        b"$9\r\nvalue:db0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"boot:key:db1"]),
+        b"$9\r\nvalue:db1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"SET", b"boot:key:db1:next", b"value:next"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"1000"]),
+        b"*2\r\n:1\r\n:0\r\n",
+    )
+    .await;
+
+    second_server.shutdown().await;
+    second_processor.stop_live_aof_durability_runtime();
+    drop(second_processor);
+
+    let third_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(third_processor.as_ref(), startup_overrides);
+    let third_server = TestServerHandle::start_with_processor(Arc::clone(&third_processor)).await;
+    let mut third_client = third_server.connect().await;
+    send_and_expect(
+        &mut third_client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut third_client,
+        &encode_resp_command(&[b"GET", b"boot:key:db1:next"]),
+        b"$10\r\nvalue:next\r\n",
+    )
+    .await;
+
+    third_server.shutdown().await;
+    third_processor.stop_live_aof_durability_runtime();
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn startup_config_overrides_apply_aof_and_aclfile_before_serving_traffic() {
+    let temp_dir = unique_test_temp_dir("startup-config-overrides");
+    let aclfile_path = temp_dir.join("users.acl");
+    std::fs::write(
+        &aclfile_path,
+        concat!(
+            "user alice on allcommands allkeys &* >alice\n",
+            "user default on nopass ~* &* +@all\n",
+        ),
+    )
+    .unwrap();
+
+    let bind_addr =
+        std::net::SocketAddr::from(([127, 0, 0, 1], TestServerHandle::reserve_local_test_port()));
+    let config = ServerConfig {
+        bind_addr,
+        read_buffer_size: 1024,
+        startup_config_overrides: StartupConfigOverrides {
+            dir: Some(temp_dir.clone()),
+            appendonly: Some(true),
+            appendfsync: Some("always".to_string()),
+            appendfilename: Some("startup-overrides.aof".to_string()),
+            aclfile: Some(std::path::PathBuf::from("users.acl")),
+            ..Default::default()
+        },
+    };
+
+    let first_server = TestServerHandle::spawn_with_config(config.clone());
+    let mut first_client = first_server.connect().await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"AUTH", b"alice", b"alice"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$5\r\nalice\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"boot:override:key", b"boot:override:value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"1000"]),
+        b"*2\r\n:1\r\n:0\r\n",
+    )
+    .await;
+    assert!(temp_dir.join("startup-overrides.aof").is_file());
+
+    first_server.shutdown().await;
+
+    let second_server = TestServerHandle::spawn_with_config(config);
+    let mut second_client = second_server.connect().await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"AUTH", b"alice", b"alice"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"boot:override:key"]),
+        b"$19\r\nboot:override:value\r\n",
+    )
+    .await;
+
+    second_server.shutdown().await;
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn startup_with_dump_snapshot_replays_before_serving_traffic() {
+    let temp_dir = unique_test_temp_dir("startup-dump-snapshot");
+    let dbfilename = "startup-replay.rdb";
+    let startup_overrides = dump_snapshot_test_startup_overrides(&temp_dir, dbfilename);
+
+    let first_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(first_processor.as_ref(), startup_overrides.clone());
+    let first_server = TestServerHandle::start_with_processor(Arc::clone(&first_processor)).await;
+    let mut first_client = first_server.connect().await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"boot:rdb:db0", b"value:db0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"boot:rdb:db1", b"value:db1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SAVE"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    first_server.shutdown().await;
+    drop(first_processor);
+
+    let second_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(second_processor.as_ref(), startup_overrides);
+    let second_server = TestServerHandle::start_with_processor(Arc::clone(&second_processor)).await;
+    let mut second_client = second_server.connect().await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"boot:rdb:db0"]),
+        b"$9\r\nvalue:db0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"boot:rdb:db1"]),
+        b"$9\r\nvalue:db1\r\n",
+    )
+    .await;
+
+    second_server.shutdown().await;
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn startup_with_appendonly_enabled_and_missing_aof_falls_back_to_dump_snapshot() {
+    let temp_dir = unique_test_temp_dir("startup-dump-fallback");
+    let dbfilename = "startup-fallback.rdb";
+    let appendfilename = "startup-fallback.aof";
+    let aof_path = temp_dir.join("startup-fallback.aof");
+    let dump_startup_overrides = dump_snapshot_test_startup_overrides(&temp_dir, dbfilename);
+    let appendonly_startup_overrides =
+        aof_test_startup_overrides(&temp_dir, appendfilename, "always");
+
+    let first_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(first_processor.as_ref(), dump_startup_overrides.clone());
+    let first_server = TestServerHandle::start_with_processor(Arc::clone(&first_processor)).await;
+    let mut first_client = first_server.connect().await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"boot:fallback:key", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SAVE"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    first_server.shutdown().await;
+    drop(first_processor);
+
+    assert!(
+        !aof_path.exists(),
+        "appendonly file should not exist before appendonly boot fallback"
+    );
+
+    let second_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let mut second_startup_overrides = dump_startup_overrides;
+    second_startup_overrides.appendonly = appendonly_startup_overrides.appendonly;
+    second_startup_overrides.appendfsync = appendonly_startup_overrides.appendfsync.clone();
+    second_startup_overrides.appendfilename = appendonly_startup_overrides.appendfilename.clone();
+    apply_test_startup_config_overrides(second_processor.as_ref(), second_startup_overrides);
+    let second_server = TestServerHandle::start_with_processor(Arc::clone(&second_processor)).await;
+    let mut second_client = second_server.connect().await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"boot:fallback:key"]),
+        b"$5\r\nvalue\r\n",
+    )
+    .await;
+
+    second_server.shutdown().await;
+    second_processor.stop_live_aof_durability_runtime();
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn live_bgrewriteaof_compacts_history_and_preserves_post_rewrite_writes_on_restart() {
+    let temp_dir = unique_test_temp_dir("live-bgrewriteaof");
+    let appendfilename = "live-bgrewriteaof.aof";
+    let aof_path = temp_dir.join(appendfilename);
+    let startup_overrides = aof_test_startup_overrides(&temp_dir, appendfilename, "always");
+
+    let first_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(first_processor.as_ref(), startup_overrides.clone());
+    let first_server = TestServerHandle::start_with_processor(Arc::clone(&first_processor)).await;
+    let mut first_client = first_server.connect().await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"keep:key", b"keep-value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"gone:key", b"gone-value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"DEL", b"gone:key"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"keep:key:db1", b"db1-value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let bgrewriteaof_reply = send_and_read_resp_value(
+        &mut first_client,
+        &encode_resp_command(&[b"BGREWRITEAOF"]),
+        Duration::from_secs(20),
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&bgrewriteaof_reply),
+        b"Background append only file rewriting started"
+    );
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"SET", b"post:key", b"post-value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"1000"]),
+        b"*2\r\n:1\r\n:0\r\n",
+    )
+    .await;
+
+    first_server.shutdown().await;
+    first_processor.stop_live_aof_durability_runtime();
+    drop(first_processor);
+
+    let mut reader = tsavorite::AofReader::open(&aof_path).unwrap();
+    let operations = reader.replay_all_tolerant().unwrap();
+    assert!(
+        operations
+            .iter()
+            .any(|frame| frame.starts_with(b"*5\r\n$7\r\nRESTORE")),
+        "rewritten live AOF should contain RESTORE snapshot frames"
+    );
+    assert!(
+        operations.iter().any(|frame| frame
+            .windows(b"post:key".len())
+            .any(|window| window == b"post:key")),
+        "rewritten live AOF should keep post-rewrite live writes"
+    );
+    assert!(
+        !operations.iter().any(|frame| frame
+            .windows(b"gone:key".len())
+            .any(|window| window == b"gone:key")),
+        "rewritten live AOF should compact deleted keys out of the rewritten log"
+    );
+
+    let second_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(second_processor.as_ref(), startup_overrides);
+    let second_server = TestServerHandle::start_with_processor(Arc::clone(&second_processor)).await;
+    let mut second_client = second_server.connect().await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"keep:key"]),
+        b"$10\r\nkeep-value\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"post:key"]),
+        b"$10\r\npost-value\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"gone:key"]),
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"keep:key:db1"]),
+        b"$9\r\ndb1-value\r\n",
+    )
+    .await;
+
+    second_server.shutdown().await;
+    second_processor.stop_live_aof_durability_runtime();
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn startup_with_appendonly_replays_function_libraries_after_bgrewriteaof() {
+    let temp_dir = unique_test_temp_dir("startup-aof-functions");
+    let appendfilename = "startup-aof-functions.aof";
+    let aof_path = temp_dir.join(appendfilename);
+    let function_library = b"#!lua name=aoflib\nredis.register_function{function_name='setv', callback=function(keys, args) redis.call('set', keys[1], args[1]); return args[1] end}";
+    let startup_overrides = aof_test_startup_overrides(&temp_dir, appendfilename, "always");
+
+    let first_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(first_processor.as_ref(), startup_overrides.clone());
+    let first_server = TestServerHandle::start_with_processor(Arc::clone(&first_processor)).await;
+    let mut first_client = first_server.connect().await;
+    let loaded_library = send_and_read_resp_value(
+        &mut first_client,
+        &encode_resp_command(&[b"FUNCTION", b"LOAD", function_library]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_bulk(&loaded_library), b"aoflib");
+    let initial_value = send_and_read_resp_value(
+        &mut first_client,
+        &encode_resp_command(&[b"FCALL", b"setv", b"1", b"boot:function:key", b"boot-value"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_bulk(&initial_value), b"boot-value");
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"BGREWRITEAOF"]),
+        b"+Background append only file rewriting started\r\n",
+    )
+    .await;
+    let live_value = send_and_read_resp_value(
+        &mut first_client,
+        &encode_resp_command(&[
+            b"FCALL",
+            b"setv",
+            b"1",
+            b"boot:function:key:live",
+            b"live-value",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_bulk(&live_value), b"live-value");
+    send_and_expect(
+        &mut first_client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"1000"]),
+        b"*2\r\n:1\r\n:0\r\n",
+    )
+    .await;
+
+    first_server.shutdown().await;
+    first_processor.stop_live_aof_durability_runtime();
+    drop(first_processor);
+
+    let mut reader = tsavorite::AofReader::open(&aof_path).unwrap();
+    let operations = reader.replay_all_tolerant().unwrap();
+    assert!(
+        operations.iter().any(|frame| {
+            frame.starts_with(b"*3\r\n$8\r\nFUNCTION\r\n$4\r\nLOAD\r\n")
+                && frame
+                    .windows(function_library.len())
+                    .any(|window| window == function_library)
+        }),
+        "rewritten AOF should contain a FUNCTION LOAD snapshot frame"
+    );
+    assert!(
+        operations.iter().any(|frame| {
+            frame
+                .windows(b"boot:function:key:live".len())
+                .any(|window| window == b"boot:function:key:live")
+        }),
+        "rewritten AOF should keep live writes after the rewrite"
+    );
+
+    let second_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(second_processor.as_ref(), startup_overrides);
+    let second_server = TestServerHandle::start_with_processor(Arc::clone(&second_processor)).await;
+    let mut second_client = second_server.connect().await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"boot:function:key"]),
+        b"$10\r\nboot-value\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut second_client,
+        &encode_resp_command(&[b"GET", b"boot:function:key:live"]),
+        b"$10\r\nlive-value\r\n",
+    )
+    .await;
+    let restarted_value = send_and_read_resp_value(
+        &mut second_client,
+        &encode_resp_command(&[
+            b"FCALL",
+            b"setv",
+            b"1",
+            b"boot:function:key:restart",
+            b"restart-value",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_bulk(&restarted_value), b"restart-value");
+
+    second_server.shutdown().await;
+    second_processor.stop_live_aof_durability_runtime();
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
 async fn waitaof_local_times_out_before_everysec_fsync_like_external_wait_scenario() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let metrics = Arc::new(ServerMetrics::default());
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let temp_dir = std::env::temp_dir().join(format!(
-        "garnet-waitaof-everysec-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&temp_dir).unwrap();
+    let temp_dir = unique_test_temp_dir("waitaof-everysec");
 
     let processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
-    processor.set_config_value(b"appendonly", b"yes".to_vec());
-    processor.set_config_value(b"appendfsync", b"everysec".to_vec());
-    processor.set_config_value(b"dir", temp_dir.to_string_lossy().into_owned().into_bytes());
-    processor.set_config_value(b"appendfilename", b"waitaof-everysec.aof".to_vec());
-    let server_processor = Arc::clone(&processor);
-
-    let server_metrics = Arc::clone(&metrics);
-    let server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            listener,
-            1024,
-            server_metrics,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-            None,
-            server_processor,
-        )
-        .await
-        .unwrap();
-    });
-
-    let mut client = TcpStream::connect(addr).await.unwrap();
+    apply_test_startup_config_overrides(
+        processor.as_ref(),
+        aof_test_startup_overrides(&temp_dir, "waitaof-everysec.aof", "everysec"),
+    );
+    let server = TestServerHandle::start_with_processor(Arc::clone(&processor)).await;
+    let mut client = server.connect().await;
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"SET", b"waitaof:everysec", b"value"]),
@@ -10652,51 +13463,23 @@ async fn waitaof_local_times_out_before_everysec_fsync_like_external_wait_scenar
     .await;
     assert_eq!(resp_socket_integer_array(&reply), vec![0, 0]);
 
-    let _ = shutdown_tx.send(());
-    server.await.unwrap();
+    server.shutdown().await;
     let _ = std::fs::remove_file(temp_dir.join("waitaof-everysec.aof"));
     let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[tokio::test]
 async fn waitaof_local_succeeds_after_always_fsync_write_like_external_wait_scenario() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let metrics = Arc::new(ServerMetrics::default());
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let temp_dir = std::env::temp_dir().join(format!(
-        "garnet-waitaof-always-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&temp_dir).unwrap();
+    let temp_dir = unique_test_temp_dir("waitaof-always");
 
     let processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
-    processor.set_config_value(b"appendonly", b"yes".to_vec());
-    processor.set_config_value(b"appendfsync", b"always".to_vec());
-    processor.set_config_value(b"dir", temp_dir.to_string_lossy().into_owned().into_bytes());
-    processor.set_config_value(b"appendfilename", b"waitaof-always.aof".to_vec());
-
-    let server_metrics = Arc::clone(&metrics);
-    let server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            listener,
-            1024,
-            server_metrics,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-            None,
-            processor,
-        )
-        .await
-        .unwrap();
-    });
-
-    let mut client = TcpStream::connect(addr).await.unwrap();
+    apply_test_startup_config_overrides(
+        processor.as_ref(),
+        aof_test_startup_overrides(&temp_dir, "waitaof-always.aof", "always"),
+    );
+    let server = TestServerHandle::start_with_processor(Arc::clone(&processor)).await;
+    let mut client = server.connect().await;
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"SET", b"waitaof:always", b"value"]),
@@ -10712,97 +13495,89 @@ async fn waitaof_local_succeeds_after_always_fsync_write_like_external_wait_scen
     .await;
     assert_eq!(resp_socket_integer_array(&reply), vec![1, 0]);
 
-    let _ = shutdown_tx.send(());
-    server.await.unwrap();
+    server.shutdown().await;
     let _ = std::fs::remove_file(temp_dir.join("waitaof-always.aof"));
     let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[tokio::test]
+async fn config_set_appendfsync_reconfigures_live_aof_runtime_and_updates_waitaof_like_external_wait_scenario()
+ {
+    let temp_dir = unique_test_temp_dir("waitaof-reconfig");
+
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    apply_test_startup_config_overrides(
+        processor.as_ref(),
+        aof_test_startup_overrides(&temp_dir, "waitaof-reconfig.aof", "everysec"),
+    );
+    let server = TestServerHandle::start_with_processor(Arc::clone(&processor)).await;
+    let mut client = server.connect().await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"waitaof:reconfig:before", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let before_reconfigure = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"50"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&before_reconfigure), vec![0, 0]);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"appendfsync", b"always"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"waitaof:reconfig:after", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let after_reconfigure = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&after_reconfigure), vec![1, 0]);
+
+    server.shutdown().await;
+    let _ = std::fs::remove_file(temp_dir.join("waitaof-reconfig.aof"));
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
 async fn waitaof_replica_copy_before_fsync_like_external_wait_scenario() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
-
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
-
-    let master_temp_dir = std::env::temp_dir().join(format!(
-        "garnet-waitaof-master-before-fsync-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let replica_temp_dir = std::env::temp_dir().join(format!(
-        "garnet-waitaof-replica-before-fsync-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&master_temp_dir).unwrap();
-    std::fs::create_dir_all(&replica_temp_dir).unwrap();
+    let master_temp_dir = unique_test_temp_dir("waitaof-master-before-fsync");
+    let replica_temp_dir = unique_test_temp_dir("waitaof-replica-before-fsync");
 
     let master_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
-    master_processor.set_config_value(b"appendonly", b"yes".to_vec());
-    master_processor.set_config_value(b"appendfsync", b"always".to_vec());
-    master_processor.set_config_value(
-        b"dir",
-        master_temp_dir.to_string_lossy().into_owned().into_bytes(),
+    apply_test_startup_config_overrides(
+        master_processor.as_ref(),
+        aof_test_startup_overrides(&master_temp_dir, "master-waitaof.aof", "always"),
     );
-    master_processor.set_config_value(b"appendfilename", b"master-waitaof.aof".to_vec());
 
     let replica_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
-    replica_processor.set_config_value(b"appendonly", b"yes".to_vec());
-    replica_processor.set_config_value(b"appendfsync", b"everysec".to_vec());
-    replica_processor.set_config_value(
-        b"dir",
-        replica_temp_dir.to_string_lossy().into_owned().into_bytes(),
+    apply_test_startup_config_overrides(
+        replica_processor.as_ref(),
+        aof_test_startup_overrides(&replica_temp_dir, "replica-waitaof.aof", "everysec"),
     );
-    replica_processor.set_config_value(b"appendfilename", b"replica-waitaof.aof".to_vec());
+    let master_server = TestServerHandle::start_with_processor(master_processor).await;
+    let replica_server = TestServerHandle::start_with_processor(replica_processor).await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            master_listener,
-            1024,
-            master_metrics_task,
-            async move {
-                let _ = master_shutdown_rx.await;
-            },
-            None,
-            master_processor,
-        )
-        .await
-        .unwrap();
-    });
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            replica_listener,
-            1024,
-            replica_metrics_task,
-            async move {
-                let _ = replica_shutdown_rx.await;
-            },
-            None,
-            replica_processor,
-        )
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     send_and_expect(
         &mut replica_client,
         &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
@@ -10843,10 +13618,8 @@ async fn waitaof_replica_copy_before_fsync_like_external_wait_scenario() {
     .await;
     assert_eq!(resp_socket_integer_array(&reply), vec![1, 0]);
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
     let _ = std::fs::remove_file(master_temp_dir.join("master-waitaof.aof"));
     let _ = std::fs::remove_file(replica_temp_dir.join("replica-waitaof.aof"));
     let _ = std::fs::remove_dir_all(master_temp_dir);
@@ -10855,74 +13628,24 @@ async fn waitaof_replica_copy_before_fsync_like_external_wait_scenario() {
 
 #[tokio::test]
 async fn waitaof_master_isnt_configured_to_do_aof_like_external_wait_scenario() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
-
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
-
-    let replica_temp_dir = std::env::temp_dir().join(format!(
-        "garnet-waitaof-replica-master-aof-off-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&replica_temp_dir).unwrap();
+    let replica_temp_dir = unique_test_temp_dir("waitaof-replica-master-aof-off");
 
     let master_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
 
     let replica_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
-    replica_processor.set_config_value(b"appendonly", b"yes".to_vec());
-    replica_processor.set_config_value(b"appendfsync", b"always".to_vec());
-    replica_processor.set_config_value(
-        b"dir",
-        replica_temp_dir.to_string_lossy().into_owned().into_bytes(),
+    apply_test_startup_config_overrides(
+        replica_processor.as_ref(),
+        aof_test_startup_overrides(&replica_temp_dir, "replica-master-aof-off.aof", "always"),
     );
-    replica_processor.set_config_value(b"appendfilename", b"replica-master-aof-off.aof".to_vec());
+    let master_server = TestServerHandle::start_with_processor(master_processor).await;
+    let replica_server = TestServerHandle::start_with_processor(replica_processor).await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            master_listener,
-            1024,
-            master_metrics_task,
-            async move {
-                let _ = master_shutdown_rx.await;
-            },
-            None,
-            master_processor,
-        )
-        .await
-        .unwrap();
-    });
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            replica_listener,
-            1024,
-            replica_metrics_task,
-            async move {
-                let _ = replica_shutdown_rx.await;
-            },
-            None,
-            replica_processor,
-        )
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     send_and_expect(
         &mut replica_client,
         &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
@@ -10963,31 +13686,17 @@ async fn waitaof_master_isnt_configured_to_do_aof_like_external_wait_scenario() 
     .await;
     assert_eq!(resp_socket_integer_array(&reply), vec![0, 1]);
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
     let _ = std::fs::remove_file(replica_temp_dir.join("replica-master-aof-off.aof"));
     let _ = std::fs::remove_dir_all(replica_temp_dir);
 }
 
 #[tokio::test]
 async fn wait_times_out_without_downstream_replicas() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let metrics = Arc::new(ServerMetrics::default());
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-
-    let server_metrics = Arc::clone(&metrics);
-    let server = tokio::spawn(async move {
-        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
-            let _ = shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let mut client = TcpStream::connect(addr).await.unwrap();
+    let processor = Arc::new(RequestProcessor::new().unwrap());
+    let server = TestServerHandle::start_with_processor(processor).await;
+    let mut client = server.connect().await;
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"SET", b"wait:no-replica", b"v"]),
@@ -11002,44 +13711,20 @@ async fn wait_times_out_without_downstream_replicas() {
         "expected WAIT timeout without replicas to return 0"
     );
 
-    let _ = shutdown_tx.send(());
-    server.await.unwrap();
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn wait_after_exec_uses_connection_replication_offset() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
+    let master_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
+    let replica_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
 
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
-            let _ = master_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
-            let _ = replica_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
     send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
     let _ = wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
@@ -11074,55 +13759,22 @@ async fn wait_after_exec_uses_connection_replication_offset() {
         "expected WAIT after EXEC to observe replicated transaction write, got {acknowledged}"
     );
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
 }
 
 #[tokio::test]
 async fn wait_in_script_reports_acknowledged_replica_count() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
-
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
     let master_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let master_server = TestServerHandle::start_with_processor(master_processor).await;
+    let replica_server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            master_listener,
-            1024,
-            master_metrics_task,
-            async move {
-                let _ = master_shutdown_rx.await;
-            },
-            None,
-            master_processor,
-        )
-        .await
-        .unwrap();
-    });
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
-            let _ = replica_shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
     send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
     let _ = wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
@@ -11160,39 +13812,17 @@ async fn wait_in_script_reports_acknowledged_replica_count() {
         "expected WAIT in script to report the acknowledged replica count"
     );
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
 }
 
 #[tokio::test]
 async fn scripting_min_replicas_gate_matches_external_scenario() {
     let _serial = lock_scripting_test_serial().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let metrics = Arc::new(ServerMetrics::default());
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
-
-    let server_metrics = Arc::clone(&metrics);
-    let server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            listener,
-            1024,
-            server_metrics,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-            None,
-            processor,
-        )
-        .await
-        .unwrap()
-    });
-
-    let mut client = TcpStream::connect(addr).await.unwrap();
+    let server = TestServerHandle::start_with_processor(processor).await;
+    let mut client = server.connect().await;
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"SET", b"x", b"some value"]),
@@ -11243,63 +13873,22 @@ async fn scripting_min_replicas_gate_matches_external_scenario() {
     )
     .await;
 
-    let _ = shutdown_tx.send(());
-    server.await.unwrap();
+    server.shutdown().await;
 }
 
 #[tokio::test]
 async fn replicaof_replication_rewrites_evalsha_after_replica_cache_flush() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
-
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
-
     let master_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
     let replica_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let master_server = TestServerHandle::start_with_processor(master_processor).await;
+    let replica_server = TestServerHandle::start_with_processor(replica_processor).await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            master_listener,
-            1024,
-            master_metrics_task,
-            async move {
-                let _ = master_shutdown_rx.await;
-            },
-            None,
-            master_processor,
-        )
-        .await
-        .unwrap();
-    });
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            replica_listener,
-            1024,
-            replica_metrics_task,
-            async move {
-                let _ = replica_shutdown_rx.await;
-            },
-            None,
-            replica_processor,
-        )
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
     send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
 
@@ -11383,65 +13972,23 @@ async fn replicaof_replication_rewrites_evalsha_after_replica_cache_flush() {
         "replica did not receive second evalsha write"
     );
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
 }
 
 #[tokio::test]
 async fn replicaof_replication_propagates_function_load_and_fcall() {
-    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let master_addr = master_listener.local_addr().unwrap();
-    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let replica_addr = replica_listener.local_addr().unwrap();
-
-    let master_metrics = Arc::new(ServerMetrics::default());
-    let replica_metrics = Arc::new(ServerMetrics::default());
-    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
-    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
-
     let master_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
     let replica_processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let master_server = TestServerHandle::start_with_processor(master_processor).await;
+    let replica_server = TestServerHandle::start_with_processor(replica_processor).await;
 
-    let master_metrics_task = Arc::clone(&master_metrics);
-    let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            master_listener,
-            1024,
-            master_metrics_task,
-            async move {
-                let _ = master_shutdown_rx.await;
-            },
-            None,
-            master_processor,
-        )
-        .await
-        .unwrap();
-    });
+    let mut master_client = master_server.connect().await;
+    let mut replica_client = replica_server.connect().await;
 
-    let replica_metrics_task = Arc::clone(&replica_metrics);
-    let replica_server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            replica_listener,
-            1024,
-            replica_metrics_task,
-            async move {
-                let _ = replica_shutdown_rx.await;
-            },
-            None,
-            replica_processor,
-        )
-        .await
-        .unwrap();
-    });
-
-    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
-    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
-
-    let master_port = master_addr.port().to_string();
+    let master_port = master_server.addr.port().to_string();
     let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
     send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
     send_and_expect(
@@ -11516,10 +14063,8 @@ async fn replicaof_replication_propagates_function_load_and_fcall() {
         "replica did not receive function library and fcall updates"
     );
 
-    let _ = master_shutdown_tx.send(());
-    let _ = replica_shutdown_tx.send(());
-    master_server.await.unwrap();
-    replica_server.await.unwrap();
+    master_server.shutdown().await;
+    replica_server.shutdown().await;
 }
 
 #[tokio::test]
@@ -15613,6 +18158,7 @@ async fn run_with_cluster_control_plane_binds_and_serves_requests() {
         ServerConfig {
             bind_addr: addr1,
             read_buffer_size: 1024,
+            startup_config_overrides: Default::default(),
         },
         metrics,
         Arc::clone(&store1),
@@ -15678,6 +18224,7 @@ async fn run_with_cluster_control_plane_propagates_bind_errors() {
         ServerConfig {
             bind_addr: addr,
             read_buffer_size: 1024,
+            startup_config_overrides: Default::default(),
         },
         Arc::new(ServerMetrics::default()),
         source_store,
@@ -18564,6 +21111,125 @@ async fn sync_client_appears_in_info_replication_and_client_kill_type_slave_disc
 }
 
 #[tokio::test]
+async fn min_replicas_to_write_tracks_live_replica_clients_after_client_kill_type_slave() {
+    let (addr, shutdown_tx, server) = start_test_server_with_scripting_enabled().await;
+    wait_for_server_ping(addr).await;
+
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"SET", b"x", b"some value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _ = read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let _ = wait_for_replica_info_line(&mut admin, 1, Duration::from_secs(5)).await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"min-replicas-to-write", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let killed = send_and_read_integer(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"KILL", b"TYPE", b"SLAVE"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(killed, 1);
+
+    let mut eof_probe = [0u8; 1];
+    let read_result =
+        tokio::time::timeout(Duration::from_secs(5), replica_stream.read(&mut eof_probe)).await;
+    match read_result {
+        Ok(Ok(0)) => {}
+        Ok(Err(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+            ) => {}
+        other => {
+            panic!("replica stream did not disconnect after CLIENT KILL TYPE SLAVE: {other:?}")
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let payload = send_and_read_bulk_payload(
+            &mut admin,
+            &encode_resp_command(&[b"INFO", b"REPLICATION"]),
+            Duration::from_secs(1),
+        )
+        .await;
+        if read_info_u64(&payload, "connected_slaves") == Some(0) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for connected_slaves=0; last payload: {}",
+            String::from_utf8_lossy(&payload)
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"#!lua flags=no-writes\nreturn redis.call('get','x')",
+            b"1",
+            b"x",
+        ]),
+        b"$10\r\nsome value\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('get','x')", b"1", b"x"]),
+        b"$10\r\nsome value\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"EVAL", b"#!lua\nreturn redis.call('get','x')", b"1", b"x"]),
+        b"-NOREPLICAS Not enough good replicas to write.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('set','x',1)", b"1", b"x"]),
+        b"-NOREPLICAS Not enough good replicas to write.\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"min-replicas-to-write", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn redis_cli_replica_mode_matches_external_scenario_when_repo_cli_is_available() {
     let Some(redis_cli) = runnable_repo_redis_cli() else {
         return;
@@ -18737,6 +21403,203 @@ async fn config_get_dir_returns_absolute_path_for_external_redis_cli_rdb_dump_sc
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn sync_without_rdb_only_returns_redis_rdb_payload_for_real_replicas() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let snapshot_payload =
+        read_sync_snapshot_payload_with_timeout(&mut replica_stream, Duration::from_secs(5)).await;
+    assert!(
+        snapshot_payload.starts_with(b"REDIS0011"),
+        "expected Redis RDB header for non-rdb-only sync, got: {:?}",
+        &snapshot_payload[..snapshot_payload.len().min(16)]
+    );
+    assert!(
+        !snapshot_payload.starts_with(b"GRSNAP"),
+        "non-rdb-only sync must not return Garnet debug snapshot payload"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_snapshot_includes_preexisting_string_dataset_for_real_replicas() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"seed:key", b"seed:value"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let snapshot_payload =
+        read_sync_snapshot_payload_with_timeout(&mut replica_stream, Duration::from_secs(5)).await;
+
+    assert!(
+        snapshot_payload.starts_with(b"REDIS0011"),
+        "expected Redis RDB header for non-rdb-only sync, got: {:?}",
+        &snapshot_payload[..snapshot_payload.len().min(16)]
+    );
+    assert!(
+        snapshot_payload
+            .windows(b"seed:key".len())
+            .any(|window| window == b"seed:key"),
+        "preexisting string key must be present in full-sync RDB payload"
+    );
+    assert!(
+        snapshot_payload
+            .windows(b"seed:value".len())
+            .any(|window| window == b"seed:value"),
+        "preexisting string value must be present in full-sync RDB payload"
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"seed:key"]),
+        b"$10\r\nseed:value\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_snapshot_rdb_payload_passes_redis_check_rdb_when_available() {
+    let probe = Command::new("sh")
+        .args(["-c", "command -v redis-check-rdb"])
+        .output()
+        .unwrap();
+    if !probe.status.success() {
+        return;
+    }
+    let redis_check_rdb = String::from_utf8_lossy(&probe.stdout).trim().to_owned();
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"seed:key", b"seed:value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"HSET",
+            b"seed:hash",
+            b"field1",
+            b"value1",
+            b"field2",
+            b"value2",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    let future_millis = current_unix_time_millis_for_test() + 60_000;
+    let future_millis_text = future_millis.to_string();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"HPEXPIREAT",
+            b"seed:hash",
+            future_millis_text.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"field1",
+        ]),
+        b"*1\r\n:1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"seed:set", b"alpha", b"beta"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZADD", b"seed:zset", b"1", b"one", b"2", b"two"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"RPUSH", b"seed:list", b"alpha", b"beta"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"seed:stream", b"1-0", b"f", b"v1"]),
+        b"$3\r\n1-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"seed:stream", b"2-0", b"f", b"v2"]),
+        b"$3\r\n2-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"seed:stream", b"group1", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"group1",
+            b"consumer1",
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            b"seed:stream",
+            b">",
+        ]),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let snapshot_payload =
+        read_sync_snapshot_payload_with_timeout(&mut replica_stream, Duration::from_secs(5)).await;
+
+    let temp_dir = unique_test_temp_dir("sync-snapshot-rdb-check");
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let snapshot_path = temp_dir.join("dump.rdb");
+    std::fs::write(&snapshot_path, snapshot_payload).unwrap();
+
+    let output = Command::new(redis_check_rdb)
+        .arg(&snapshot_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "redis-check-rdb rejected generated full-sync snapshot\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
 async fn run_sync_rdb_dump_and_debug_reload_scenario(
     populate_count: u64,
     value_size: usize,
@@ -18846,6 +21709,12 @@ async fn run_sync_rdb_dump_and_debug_reload_scenario(
         b"lib1"
     );
 
+    send_and_expect(
+        &mut sync_client,
+        &encode_resp_command(&[b"REPLCONF", b"rdb-only", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
     sync_client.write_all(b"SYNC\r\n").await.unwrap();
     let snapshot_payload = read_sync_snapshot_payload_with_timeout(&mut sync_client, timeout).await;
     std::fs::write(&cli_dump_path, &snapshot_payload).unwrap();
@@ -19080,6 +21949,12 @@ async fn run_sync_functions_rdb_dump_and_debug_reload_scenario(
 
     send_and_expect(
         &mut sync_client,
+        &encode_resp_command(&[b"REPLCONF", b"rdb-only", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut sync_client,
         &encode_resp_command(&[b"REPLCONF", b"rdb-filter-only", b"functions"]),
         b"+OK\r\n",
     )
@@ -19182,6 +22057,1957 @@ async fn sync_functions_rdb_dump_and_debug_reload_match_external_redis_cli_scena
 async fn sync_functions_rdb_dump_and_debug_reload_match_external_redis_cli_scenario_in_nonzero_db()
 {
     run_sync_functions_rdb_dump_and_debug_reload_scenario(100_000, 1_000, 9).await;
+}
+
+#[tokio::test]
+#[ignore = "exact external Redis replica interop scenario; run targeted"]
+async fn garnet_primary_to_docker_redis_replica_reaches_link_up_and_replicates_post_sync_writes() {
+    if !docker_available() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let container_name = format!("garnet-repl-redis-{}", redis_port);
+    let _container = DockerContainerGuard::new(container_name.clone());
+
+    let run_output = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name.as_str(),
+            "-p",
+            &format!("{redis_port}:6379"),
+            "--add-host=host.docker.internal:host-gateway",
+            "redis:7.2-alpine",
+            "redis-server",
+            "--port",
+            "6379",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "failed to start docker redis replica\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", redis_port)).await {
+            Ok(mut redis_admin) => {
+                redis_admin
+                    .write_all(&encode_resp_command(&[b"PING"]))
+                    .await
+                    .unwrap();
+                let reply =
+                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+                if reply == b"+PONG" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for docker redis replica to accept PING on port {redis_port}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    let garnet_port = addr.port().to_string();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"REPLICAOF",
+            b"host.docker.internal",
+            garnet_port.as_bytes(),
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let info = send_and_read_bulk_payload(
+            &mut redis_admin,
+            &encode_resp_command(&[b"INFO", b"REPLICATION"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        let info_text = String::from_utf8_lossy(&info);
+        if info_text.contains("master_link_status:up\r\n") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not reach master_link_status=up\n{info_text}"
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let mut garnet_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"SET", b"repl:probe", b"from-garnet"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"GET", b"repl:probe"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"from-garnet") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not receive post-sync write; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external Redis replica interop scenario; run targeted"]
+async fn garnet_primary_to_docker_redis_replica_receives_preexisting_string_dataset_on_full_sync() {
+    if !docker_available() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut garnet_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"SET", b"seed:key", b"seed:value"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let container_name = format!("garnet-repl-redis-seed-{}", redis_port);
+    let _container = DockerContainerGuard::new(container_name.clone());
+
+    let run_output = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name.as_str(),
+            "-p",
+            &format!("{redis_port}:6379"),
+            "--add-host=host.docker.internal:host-gateway",
+            "redis:7.2-alpine",
+            "redis-server",
+            "--port",
+            "6379",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "failed to start docker redis replica\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", redis_port)).await {
+            Ok(mut redis_admin) => {
+                redis_admin
+                    .write_all(&encode_resp_command(&[b"PING"]))
+                    .await
+                    .unwrap();
+                let reply =
+                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+                if reply == b"+PONG" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for docker redis replica to accept PING on port {redis_port}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    let garnet_port = addr.port().to_string();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"REPLICAOF",
+            b"host.docker.internal",
+            garnet_port.as_bytes(),
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let info = send_and_read_bulk_payload(
+            &mut redis_admin,
+            &encode_resp_command(&[b"INFO", b"REPLICATION"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        let info_text = String::from_utf8_lossy(&info);
+        if info_text.contains("master_link_status:up\r\n") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not reach master_link_status=up\n{info_text}"
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"GET", b"seed:key"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"seed:value") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not receive preexisting seed dataset; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"SET", b"repl:probe", b"from-garnet"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"GET", b"repl:probe"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"from-garnet") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not receive post-sync write after seeded full sync; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external Redis replica interop scenario; run targeted"]
+async fn garnet_primary_to_docker_redis_replica_receives_preexisting_object_dataset_on_full_sync() {
+    if !docker_available() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+    let large_list_value = vec![b'x'; 9000];
+
+    let mut garnet_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[
+            b"HSET",
+            b"seed:hash",
+            b"field1",
+            b"value1",
+            b"field2",
+            b"value2",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"PEXPIRE", b"seed:hash", b"60000"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"SADD", b"seed:set", b"alpha", b"beta", b"gamma"]),
+        b":3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"ZADD", b"seed:zset", b"1", b"one", b"2", b"two"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[
+            b"RPUSH",
+            b"seed:list",
+            b"alpha",
+            large_list_value.as_slice(),
+            b"omega",
+        ]),
+        b":3\r\n",
+    )
+    .await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let container_name = format!("garnet-repl-redis-objects-{}", redis_port);
+    let _container = DockerContainerGuard::new(container_name.clone());
+
+    let run_output = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name.as_str(),
+            "-p",
+            &format!("{redis_port}:6379"),
+            "--add-host=host.docker.internal:host-gateway",
+            "redis:7.2-alpine",
+            "redis-server",
+            "--port",
+            "6379",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "failed to start docker redis replica\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", redis_port)).await {
+            Ok(mut redis_admin) => {
+                redis_admin
+                    .write_all(&encode_resp_command(&[b"PING"]))
+                    .await
+                    .unwrap();
+                let reply =
+                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+                if reply == b"+PONG" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for docker redis replica to accept PING on port {redis_port}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    let garnet_port = addr.port().to_string();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"REPLICAOF",
+            b"host.docker.internal",
+            garnet_port.as_bytes(),
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let info = send_and_read_bulk_payload(
+            &mut redis_admin,
+            &encode_resp_command(&[b"INFO", b"REPLICATION"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        let info_text = String::from_utf8_lossy(&info);
+        if info_text.contains("master_link_status:up\r\n") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not reach master_link_status=up\n{info_text}"
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let hash_value = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"HGET", b"seed:hash", b"field1"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&hash_value, RespSocketValue::Bulk(bytes) if bytes == b"value1") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not receive seeded hash dataset; last response: {hash_value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        send_and_read_integer(
+            &mut redis_admin,
+            &encode_resp_command(&[b"SISMEMBER", b"seed:set", b"alpha"]),
+            Duration::from_secs(2),
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        send_and_read_integer(
+            &mut redis_admin,
+            &encode_resp_command(&[b"SISMEMBER", b"seed:set", b"gamma"]),
+            Duration::from_secs(2),
+        )
+        .await,
+        1
+    );
+    let zrange = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[b"ZRANGE", b"seed:zset", b"0", b"-1", b"WITHSCORES"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let zrange_items = resp_socket_array(&zrange);
+    assert_eq!(resp_socket_bulk(&zrange_items[0]), b"one");
+    assert_eq!(resp_socket_bulk(&zrange_items[1]), b"1");
+    assert_eq!(resp_socket_bulk(&zrange_items[2]), b"two");
+    assert_eq!(resp_socket_bulk(&zrange_items[3]), b"2");
+    assert_eq!(
+        send_and_read_integer(
+            &mut redis_admin,
+            &encode_resp_command(&[b"LLEN", b"seed:list"]),
+            Duration::from_secs(2),
+        )
+        .await,
+        3
+    );
+    let list_head = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[b"LINDEX", b"seed:list", b"0"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(matches!(&list_head, RespSocketValue::Bulk(bytes) if bytes == b"alpha"));
+    let list_middle = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[b"LINDEX", b"seed:list", b"1"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(matches!(
+        &list_middle,
+        RespSocketValue::Bulk(bytes) if bytes == large_list_value.as_slice()
+    ));
+    let list_tail = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[b"LINDEX", b"seed:list", b"2"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(matches!(&list_tail, RespSocketValue::Bulk(bytes) if bytes == b"omega"));
+    let hash_ttl = send_and_read_integer(
+        &mut redis_admin,
+        &encode_resp_command(&[b"PTTL", b"seed:hash"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(hash_ttl > 0, "expected positive PTTL for replicated hash");
+
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"HSET", b"repl:hash", b"field", b"from-garnet"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"HGET", b"repl:hash", b"field"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"from-garnet") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not receive post-sync object write; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external Redis primary interop scenario; run targeted"]
+async fn garnet_primary_to_docker_redis_replica_receives_preexisting_stream_dataset_on_full_sync() {
+    if !docker_available() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut garnet_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"XADD", b"seed:stream", b"1-0", b"f", b"v1"]),
+        b"$3\r\n1-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"XADD", b"seed:stream", b"2-0", b"f", b"v2"]),
+        b"$3\r\n2-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"XADD", b"seed:stream", b"3-0", b"f", b"v3"]),
+        b"$3\r\n3-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"PEXPIRE", b"seed:stream", b"60000"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"seed:stream", b"group1", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = send_and_read_resp_value(
+        &mut garnet_client,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"group1",
+            b"consumer1",
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            b"seed:stream",
+            b">",
+        ]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let _ = send_and_read_resp_value(
+        &mut garnet_client,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"group1",
+            b"consumer2",
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            b"seed:stream",
+            b">",
+        ]),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let container_name = format!("garnet-repl-redis-streams-{}", redis_port);
+    let _container = DockerContainerGuard::new(container_name.clone());
+
+    let run_output = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name.as_str(),
+            "-p",
+            &format!("{redis_port}:6379"),
+            "--add-host=host.docker.internal:host-gateway",
+            "redis:7.2-alpine",
+            "redis-server",
+            "--port",
+            "6379",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "failed to start docker redis replica\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", redis_port)).await {
+            Ok(mut redis_admin) => {
+                redis_admin
+                    .write_all(&encode_resp_command(&[b"PING"]))
+                    .await
+                    .unwrap();
+                let reply =
+                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+                if reply == b"+PONG" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for docker redis replica to accept PING on port {redis_port}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    let garnet_port = addr.port().to_string();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"REPLICAOF",
+            b"host.docker.internal",
+            garnet_port.as_bytes(),
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let info = send_and_read_bulk_payload(
+            &mut redis_admin,
+            &encode_resp_command(&[b"INFO", b"REPLICATION"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        let info_text = String::from_utf8_lossy(&info);
+        if info_text.contains("master_link_status:up\r\n") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not reach master_link_status=up\n{info_text}"
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let xlen = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"XLEN", b"seed:stream"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&xlen, RespSocketValue::Integer(3)) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not receive seeded stream dataset; last response: {xlen:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let groups = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[b"XINFO", b"GROUPS", b"seed:stream"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let groups_array = resp_socket_array(&groups);
+    assert_eq!(groups_array.len(), 1);
+    let group = resp_socket_map_or_flat_map(&groups_array[0]);
+    assert_eq!(resp_socket_bulk(group[&b"name".to_vec()]), b"group1");
+    assert_eq!(
+        resp_socket_bulk(group[&b"last-delivered-id".to_vec()]),
+        b"2-0"
+    );
+    assert_eq!(
+        resp_socket_integer_or_bulk(group[&b"consumers".to_vec()]),
+        2
+    );
+    assert_eq!(resp_socket_integer_or_bulk(group[&b"pending".to_vec()]), 2);
+
+    let pending = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[b"XPENDING", b"seed:stream", b"group1"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let pending_items = resp_socket_array(&pending);
+    assert_eq!(resp_socket_integer_or_bulk(&pending_items[0]), 2);
+    assert_eq!(resp_socket_bulk(&pending_items[1]), b"1-0");
+    assert_eq!(resp_socket_bulk(&pending_items[2]), b"2-0");
+    let pending_consumers = resp_socket_array(&pending_items[3]);
+    assert_eq!(pending_consumers.len(), 2);
+    let consumer_one = resp_socket_array(&pending_consumers[0]);
+    assert_eq!(resp_socket_bulk(&consumer_one[0]), b"consumer1");
+    assert_eq!(resp_socket_integer_or_bulk(&consumer_one[1]), 1);
+    let consumer_two = resp_socket_array(&pending_consumers[1]);
+    assert_eq!(resp_socket_bulk(&consumer_two[0]), b"consumer2");
+    assert_eq!(resp_socket_integer_or_bulk(&consumer_two[1]), 1);
+
+    let stream_ttl = send_and_read_integer(
+        &mut redis_admin,
+        &encode_resp_command(&[b"PTTL", b"seed:stream"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(
+        stream_ttl > 0,
+        "expected positive PTTL for replicated stream"
+    );
+
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"XADD", b"repl:stream", b"10-0", b"f", b"from-garnet"]),
+        b"$4\r\n10-0\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let replayed = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"XRANGE", b"repl:stream", b"-", b"+"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if let RespSocketValue::Array(entries) = &replayed
+            && entries.len() == 1
+            && resp_socket_bulk(&resp_socket_array(&entries[0])[0]) == b"10-0"
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "docker redis replica did not receive post-sync stream write; last response: {replayed:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external Redis primary interop scenario; run targeted"]
+async fn redis_primary_to_garnet_replica_receives_preexisting_string_dataset_on_full_sync() {
+    if !docker_available() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let container_name = format!("redis-primary-garnet-repl-{}", redis_port);
+    let _container = DockerContainerGuard::new(container_name.clone());
+
+    let run_output = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name.as_str(),
+            "-p",
+            &format!("{redis_port}:6379"),
+            "redis:7.2-alpine",
+            "redis-server",
+            "--port",
+            "6379",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "failed to start docker redis primary\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", redis_port)).await {
+            Ok(mut redis_admin) => {
+                redis_admin
+                    .write_all(&encode_resp_command(&[b"PING"]))
+                    .await
+                    .unwrap();
+                let reply =
+                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+                if reply == b"+PONG" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for docker redis primary to accept PING on port {redis_port}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"SET", b"seed:key", b"seed:value"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut garnet_admin = TcpStream::connect(addr).await.unwrap();
+    let redis_port_text = redis_port.to_string();
+    send_and_expect(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", redis_port_text.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"GET", b"seed:key"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"seed:value") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive preexisting seed dataset; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"SET", b"repl:probe", b"from-redis"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"GET", b"repl:probe"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"from-redis") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive post-sync write after seeded full sync; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external Redis primary interop scenario; run targeted"]
+async fn redis_primary_to_garnet_replica_receives_preexisting_object_dataset_on_full_sync() {
+    if !docker_available() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+    let large_list_value = vec![b'x'; 9000];
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let container_name = format!("redis-primary-garnet-objects-{}", redis_port);
+    let _container = DockerContainerGuard::new(container_name.clone());
+
+    let run_output = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name.as_str(),
+            "-p",
+            &format!("{redis_port}:6379"),
+            "redis:7.2-alpine",
+            "redis-server",
+            "--port",
+            "6379",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "failed to start docker redis primary\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", redis_port)).await {
+            Ok(mut redis_admin) => {
+                redis_admin
+                    .write_all(&encode_resp_command(&[b"PING"]))
+                    .await
+                    .unwrap();
+                let reply =
+                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+                if reply == b"+PONG" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for docker redis primary to accept PING on port {redis_port}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"HSET",
+            b"seed:hash",
+            b"field1",
+            b"value1",
+            b"field2",
+            b"value2",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"PEXPIRE", b"seed:hash", b"60000"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"SADD", b"seed:set", b"alpha", b"beta", b"gamma"]),
+        b":3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"ZADD", b"seed:zset", b"1", b"one", b"2", b"two"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"RPUSH",
+            b"seed:list",
+            b"alpha",
+            large_list_value.as_slice(),
+            b"omega",
+        ]),
+        b":3\r\n",
+    )
+    .await;
+
+    let mut garnet_admin = TcpStream::connect(addr).await.unwrap();
+    let redis_port_text = redis_port.to_string();
+    send_and_expect(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", redis_port_text.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"HGET", b"seed:hash", b"field1"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"value1") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive preexisting object dataset; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        send_and_read_integer(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"SISMEMBER", b"seed:set", b"beta"]),
+            Duration::from_secs(2),
+        )
+        .await,
+        1
+    );
+    let zrange = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"ZRANGE", b"seed:zset", b"0", b"-1", b"WITHSCORES"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let zrange_items = resp_socket_array(&zrange);
+    assert_eq!(resp_socket_bulk(&zrange_items[0]), b"one");
+    assert_eq!(resp_socket_bulk(&zrange_items[1]), b"1");
+    assert_eq!(resp_socket_bulk(&zrange_items[2]), b"two");
+    assert_eq!(resp_socket_bulk(&zrange_items[3]), b"2");
+    send_and_expect(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"OBJECT", b"ENCODING", b"seed:list"]),
+        b"$9\r\nquicklist\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"LLEN", b"seed:list"]),
+            Duration::from_secs(2),
+        )
+        .await,
+        3
+    );
+    let list_head = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"LINDEX", b"seed:list", b"0"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(matches!(&list_head, RespSocketValue::Bulk(bytes) if bytes == b"alpha"));
+    let list_middle = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"LINDEX", b"seed:list", b"1"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(matches!(
+        &list_middle,
+        RespSocketValue::Bulk(bytes) if bytes == large_list_value.as_slice()
+    ));
+    let list_tail = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"LINDEX", b"seed:list", b"2"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(matches!(&list_tail, RespSocketValue::Bulk(bytes) if bytes == b"omega"));
+    let hash_ttl = send_and_read_integer(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"PTTL", b"seed:hash"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(hash_ttl > 0, "expected positive PTTL for imported hash");
+
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"HSET", b"repl:hash", b"field", b"from-redis"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"HGET", b"repl:hash", b"field"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"from-redis") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive post-sync object write; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external Redis 6.2 primary interop scenario; run targeted"]
+async fn redis_6_2_primary_to_garnet_replica_receives_legacy_object_dataset_on_full_sync() {
+    if !docker_available() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+    let large_list_value = vec![b'x'; 9000];
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let container_name = format!("redis62-primary-garnet-objects-{}", redis_port);
+    let _container = DockerContainerGuard::new(container_name.clone());
+
+    let run_output = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name.as_str(),
+            "-p",
+            &format!("{redis_port}:6379"),
+            "redis:6.2-alpine",
+            "redis-server",
+            "--port",
+            "6379",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "failed to start docker redis 6.2 primary\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", redis_port)).await {
+            Ok(mut redis_admin) => {
+                redis_admin
+                    .write_all(&encode_resp_command(&[b"PING"]))
+                    .await
+                    .unwrap();
+                let reply =
+                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+                if reply == b"+PONG" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for docker redis 6.2 primary to accept PING on port {redis_port}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"HSET",
+            b"seed:hash",
+            b"field1",
+            b"value1",
+            b"field2",
+            b"value2",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"PEXPIRE", b"seed:hash", b"60000"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"ZADD", b"seed:zset", b"1", b"one", b"2", b"two"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"RPUSH",
+            b"seed:list",
+            b"alpha",
+            large_list_value.as_slice(),
+            b"omega",
+        ]),
+        b":3\r\n",
+    )
+    .await;
+
+    let mut garnet_admin = TcpStream::connect(addr).await.unwrap();
+    let redis_port_text = redis_port.to_string();
+    send_and_expect(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", redis_port_text.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"HGET", b"seed:hash", b"field1"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"value1") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive redis 6.2 seeded object dataset; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let zrange = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"ZRANGE", b"seed:zset", b"0", b"-1", b"WITHSCORES"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let zrange_items = resp_socket_array(&zrange);
+    assert_eq!(resp_socket_bulk(&zrange_items[0]), b"one");
+    assert_eq!(resp_socket_bulk(&zrange_items[1]), b"1");
+    assert_eq!(resp_socket_bulk(&zrange_items[2]), b"two");
+    assert_eq!(resp_socket_bulk(&zrange_items[3]), b"2");
+    send_and_expect(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"OBJECT", b"ENCODING", b"seed:list"]),
+        b"$9\r\nquicklist\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"LLEN", b"seed:list"]),
+            Duration::from_secs(2),
+        )
+        .await,
+        3
+    );
+    let list_middle = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"LINDEX", b"seed:list", b"1"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(matches!(
+        &list_middle,
+        RespSocketValue::Bulk(bytes) if bytes == large_list_value.as_slice()
+    ));
+    let hash_ttl = send_and_read_integer(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"PTTL", b"seed:hash"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(
+        hash_ttl > 0,
+        "expected positive PTTL for imported legacy hash"
+    );
+
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"HSET", b"repl:hash", b"field", b"from-redis62"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"HGET", b"repl:hash", b"field"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"from-redis62") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive post-sync redis 6.2 object write; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external local redis-server HFE interop scenario; run targeted"]
+async fn garnet_primary_to_local_redis_replica_receives_hash_field_expiration_dataset_on_full_sync()
+{
+    if !system_redis_server_supports_hash_field_expiration() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut garnet_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[
+            b"HSET",
+            b"seed:hfe",
+            b"field1",
+            b"value1",
+            b"field2",
+            b"value2",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    let future_millis = current_unix_time_millis_for_test() + 60_000;
+    let future_millis_text = future_millis.to_string();
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[
+            b"HPEXPIREAT",
+            b"seed:hfe",
+            future_millis_text.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"field1",
+        ]),
+        b"*1\r\n:1\r\n",
+    )
+    .await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let _redis = LocalRedisServerGuard::spawn(redis_port, "redis-hfe-replica");
+    wait_for_server_ping(std::net::SocketAddr::from(([127, 0, 0, 1], redis_port))).await;
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    let garnet_port = addr.port().to_string();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", garnet_port.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let info = send_and_read_bulk_payload(
+            &mut redis_admin,
+            &encode_resp_command(&[b"INFO", b"REPLICATION"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        let info_text = String::from_utf8_lossy(&info);
+        if info_text.contains("master_link_status:up\r\n") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "local redis replica did not reach master_link_status=up\n{info_text}"
+        );
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"HGET", b"seed:hfe", b"field1"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"value1") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "local redis replica did not receive seeded HFE dataset; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"OBJECT", b"ENCODING", b"seed:hfe"]),
+        b"$10\r\nlistpackex\r\n",
+    )
+    .await;
+    let expiretimes = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"HPEXPIRETIME",
+            b"seed:hfe",
+            b"FIELDS",
+            b"2",
+            b"field1",
+            b"field2",
+        ]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let expiretime_items = resp_socket_array(&expiretimes);
+    assert_eq!(resp_socket_integer_or_bulk(&expiretime_items[1]), -1);
+    assert!(resp_socket_integer_or_bulk(&expiretime_items[0]) > 0);
+
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[b"HSET", b"repl:hfe", b"field", b"from-garnet"]),
+        b":1\r\n",
+    )
+    .await;
+    let repl_future_millis = current_unix_time_millis_for_test() + 60_000;
+    let repl_future_millis_text = repl_future_millis.to_string();
+    send_and_expect(
+        &mut garnet_client,
+        &encode_resp_command(&[
+            b"HPEXPIREAT",
+            b"repl:hfe",
+            repl_future_millis_text.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"field",
+        ]),
+        b"*1\r\n:1\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let expiretimes = send_and_read_resp_value(
+            &mut redis_admin,
+            &encode_resp_command(&[b"HPEXPIRETIME", b"repl:hfe", b"FIELDS", b"1", b"field"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        let expiretime_items = resp_socket_array(&expiretimes);
+        if resp_socket_integer_or_bulk(&expiretime_items[0]) > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "local redis replica did not receive post-sync HFE write; last response: {expiretimes:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external local redis-server HFE interop scenario; run targeted"]
+async fn local_redis_primary_to_garnet_replica_receives_hash_field_expiration_dataset_on_full_sync()
+{
+    if !system_redis_server_supports_hash_field_expiration() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let _redis = LocalRedisServerGuard::spawn(redis_port, "redis-hfe-primary");
+    wait_for_server_ping(std::net::SocketAddr::from(([127, 0, 0, 1], redis_port))).await;
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"HSET",
+            b"seed:hfe",
+            b"field1",
+            b"value1",
+            b"field2",
+            b"value2",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    let future_millis = current_unix_time_millis_for_test() + 60_000;
+    let future_millis_text = future_millis.to_string();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"HPEXPIREAT",
+            b"seed:hfe",
+            future_millis_text.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"field1",
+        ]),
+        b"*1\r\n:1\r\n",
+    )
+    .await;
+
+    let mut garnet_admin = TcpStream::connect(addr).await.unwrap();
+    let redis_port_text = redis_port.to_string();
+    send_and_expect(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", redis_port_text.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let value = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"HGET", b"seed:hfe", b"field1"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&value, RespSocketValue::Bulk(bytes) if bytes == b"value1") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive seeded HFE dataset; last response: {value:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    send_and_expect(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"OBJECT", b"ENCODING", b"seed:hfe"]),
+        b"$10\r\nlistpackex\r\n",
+    )
+    .await;
+    let expiretimes = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[
+            b"HPEXPIRETIME",
+            b"seed:hfe",
+            b"FIELDS",
+            b"2",
+            b"field1",
+            b"field2",
+        ]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let expiretime_items = resp_socket_array(&expiretimes);
+    assert_eq!(resp_socket_integer_or_bulk(&expiretime_items[1]), -1);
+    assert!(resp_socket_integer_or_bulk(&expiretime_items[0]) > 0);
+
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"HSET", b"repl:hfe", b"field", b"from-redis"]),
+        b":1\r\n",
+    )
+    .await;
+    let repl_future_millis = current_unix_time_millis_for_test() + 60_000;
+    let repl_future_millis_text = repl_future_millis.to_string();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"HPEXPIREAT",
+            b"repl:hfe",
+            repl_future_millis_text.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"field",
+        ]),
+        b"*1\r\n:1\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let expiretimes = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"HPEXPIRETIME", b"repl:hfe", b"FIELDS", b"1", b"field"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        let expiretime_items = resp_socket_array(&expiretimes);
+        if resp_socket_integer_or_bulk(&expiretime_items[0]) > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive post-sync HFE write; last response: {expiretimes:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external Redis primary interop scenario; run targeted"]
+async fn redis_primary_to_garnet_replica_receives_preexisting_stream_dataset_on_full_sync() {
+    if !docker_available() {
+        return;
+    }
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let container_name = format!("redis-primary-garnet-streams-{}", redis_port);
+    let _container = DockerContainerGuard::new(container_name.clone());
+
+    let run_output = Command::new("docker")
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container_name.as_str(),
+            "-p",
+            &format!("{redis_port}:6379"),
+            "redis:7.2-alpine",
+            "redis-server",
+            "--port",
+            "6379",
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run_output.status.success(),
+        "failed to start docker redis primary\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run_output.stdout),
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match TcpStream::connect(("127.0.0.1", redis_port)).await {
+            Ok(mut redis_admin) => {
+                redis_admin
+                    .write_all(&encode_resp_command(&[b"PING"]))
+                    .await
+                    .unwrap();
+                let reply =
+                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+                if reply == b"+PONG" {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for docker redis primary to accept PING on port {redis_port}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let mut redis_admin = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"XADD", b"seed:stream", b"1-0", b"f", b"v1"]),
+        b"$3\r\n1-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"XADD", b"seed:stream", b"2-0", b"f", b"v2"]),
+        b"$3\r\n2-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"XADD", b"seed:stream", b"3-0", b"f", b"v3"]),
+        b"$3\r\n3-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"PEXPIRE", b"seed:stream", b"60000"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"seed:stream", b"group1", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"group1",
+            b"consumer1",
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            b"seed:stream",
+            b">",
+        ]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let _ = send_and_read_resp_value(
+        &mut redis_admin,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"group1",
+            b"consumer2",
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            b"seed:stream",
+            b">",
+        ]),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let mut garnet_admin = TcpStream::connect(addr).await.unwrap();
+    let redis_port_text = redis_port.to_string();
+    send_and_expect(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", redis_port_text.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let xlen = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"XLEN", b"seed:stream"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if matches!(&xlen, RespSocketValue::Integer(3)) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive preexisting stream dataset; last response: {xlen:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let groups = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"XINFO", b"GROUPS", b"seed:stream"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let groups_array = resp_socket_array(&groups);
+    assert_eq!(groups_array.len(), 1);
+    let group = resp_socket_map_or_flat_map(&groups_array[0]);
+    assert_eq!(resp_socket_bulk(group[&b"name".to_vec()]), b"group1");
+    assert_eq!(
+        resp_socket_bulk(group[&b"last-delivered-id".to_vec()]),
+        b"2-0"
+    );
+    assert_eq!(
+        resp_socket_integer_or_bulk(group[&b"consumers".to_vec()]),
+        2
+    );
+    assert_eq!(resp_socket_integer_or_bulk(group[&b"pending".to_vec()]), 2);
+
+    let pending = send_and_read_resp_value(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"XPENDING", b"seed:stream", b"group1"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    let pending_items = resp_socket_array(&pending);
+    assert_eq!(resp_socket_integer_or_bulk(&pending_items[0]), 2);
+    assert_eq!(resp_socket_bulk(&pending_items[1]), b"1-0");
+    assert_eq!(resp_socket_bulk(&pending_items[2]), b"2-0");
+    let pending_consumers = resp_socket_array(&pending_items[3]);
+    assert_eq!(pending_consumers.len(), 2);
+    let consumer_one = resp_socket_array(&pending_consumers[0]);
+    assert_eq!(resp_socket_bulk(&consumer_one[0]), b"consumer1");
+    assert_eq!(resp_socket_integer_or_bulk(&consumer_one[1]), 1);
+    let consumer_two = resp_socket_array(&pending_consumers[1]);
+    assert_eq!(resp_socket_bulk(&consumer_two[0]), b"consumer2");
+    assert_eq!(resp_socket_integer_or_bulk(&consumer_two[1]), 1);
+
+    let stream_ttl = send_and_read_integer(
+        &mut garnet_admin,
+        &encode_resp_command(&[b"PTTL", b"seed:stream"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(stream_ttl > 0, "expected positive PTTL for imported stream");
+
+    send_and_expect(
+        &mut redis_admin,
+        &encode_resp_command(&[b"XADD", b"repl:stream", b"10-0", b"f", b"from-redis"]),
+        b"$4\r\n10-0\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let replayed = send_and_read_resp_value(
+            &mut garnet_admin,
+            &encode_resp_command(&[b"XRANGE", b"repl:stream", b"-", b"+"]),
+            Duration::from_secs(2),
+        )
+        .await;
+        if let RespSocketValue::Array(entries) = &replayed
+            && entries.len() == 1
+            && resp_socket_bulk(&resp_socket_array(&entries[0])[0]) == b"10-0"
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "garnet replica did not receive post-sync stream write; last response: {replayed:?}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
 }
 
 #[tokio::test]
@@ -19812,6 +24638,279 @@ async fn migrate_rewrites_source_delete_for_downstream_replica_and_target_state(
 }
 
 #[tokio::test]
+#[ignore = "exact external local redis-server MIGRATE scenario; run targeted"]
+async fn migrate_to_local_redis_target_preserves_string_and_ttl_like_external_dump_scenario() {
+    if !system_redis_server_available() {
+        return;
+    }
+
+    let (source_addr, source_shutdown_tx, source_server) = start_test_server_on_dedicated_thread();
+    wait_for_server_ping(source_addr).await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let _redis = LocalRedisServerGuard::spawn(redis_port, "redis-migrate-target-string");
+    wait_for_server_ping(std::net::SocketAddr::from(([127, 0, 0, 1], redis_port))).await;
+
+    let mut source = TcpStream::connect(source_addr).await.unwrap();
+    let mut target = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    let target_port = redis_port.to_string();
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"SET", b"migrate:string", b"Some Value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"PEXPIRE", b"migrate:string", b"60000"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"MIGRATE",
+            b"127.0.0.1",
+            target_port.as_bytes(),
+            b"migrate:string",
+            b"9",
+            b"5000",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"EXISTS", b"migrate:string"]),
+        b":0\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"GET", b"migrate:string"]),
+        b"$10\r\nSome Value\r\n",
+    )
+    .await;
+    let ttl = send_and_read_integer(
+        &mut target,
+        &encode_resp_command(&[b"PTTL", b"migrate:string"]),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert!(ttl > 0);
+    assert!(ttl <= 60_000);
+
+    let _ = source_shutdown_tx.send(());
+    source_server.join().unwrap();
+}
+
+#[tokio::test]
+#[ignore = "exact external local redis-server MIGRATE scenario; run targeted"]
+async fn migrate_to_local_redis_target_preserves_object_dataset_like_external_dump_scenario() {
+    if !system_redis_server_available() {
+        return;
+    }
+
+    let (source_addr, source_shutdown_tx, source_server) = start_test_server_on_dedicated_thread();
+    wait_for_server_ping(source_addr).await;
+
+    let redis_port = TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let _redis = LocalRedisServerGuard::spawn(redis_port, "redis-migrate-target-objects");
+    wait_for_server_ping(std::net::SocketAddr::from(([127, 0, 0, 1], redis_port))).await;
+
+    let mut source = TcpStream::connect(source_addr).await.unwrap();
+    let mut target = TcpStream::connect(("127.0.0.1", redis_port)).await.unwrap();
+    let target_port = redis_port.to_string();
+    let timeout = Duration::from_secs(2);
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"LPUSH", b"migrate:list", b"a", b"b", b"c"]),
+        b":3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"HSET",
+            b"migrate:hash",
+            b"field1",
+            b"value1",
+            b"field2",
+            b"value2",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"PEXPIRE", b"migrate:hash", b"60000"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"SADD", b"migrate:set", b"alpha", b"beta", b"gamma"]),
+        b":3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"ZADD", b"migrate:zset", b"1", b"one", b"2", b"two"]),
+        b":2\r\n",
+    )
+    .await;
+    let stream_id = send_and_read_resp_value(
+        &mut source,
+        &encode_resp_command(&[
+            b"XADD",
+            b"migrate:stream",
+            b"*",
+            b"field1",
+            b"value1",
+            b"field2",
+            b"value2",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(!resp_socket_bulk(&stream_id).is_empty());
+
+    for key in [
+        b"migrate:list".as_slice(),
+        b"migrate:hash".as_slice(),
+        b"migrate:set".as_slice(),
+        b"migrate:zset".as_slice(),
+        b"migrate:stream".as_slice(),
+    ] {
+        send_and_expect(
+            &mut source,
+            &encode_resp_command(&[
+                b"MIGRATE",
+                b"127.0.0.1",
+                target_port.as_bytes(),
+                key,
+                b"9",
+                b"5000",
+            ]),
+            b"+OK\r\n",
+        )
+        .await;
+    }
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"EXISTS",
+            b"migrate:list",
+            b"migrate:hash",
+            b"migrate:set",
+            b"migrate:zset",
+            b"migrate:stream",
+        ]),
+        b":0\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let list = send_and_read_resp_value(
+        &mut target,
+        &encode_resp_command(&[b"LRANGE", b"migrate:list", b"0", b"-1"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_array(&list)
+            .iter()
+            .map(|item| resp_socket_bulk(item).to_vec())
+            .collect::<Vec<_>>(),
+        vec![b"c".to_vec(), b"b".to_vec(), b"a".to_vec()]
+    );
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"HGET", b"migrate:hash", b"field1"]),
+        b"$6\r\nvalue1\r\n",
+    )
+    .await;
+    let hash_ttl = send_and_read_integer(
+        &mut target,
+        &encode_resp_command(&[b"PTTL", b"migrate:hash"]),
+        timeout,
+    )
+    .await;
+    assert!(hash_ttl > 0);
+    assert!(hash_ttl <= 60_000);
+    assert_eq!(
+        send_and_read_integer(
+            &mut target,
+            &encode_resp_command(&[b"SISMEMBER", b"migrate:set", b"alpha"]),
+            timeout,
+        )
+        .await,
+        1
+    );
+    let zrange = send_and_read_resp_value(
+        &mut target,
+        &encode_resp_command(&[b"ZRANGE", b"migrate:zset", b"0", b"-1", b"WITHSCORES"]),
+        timeout,
+    )
+    .await;
+    let zrange_items = resp_socket_array(&zrange);
+    assert_eq!(resp_socket_bulk(&zrange_items[0]), b"one");
+    assert_eq!(resp_socket_bulk(&zrange_items[1]), b"1");
+    assert_eq!(resp_socket_bulk(&zrange_items[2]), b"two");
+    assert_eq!(resp_socket_bulk(&zrange_items[3]), b"2");
+    let xlen = send_and_read_integer(
+        &mut target,
+        &encode_resp_command(&[b"XLEN", b"migrate:stream"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(xlen, 1);
+    let xrange = send_and_read_resp_value(
+        &mut target,
+        &encode_resp_command(&[b"XRANGE", b"migrate:stream", b"-", b"+"]),
+        timeout,
+    )
+    .await;
+    let stream_entries = resp_socket_array(&xrange);
+    assert_eq!(stream_entries.len(), 1);
+    let stream_entry = resp_socket_array(&stream_entries[0]);
+    let stream_fields = resp_socket_array(&stream_entry[1]);
+    assert_eq!(resp_socket_bulk(&stream_fields[0]), b"field1");
+    assert_eq!(resp_socket_bulk(&stream_fields[1]), b"value1");
+    assert_eq!(resp_socket_bulk(&stream_fields[2]), b"field2");
+    assert_eq!(resp_socket_bulk(&stream_fields[3]), b"value2");
+
+    let _ = source_shutdown_tx.send(());
+    source_server.join().unwrap();
+}
+
+#[tokio::test]
 async fn slowlog_argument_trimming_matches_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();
@@ -20207,6 +25306,44 @@ async fn scan_with_expired_keys_type_filter_and_pattern_filter_matches_external_
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn monitor_receives_set_events_when_subscribed_like_external_scenario() {
+    let server =
+        TestServerHandle::start_with_processor(Arc::new(RequestProcessor::new().unwrap())).await;
+    let mut monitor = server.connect().await;
+    let mut writer = server.connect().await;
+
+    send_and_expect(
+        &mut monitor,
+        &encode_resp_command(&[b"MONITOR"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"SET", b"monitor:key", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let event = read_resp_line_with_timeout(&mut monitor, Duration::from_secs(1)).await;
+    let event_text = String::from_utf8_lossy(&event).to_ascii_lowercase();
+    assert!(
+        event_text.contains("\"set\""),
+        "unexpected monitor event: {event_text}"
+    );
+    assert!(
+        event_text.contains("\"monitor:key\""),
+        "unexpected monitor event: {event_text}"
+    );
+    assert!(
+        event_text.contains("\"value\""),
+        "unexpected monitor event: {event_text}"
+    );
+
+    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -20667,6 +25804,14 @@ fn resp_socket_integer(value: &RespSocketValue) -> i64 {
     }
 }
 
+fn resp_socket_integer_or_bulk(value: &RespSocketValue) -> i64 {
+    match value {
+        RespSocketValue::Integer(number) => *number,
+        RespSocketValue::Bulk(bytes) => std::str::from_utf8(bytes).unwrap().parse::<i64>().unwrap(),
+        other => panic!("expected RESP integer/bulk integer, got {other:?}"),
+    }
+}
+
 fn resp_socket_integer_array(value: &RespSocketValue) -> Vec<i64> {
     resp_socket_array(value)
         .iter()
@@ -20916,6 +26061,103 @@ async fn bgsave_then_debug_reload_preserves_current_value_like_external_other_sc
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn save_and_bgsave_persist_dump_file_and_debug_reload_nosave_uses_it() {
+    let temp_dir = unique_test_temp_dir("save-bgsave-dump-file");
+    let dump_path = temp_dir.join("dump.rdb");
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"CONFIG",
+            b"SET",
+            b"dir",
+            temp_dir.to_string_lossy().as_bytes(),
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"persist:key", b"alpha"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"SAVE"]), b"+OK\r\n").await;
+    let save_snapshot = std::fs::read(&dump_path).unwrap();
+    assert!(
+        save_snapshot.starts_with(b"REDIS0011") || save_snapshot.starts_with(b"REDIS0012"),
+        "SAVE should persist a real RDB snapshot, got {:?}",
+        &save_snapshot[..save_snapshot.len().min(16)]
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"RELOAD", b"NOSAVE"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"persist:key"]),
+        b"$5\r\nalpha\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"persist:key", b"beta"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"BGSAVE"]),
+        b"+Background saving started\r\n",
+    )
+    .await;
+    wait_for_bgsave_to_finish(&mut client, Duration::from_secs(5)).await;
+    let bgsave_snapshot = std::fs::read(&dump_path).unwrap();
+    assert!(
+        bgsave_snapshot.starts_with(b"REDIS0011") || bgsave_snapshot.starts_with(b"REDIS0012"),
+        "BGSAVE should persist a real RDB snapshot, got {:?}",
+        &bgsave_snapshot[..bgsave_snapshot.len().min(16)]
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"RELOAD", b"NOSAVE"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"persist:key"]),
+        b"$4\r\nbeta\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
 async fn wait_for_bgsave_to_finish(client: &mut TcpStream, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -21114,6 +26356,87 @@ fn read_info_u64(payload: &[u8], field: &str) -> Option<u64> {
     })
 }
 
+const TEST_OIDC_RSA_PRIVATE_KEY_PEM: &str = concat!(
+    "-----BEGIN PRIVATE KEY-----\n",
+    "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDJETqse41HRBsc\n",
+    "7cfcq3ak4oZWFCoZlcic525A3FfO4qW9BMtRO/iXiyCCHn8JhiL9y8j5JdVP2Q9Z\n",
+    "IpfElcFd3/guS9w+5RqQGgCR+H56IVUyHZWtTJbKPcwWXQdNUX0rBFcsBzCRESJL\n",
+    "eelOEdHIjG7LRkx5l/FUvlqsyHDVJEQsHwegZ8b8C0fz0EgT2MMEdn10t6Ur1rXz\n",
+    "jMB/wvCg8vG8lvciXmedyo9xJ8oMOh0wUEgxziVDMMovmC+aJctcHUAYubwoGN8T\n",
+    "yzcvnGqL7JSh36Pwy28iPzXZ2RLhAyJFU39vLaHdljwthUaupldlNyCfa6Ofy4qN\n",
+    "ctlUPlN1AgMBAAECggEAdESTQjQ70O8QIp1ZSkCYXeZjuhj081CK7jhhp/4ChK7J\n",
+    "GlFQZMwiBze7d6K84TwAtfQGZhQ7km25E1kOm+3hIDCoKdVSKch/oL54f/BK6sKl\n",
+    "qlIzQEAenho4DuKCm3I4yAw9gEc0DV70DuMTR0LEpYyXcNJY3KNBOTjN5EYQAR9s\n",
+    "2MeurpgK2MdJlIuZaIbzSGd+diiz2E6vkmcufJLtmYUT/k/ddWvEtz+1DnO6bRHh\n",
+    "xuuDMeJA/lGB/EYloSLtdyCF6sII6C6slJJtgfb0bPy7l8VtL5iDyz46IKyzdyzW\n",
+    "tKAn394dm7MYR1RlUBEfqFUyNK7C+pVMVoTwCC2V4QKBgQD64syfiQ2oeUlLYDm4\n",
+    "CcKSP3RnES02bcTyEDFSuGyyS1jldI4A8GXHJ/lG5EYgiYa1RUivge4lJrlNfjyf\n",
+    "dV230xgKms7+JiXqag1FI+3mqjAgg4mYiNjaao8N8O3/PD59wMPeWYImsWXNyeHS\n",
+    "55rUKiHERtCcvdzKl4u35ZtTqQKBgQDNKnX2bVqOJ4WSqCgHRhOm386ugPHfy+8j\n",
+    "m6cicmUR46ND6ggBB03bCnEG9OtGisxTo/TuYVRu3WP4KjoJs2LD5fwdwJqpgtHl\n",
+    "yVsk45Y1Hfo+7M6lAuR8rzCi6kHHNb0HyBmZjysHWZsn79ZM+sQnLpgaYgQGRbKV\n",
+    "DZWlbw7g7QKBgQCl1u+98UGXAP1jFutwbPsx40IVszP4y5ypCe0gqgon3UiY/G+1\n",
+    "zTLp79GGe/SjI2VpQ7AlW7TI2A0bXXvDSDi3/5Dfya9ULnFXv9yfvH1QwWToySpW\n",
+    "Kvd1gYSoiX84/WCtjZOr0e0HmLIb0vw0hqZA4szJSqoxQgvF22EfIWaIaQKBgQCf\n",
+    "34+OmMYw8fEvSCPxDxVvOwW2i7pvV14hFEDYIeZKW2W1HWBhVMzBfFB5SE8yaCQy\n",
+    "pRfOzj9aKOCm2FjjiErVNpkQoi6jGtLvScnhZAt/lr2TXTrl8OwVkPrIaN0bG/AS\n",
+    "aUYxmBPCpXu3UjhfQiWqFq/mFyzlqlgvuCc9g95HPQKBgAscKP8mLxdKwOgX8yFW\n",
+    "GcZ0izY/30012ajdHY+/QK5lsMoxTnn0skdS+spLxaS5ZEO4qvPVb8RAoCkWMMal\n",
+    "2pOhmquJQVDPDLuZHdrIiKiDM20dy9sMfHygWcZjQ4WSxf/J7T9canLZIXFhHAZT\n",
+    "3wc9h4G8BBCtWN2TN/LsGZdB\n",
+    "-----END PRIVATE KEY-----\n",
+);
+
+const TEST_OIDC_RSA_JWKS: &str = concat!(
+    "{\"keys\":[{",
+    "\"kty\":\"RSA\",",
+    "\"n\":\"yRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5_CYYi_cvI-SXVT9kPWSKXxJXBXd_4LkvcPuUakBoAkfh-eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG_AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi-yUod-j8MtvIj812dkS4QMiRVN_by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQ\",",
+    "\"e\":\"AQAB\",",
+    "\"kid\":\"rsa01\",",
+    "\"alg\":\"RS256\",",
+    "\"use\":\"sig\"",
+    "}]}",
+);
+
+#[derive(serde::Serialize)]
+struct TestOidcClaims<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sub: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    oid: Option<&'a str>,
+    iss: &'a str,
+    aud: &'a str,
+    exp: usize,
+}
+
+fn issue_test_oidc_token(
+    subject: Option<&str>,
+    object_id: Option<&str>,
+    issuer: &str,
+    audience: &str,
+) -> String {
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize
+        + 3600;
+    let claims = TestOidcClaims {
+        sub: subject,
+        oid: object_id,
+        iss: issuer,
+        aud: audience,
+        exp,
+    };
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("rsa01".to_string());
+    jsonwebtoken::encode(
+        &header,
+        &claims,
+        &jsonwebtoken::EncodingKey::from_rsa_pem(TEST_OIDC_RSA_PRIVATE_KEY_PEM.as_bytes()).unwrap(),
+    )
+    .unwrap()
+}
+
 fn encode_resp_command(parts: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
@@ -21144,21 +26467,8 @@ async fn start_test_server() -> (
     oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 ) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let metrics = Arc::new(ServerMetrics::default());
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-
-    let server_metrics = Arc::clone(&metrics);
-    let server = tokio::spawn(async move {
-        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
-            let _ = shutdown_rx.await;
-        })
-        .await
-        .unwrap();
-    });
-
-    (addr, shutdown_tx, server)
+    let processor = Arc::new(RequestProcessor::new().unwrap());
+    start_test_server_with_processor(processor).await
 }
 
 fn start_test_server_on_dedicated_thread() -> (
@@ -21170,6 +26480,9 @@ fn start_test_server_on_dedicated_thread() -> (
     std_listener.set_nonblocking(true).unwrap();
     let addr = std_listener.local_addr().unwrap();
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor = Arc::new(RequestProcessor::new().unwrap());
+    let isolated_dir = isolate_default_persistence_dir_for_tests(&processor);
+    let server_processor = Arc::clone(&processor);
 
     let server = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -21179,11 +26492,21 @@ fn start_test_server_on_dedicated_thread() -> (
         runtime.block_on(async move {
             let listener = TcpListener::from_std(std_listener).unwrap();
             let metrics = Arc::new(ServerMetrics::default());
-            run_listener_with_shutdown(listener, 1024, metrics, async move {
-                let _ = shutdown_rx.await;
-            })
+            run_listener_with_shutdown_and_cluster_with_processor(
+                listener,
+                1024,
+                metrics,
+                async move {
+                    let _ = shutdown_rx.await;
+                },
+                None,
+                server_processor,
+            )
             .await
             .unwrap();
+            if let Some(dir) = isolated_dir {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         });
     });
 
@@ -21200,35 +26523,28 @@ async fn start_test_server_with_scripting_enabled() -> (
     (addr, shutdown_tx, server)
 }
 
+async fn start_test_server_with_processor(
+    processor: Arc<RequestProcessor>,
+) -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    TestServerHandle::start_with_processor(processor)
+        .await
+        .into_parts()
+}
+
 async fn start_test_server_with_scripting_enabled_and_processor() -> (
     std::net::SocketAddr,
     oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
     Arc<RequestProcessor>,
 ) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let metrics = Arc::new(ServerMetrics::default());
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
-    let server_processor = Arc::clone(&processor);
-
-    let server_metrics = Arc::clone(&metrics);
-    let server = tokio::spawn(async move {
-        run_listener_with_shutdown_and_cluster_with_processor(
-            listener,
-            1024,
-            server_metrics,
-            async move {
-                let _ = shutdown_rx.await;
-            },
-            None,
-            server_processor,
-        )
-        .await
-        .unwrap();
-    });
+    let (addr, shutdown_tx, server) =
+        start_test_server_with_processor(Arc::clone(&processor)).await;
 
     (addr, shutdown_tx, server, processor)
 }
@@ -21240,6 +26556,51 @@ fn unique_test_temp_dir(prefix: &str) -> PathBuf {
         .as_nanos();
     let dir = std::env::temp_dir().join(format!("garnet-{prefix}-{nanos}"));
     std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn apply_test_startup_config_overrides(
+    processor: &RequestProcessor,
+    overrides: StartupConfigOverrides,
+) {
+    apply_startup_config_overrides_to_processor(processor, &overrides).unwrap();
+}
+
+fn aof_test_startup_overrides(
+    dir: &std::path::Path,
+    appendfilename: &str,
+    appendfsync: &str,
+) -> StartupConfigOverrides {
+    StartupConfigOverrides {
+        dir: Some(dir.to_path_buf()),
+        appendonly: Some(true),
+        appendfsync: Some(appendfsync.to_string()),
+        appendfilename: Some(appendfilename.to_string()),
+        ..Default::default()
+    }
+}
+
+fn dump_snapshot_test_startup_overrides(
+    dir: &std::path::Path,
+    dbfilename: &str,
+) -> StartupConfigOverrides {
+    StartupConfigOverrides {
+        dir: Some(dir.to_path_buf()),
+        dbfilename: Some(dbfilename.to_string()),
+        ..Default::default()
+    }
+}
+
+fn configure_processor_aof_for_test(processor: &RequestProcessor, prefix: &str) -> PathBuf {
+    let dir = unique_test_temp_dir(prefix);
+    apply_test_startup_config_overrides(
+        processor,
+        StartupConfigOverrides {
+            dir: Some(dir.clone()),
+            appendfilename: Some(format!("{prefix}.aof")),
+            ..Default::default()
+        },
+    );
     dir
 }
 

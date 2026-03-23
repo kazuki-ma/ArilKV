@@ -4869,7 +4869,7 @@ fn append_len_prefixed_bytes(
     Ok(())
 }
 
-fn parse_function_dump_payload(
+pub(crate) fn parse_function_dump_payload(
     payload: &[u8],
 ) -> Result<Vec<(String, Vec<u8>)>, RequestExecutionError> {
     if payload.len() < 8 {

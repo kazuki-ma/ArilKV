@@ -1,0 +1,111 @@
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
+index 2c06202008..b9cfaac333 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
+@@ -1516,6 +1541,16 @@ impl RequestProcessor {
+         let options = parse_set_options(args)?;
+         self.expire_key_if_needed_in_shard(selected_db, &key, shard_index)?;
+         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
++        let requires_old_string_value = options.return_old_value
++            || options.condition.as_ref().is_some_and(|condition| {
++                matches!(
++                    condition.kind,
++                    StringWriteConditionKind::IfEq
++                        | StringWriteConditionKind::IfNe
++                        | StringWriteConditionKind::IfDigestEq
++                        | StringWriteConditionKind::IfDigestNe
++                )
++            });
++
+         if !self.logical_db_uses_main_runtime(selected_db)? {
+             let old_string_value = self.read_string_value(db_key)?.unwrap_or_default();
+             let string_exists = !old_string_value.is_empty() || self.key_exists(db_key)?;
+@@ -1621,24 +1656,27 @@ impl RequestProcessor {
+         let mut store = self.lock_string_store_for_shard(shard_index);
+         crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
+         let mut session = store.session(&self.functions);
++        let object_exists = self.tracked_object_key_exists_in_shard(&key, shard_index);
+ 
+         let mut old_string_value = Vec::new();
+-        let string_exists = match session
+-            .read(
+-                &key,
+-                &Vec::new(),
+-                &mut old_string_value,
+-                &ReadInfo::default(),
+-            )
+-            .map_err(map_read_error)?
+-        {
+-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
+-            ReadOperationStatus::NotFound => false,
+-            ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
++        let string_exists = if requires_old_string_value {
++            match session
++                .read(
++                    &key,
++                    &Vec::new(),
++                    &mut old_string_value,
++                    &ReadInfo::default(),
++                )
++                .map_err(map_read_error)?
++            {
++                ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
++                ReadOperationStatus::NotFound => false,
++                ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
++            }
++        } else {
++            self.tracked_string_key_exists_in_shard(&key, shard_index)
+         };
+ 
+-        let object_exists = self.object_read(db_key)?.is_some();
+-
+         // SET GET on a non-string key returns WRONGTYPE and aborts.
+         if options.return_old_value && object_exists {
+             return Err(RequestExecutionError::WrongType);
+@@ -1732,7 +1770,9 @@ impl RequestProcessor {
+         }
+         self.clear_forced_raw_string_encoding(db_key);
+         self.set_string_expiration_metadata_in_shard(db_key, shard_index, effective_expiration);
+-        self.track_string_key_in_shard(&key, shard_index);
++        if !string_exists {
++            self.track_string_key_in_shard(&key, shard_index);
++        }
+         self.bump_watch_version(db_key);
+         self.record_key_access(db_key, true);
+ 
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs
+index 5c70a4baf9..5d77b87d11 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs
+@@ -945,6 +966,15 @@ impl RequestProcessor {
+         registry.insert(RedisKey::from(key));
+     }
+ 
++    pub(super) fn tracked_string_key_exists_in_shard(
++        &self,
++        key: &[u8],
++        shard_index: ShardIndex,
++    ) -> bool {
++        self.lock_string_key_registry_for_shard(shard_index)
++            .contains(key)
++    }
++
+     pub(super) fn track_string_key(&self, key: &[u8]) {
+         let shard_index = self.string_store_shard_index_for_key(key);
+         self.track_string_key_in_shard(key, shard_index);
+@@ -966,6 +996,15 @@ impl RequestProcessor {
+             .insert(RedisKey::from(key));
+     }
+ 
++    pub(super) fn tracked_object_key_exists_in_shard(
++        &self,
++        key: &[u8],
++        shard_index: ShardIndex,
++    ) -> bool {
++        self.lock_object_key_registry_for_shard(shard_index)
++            .contains(key)
++    }
++
+     pub(super) fn untrack_object_key_in_shard(&self, key: DbKeyRef<'_>, shard_index: ShardIndex) {
+         self.lock_object_key_registry_for_shard(shard_index)
+             .remove(key.key());

@@ -1,0 +1,17 @@
+iteration-only patch unavailable
+
+reason:
+- the repository worktree already contains many unrelated uncommitted changes from prior implementation slices
+- this iteration mixes benchmark harness changes with new experiment artifacts, and a raw repository diff would include unrelated in-flight work
+
+files touched for this experiment:
+- TODO_AND_STATUS.md
+- garnet-rs/benches/linux_perf_diff_profile.sh
+- garnet-rs/benches/docker_linux_perf_diff_profile.sh
+- docs/performance/experiments/2026-03-19/11.536-thread-normalized-docker-compare/README.md
+- docs/performance/experiments/2026-03-19/11.536-thread-normalized-docker-compare/summary.txt
+- docs/performance/experiments/2026-03-19/11.536-thread-normalized-docker-compare/comparison.txt
+- docs/performance/experiments/2026-03-19/11.536-thread-normalized-docker-compare/garnet-set-top.txt
+- docs/performance/experiments/2026-03-19/11.536-thread-normalized-docker-compare/garnet-get-top.txt
+- docs/performance/experiments/2026-03-19/11.536-thread-normalized-docker-compare/dragonfly-set-top.txt
+- docs/performance/experiments/2026-03-19/11.536-thread-normalized-docker-compare/dragonfly-get-top.txt

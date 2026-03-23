@@ -219,6 +219,7 @@ fn spawn_listener_thread(
                     let config = ServerConfig {
                         bind_addr,
                         read_buffer_size,
+                        startup_config_overrides: Default::default(),
                     };
                     let metrics = Arc::new(ServerMetrics::default());
                     run_with_shutdown_and_cluster_config(

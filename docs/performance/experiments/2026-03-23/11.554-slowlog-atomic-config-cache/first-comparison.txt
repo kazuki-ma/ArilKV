@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=slowlog_mutex_config
+new_label=slowlog_atomic_config
+slowlog_mutex_config.median_set_ops=53683.000
+slowlog_mutex_config.median_get_ops=66071.000
+slowlog_mutex_config.median_set_p99_ms=0.23900
+slowlog_mutex_config.median_get_p99_ms=0.20700
+slowlog_atomic_config.median_set_ops=70780.000
+slowlog_atomic_config.median_get_ops=81649.000
+slowlog_atomic_config.median_set_p99_ms=0.21500
+slowlog_atomic_config.median_get_p99_ms=0.16700
+delta.set_ops_pct=31.85
+delta.get_ops_pct=23.58
+delta.set_p99_ms_pct=-10.04
+delta.get_p99_ms_pct=-19.32

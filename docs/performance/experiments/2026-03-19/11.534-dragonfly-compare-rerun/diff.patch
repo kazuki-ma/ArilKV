@@ -1,0 +1,15 @@
+iteration-only patch unavailable
+
+reason:
+- the repository worktree already contains many unrelated uncommitted changes from prior implementation slices
+- this iteration is measurement-only, so a raw git diff would mostly capture unrelated in-flight work rather than the experiment itself
+
+files touched for this experiment:
+- TODO_AND_STATUS.md
+- docs/performance/experiments/2026-03-19/11.534-dragonfly-compare-rerun/README.md
+- docs/performance/experiments/2026-03-19/11.534-dragonfly-compare-rerun/local-garnet-summary.txt
+- docs/performance/experiments/2026-03-19/11.534-dragonfly-compare-rerun/local-dragonfly-summary.txt
+- docs/performance/experiments/2026-03-19/11.534-dragonfly-compare-rerun/local-native-vs-docker-comparison.txt
+- docs/performance/experiments/2026-03-19/11.534-dragonfly-compare-rerun/docker-linux-summary.txt
+- docs/performance/experiments/2026-03-19/11.534-dragonfly-compare-rerun/docker-linux-comparison.txt
+- docs/performance/experiments/2026-03-19/11.534-dragonfly-compare-rerun/docker-linux-prev-vs-current.txt

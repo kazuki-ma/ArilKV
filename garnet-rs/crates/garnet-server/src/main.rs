@@ -23,6 +23,20 @@ use crate::server_launch_config::ThreadPinningConfig;
 use crate::server_launch_config::parse_server_launch_config_from_env;
 #[cfg(test)]
 use crate::server_launch_config::parse_server_launch_config_from_values;
+#[cfg(test)]
+use crate::server_launch_config::parse_startup_config_overrides_from_values;
+
+fn validate_server_launch_config(
+    launch: &server_launch_config::ServerLaunchConfig,
+) -> std::io::Result<()> {
+    if launch.bind_addrs.len() > 1 && !launch.startup_config_overrides.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "startup persistence/ACL config overrides are not supported with multi-port listener mode",
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 fn parse_server_config_from_values(
@@ -52,10 +66,12 @@ fn parse_server_config_from_values(
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> std::io::Result<()> {
     let launch = parse_server_launch_config_from_env()?;
+    validate_server_launch_config(&launch)?;
     if launch.bind_addrs.len() == 1 && !launch.owner_thread_pinning.enabled {
         let config = ServerConfig {
             bind_addr: launch.bind_addrs[0],
             read_buffer_size: launch.read_buffer_size,
+            startup_config_overrides: launch.startup_config_overrides.clone(),
         };
         let metrics = Arc::new(ServerMetrics::default());
         if launch.multi_port_cluster_mode {

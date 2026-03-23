@@ -10,6 +10,7 @@
 //! - formal/tla/specs/StreamPelOwnership.tla
 //! - formal/tla/specs/SwapDbWatchVisibility.tla
 
+use crate::AclKeyPermissions;
 use crate::AclSelectorProfile;
 use crate::AclUserProfile;
 use crate::ClientId;
@@ -30,6 +31,17 @@ use crate::redis_replication::RedisReplicationCoordinator;
 use garnet_cluster::ClusterConfigStore;
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
+use jsonwebtoken::Algorithm as JwtAlgorithm;
+use jsonwebtoken::AlgorithmFamily as JwtAlgorithmFamily;
+use jsonwebtoken::DecodingKey as JwtDecodingKey;
+use jsonwebtoken::Validation as JwtValidation;
+use jsonwebtoken::decode as decode_jwt;
+use jsonwebtoken::decode_header as decode_jwt_header;
+use jsonwebtoken::jwk::JwkSet as JwtJwkSet;
+use jsonwebtoken::jwk::KeyAlgorithm as JwtKeyAlgorithm;
+use jsonwebtoken::jwk::KeyOperations as JwtKeyOperations;
+use jsonwebtoken::jwk::PublicKeyUse as JwtPublicKeyUse;
+use serde_json::Value as JsonValue;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -41,6 +53,7 @@ use std::io;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -132,8 +145,14 @@ const DEFAULT_SET_MAX_INTSET_ENTRIES: usize = 512;
 const DEFAULT_PROTO_MAX_BULK_LEN: usize = 512 * 1024 * 1024;
 const DEFAULT_CONFIGURED_DATABASES: usize = 16;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
+const DEFAULT_SLOWLOG_THRESHOLD_MICROS: i64 = 10_000;
+const DEFAULT_SLOWLOG_MAX_LEN: usize = 128;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
+const DEFAULT_OIDC_PRINCIPAL_CLAIM: &[u8] = b"sub";
+const DEFAULT_OIDC_ALLOWED_ALGORITHMS: &[u8] = b"RS256";
+pub(crate) const OIDC_AUTH_SENTINEL_USERNAME: &[u8] = b"__OIDC__";
 const LATENCY_EVENT_HISTORY_CAPACITY: usize = 160;
+const INLINE_COMMAND_STATS_NAME_CAPACITY: usize = 64;
 const TRACKING_INVALIDATE_CHANNEL: &[u8] = b"__redis__:invalidate";
 const SET_OBJECT_HOT_STATE_CAPACITY: usize = 8;
 const SET_DEBUG_HT_MIN_TABLE_SIZE: usize = 4;
@@ -316,6 +335,11 @@ fn current_request_client_id() -> Option<ClientId> {
 #[inline]
 fn current_request_in_transaction() -> bool {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().in_transaction)
+}
+
+#[inline]
+pub(crate) fn acl_username_is_oidc_sentinel(username: &[u8]) -> bool {
+    ascii_eq_ignore_case(username, OIDC_AUTH_SENTINEL_USERNAME)
 }
 
 #[inline]
@@ -595,11 +619,30 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"logfile".to_vec(), b"".to_vec());
     values.insert(b"databases".to_vec(), b"16".to_vec());
     values.insert(b"lua-time-limit".to_vec(), b"5000".to_vec());
-    values.insert(b"slowlog-log-slower-than".to_vec(), b"10000".to_vec());
-    values.insert(b"slowlog-max-len".to_vec(), b"128".to_vec());
+    values.insert(
+        b"slowlog-log-slower-than".to_vec(),
+        DEFAULT_SLOWLOG_THRESHOLD_MICROS.to_string().into_bytes(),
+    );
+    values.insert(
+        b"slowlog-max-len".to_vec(),
+        DEFAULT_SLOWLOG_MAX_LEN.to_string().into_bytes(),
+    );
     values.insert(
         b"acllog-max-len".to_vec(),
         DEFAULT_ACL_LOG_MAX_LEN.to_string().into_bytes(),
+    );
+    values.insert(b"acl-pubsub-default".to_vec(), b"resetchannels".to_vec());
+    values.insert(b"aclfile".to_vec(), Vec::new());
+    values.insert(b"auth-oidc-jwks-file".to_vec(), Vec::new());
+    values.insert(b"auth-oidc-issuer".to_vec(), Vec::new());
+    values.insert(b"auth-oidc-audience".to_vec(), Vec::new());
+    values.insert(
+        b"auth-oidc-principal-claim".to_vec(),
+        DEFAULT_OIDC_PRINCIPAL_CLAIM.to_vec(),
+    );
+    values.insert(
+        b"auth-oidc-algorithms".to_vec(),
+        DEFAULT_OIDC_ALLOWED_ALGORITHMS.to_vec(),
     );
     values.insert(b"hash-max-listpack-entries".to_vec(), b"128".to_vec());
     values.insert(b"hash-max-listpack-value".to_vec(), b"64".to_vec());
@@ -651,14 +694,6 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"repl-min-slaves-to-write".to_vec(), b"0".to_vec());
     values.insert(b"repl-min-slaves-max-lag".to_vec(), b"10".to_vec());
     values
-}
-
-fn default_config_dir_value() -> Vec<u8> {
-    std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        .to_string_lossy()
-        .into_owned()
-        .into_bytes()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -745,6 +780,7 @@ use self::resp::append_verbatim_string;
 use self::resp::ascii_eq_ignore_case;
 use self::resp::format_resp_double;
 use self::session_functions::KvSessionFunctions;
+use self::session_functions::KvWriteOnlySessionFunctions;
 use self::session_functions::ObjectSessionFunctions;
 use self::value_codec::ContiguousI64RangeSet;
 use self::value_codec::DecodedObjectValue;
@@ -770,6 +806,9 @@ use self::value_codec::serialize_list_object_payload;
 use self::value_codec::serialize_set_object_payload;
 use self::value_codec::serialize_stream_object_payload;
 use self::value_codec::serialize_zset_object_payload;
+use crate::config_paths::configured_file_path_from_values;
+use crate::config_paths::default_config_dir_value;
+use crate::config_paths::optional_configured_file_path_from_values;
 
 #[derive(Debug, Clone, Copy)]
 struct TimestampMillis(u64);
@@ -1065,25 +1104,25 @@ struct DbKeySetState {
 }
 
 impl DbKeySetState {
-    fn insert(&mut self, key: DbKeyRef<'_>) {
+    fn insert(&mut self, key: DbKeyRef<'_>) -> bool {
         self.by_db
             .entry(key.db())
             .or_default()
-            .insert(RedisKey::from(key.key_ref()));
+            .insert(RedisKey::from(key.key_ref()))
     }
 
-    fn remove(&mut self, key: DbKeyRef<'_>) {
+    fn remove(&mut self, key: DbKeyRef<'_>) -> bool {
         let Some((removed, remove_db)) = self.by_db.get_mut(&key.db()).map(|keys| {
             let removed = keys.remove(key.key());
             let remove_db = keys.is_empty();
             (removed, remove_db)
         }) else {
-            return;
+            return false;
         };
-        let _ = removed;
         if remove_db {
             let _ = self.by_db.remove(&key.db());
         }
+        removed
     }
 
     fn contains(&self, key: DbKeyRef<'_>) -> bool {
@@ -1465,11 +1504,12 @@ struct DbCatalog {
 struct DbCatalogSideState {
     forced_list_quicklist_keys: Mutex<DbKeySetState>,
     forced_raw_string_keys: Mutex<DbKeySetState>,
+    forced_raw_string_keys_count: AtomicUsize,
     forced_set_encoding_floors: Mutex<DbKeyMapState<SetEncodingFloor>>,
     set_object_hot_state: Mutex<SetObjectHotState>,
     set_debug_ht_state: Mutex<DbKeyMapState<SetDebugHtState>>,
-    key_lru_access_millis: Mutex<DbKeyMapState<u64>>,
-    key_lfu_frequency: Mutex<DbKeyMapState<u8>>,
+    key_lru_access_millis: PerShard<Mutex<DbKeyMapState<u64>>>,
+    key_lfu_frequency: PerShard<Mutex<DbKeyMapState<u8>>>,
 }
 
 const DEFAULT_STREAM_IDMP_DURATION_SECONDS: u64 = 100;
@@ -1765,8 +1805,10 @@ struct LatencyEventState {
 #[derive(Debug, Default)]
 struct PubSubState {
     channel_subscribers: HashMap<Vec<u8>, HashSet<ClientId>>,
+    shard_channel_subscribers: HashMap<Vec<u8>, HashSet<ClientId>>,
     pattern_subscribers: HashMap<Vec<u8>, HashSet<ClientId>>,
     client_channels: HashMap<ClientId, HashSet<Vec<u8>>>,
+    client_shard_channels: HashMap<ClientId, HashSet<Vec<u8>>>,
     client_patterns: HashMap<ClientId, HashSet<Vec<u8>>>,
     pending_messages: HashMap<ClientId, VecDeque<Vec<u8>>>,
     pending_message_notifiers: HashMap<ClientId, Arc<Notify>>,
@@ -1831,6 +1873,7 @@ struct TrackingState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PubSubTargetKind {
     Channel,
+    ShardChannel,
     Pattern,
 }
 
@@ -2418,6 +2461,9 @@ pub struct RequestProcessor {
     blocked_clients: AtomicU64,
     connected_clients: AtomicU64,
     watching_clients: AtomicU64,
+    tracking_clients: AtomicU64,
+    access_clock_start: Instant,
+    access_clock_start_unix_millis: u64,
     executed_command_count: AtomicU64,
     rdb_key_save_delay_micros: AtomicU64,
     rdb_bgsave_deadline_unix_millis: AtomicU64,
@@ -2426,16 +2472,24 @@ pub struct RequestProcessor {
     command_rejected_calls: Mutex<HashMap<Vec<u8>, u64>>,
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     error_reply_counts: Mutex<HashMap<Vec<u8>, u64>>,
+    acl_access_denied_auth: AtomicU64,
+    acl_access_denied_cmd: AtomicU64,
+    acl_access_denied_key: AtomicU64,
+    acl_access_denied_channel: AtomicU64,
+    default_acl_user_unrestricted: AtomicBool,
     acl_log_entries: Mutex<VecDeque<AclLogEntry>>,
     acl_log_max_len: AtomicUsize,
     next_acl_log_entry_id: AtomicU64,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
     slowlog_entries: Mutex<VecDeque<SlowlogEntry>>,
     slowlog_next_id: AtomicU64,
+    slowlog_threshold_micros: AtomicI64,
+    slowlog_max_len: AtomicUsize,
     pubsub_state: Mutex<PubSubState>,
     tracking_state: Mutex<TrackingState>,
     tracking_table_max_keys: AtomicU64,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
+    oidc_auth_runtime: Mutex<Option<OidcAuthRuntime>>,
     lazy_expired_keys_for_replication: Mutex<Vec<DbScopedKey>>,
     script_replication_effects: Mutex<Vec<ScriptReplicationEffect>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
@@ -2471,6 +2525,7 @@ pub struct RequestProcessor {
     set_max_intset_entries: AtomicUsize,
     allow_access_expired: AtomicBool,
     functions: KvSessionFunctions,
+    write_only_functions: KvWriteOnlySessionFunctions,
     object_functions: ObjectSessionFunctions,
     /// CLIENT PAUSE end time as milliseconds since UNIX epoch. 0 means not paused.
     client_pause_end_millis: AtomicU64,
@@ -2488,14 +2543,38 @@ pub struct RequestProcessor {
     cluster_config_store: OnceLock<Arc<ClusterConfigStore>>,
     server_metrics: OnceLock<Arc<crate::ServerMetrics>>,
     replication_coordinator: OnceLock<Arc<RedisReplicationCoordinator>>,
-    aof_durability_runtime: OnceLock<Arc<LiveAofDurabilityRuntime>>,
+    aof_durability_runtime: RwLock<Option<Arc<LiveAofDurabilityRuntime>>>,
+    aof_durability_runtime_config: Mutex<Option<LiveAofDurabilityConfig>>,
+    local_aof_publish_enabled: AtomicBool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AclAuthenticationResult {
-    Authenticated,
+    Authenticated(Vec<u8>),
     DefaultPasswordNotConfigured,
     WrongPass,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OidcAuthConfigSnapshot {
+    jwks_path: std::path::PathBuf,
+    issuer: String,
+    audience: String,
+    principal_claim: String,
+    allowed_algorithms: Vec<JwtAlgorithm>,
+}
+
+#[derive(Debug, Clone)]
+struct OidcAuthKey {
+    key_id: Option<String>,
+    key_algorithm: Option<JwtAlgorithm>,
+    decoding_key: JwtDecodingKey,
+}
+
+#[derive(Debug, Clone)]
+struct OidcAuthRuntime {
+    snapshot: OidcAuthConfigSnapshot,
+    keys: Vec<OidcAuthKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2556,9 +2635,55 @@ pub(crate) fn acl_denial_message_for_user(user: &[u8], error: &AclAuthorizationE
     }
 }
 
+pub(crate) fn acl_dryrun_denial_message_for_user(
+    user: &[u8],
+    error: &AclAuthorizationError,
+) -> Vec<u8> {
+    match error {
+        AclAuthorizationError::Command(command) => format!(
+            "NOPERM User {} has no permissions to run the '{}' command",
+            String::from_utf8_lossy(user),
+            String::from_utf8_lossy(command)
+        )
+        .into_bytes(),
+        AclAuthorizationError::Key(key) => format!(
+            "NOPERM User {} has no permissions to access the '{}' key",
+            String::from_utf8_lossy(user),
+            String::from_utf8_lossy(key)
+        )
+        .into_bytes(),
+        AclAuthorizationError::Channel(channel) => format!(
+            "NOPERM User {} has no permissions to access the '{}' channel",
+            String::from_utf8_lossy(user),
+            String::from_utf8_lossy(channel)
+        )
+        .into_bytes(),
+        AclAuthorizationError::Database(database) => format!(
+            "NOPERM User {} has no permissions to access database '{}'",
+            String::from_utf8_lossy(user),
+            String::from_utf8_lossy(database)
+        )
+        .into_bytes(),
+    }
+}
+
 const ACL_LOG_GROUPING_MAX_TIME_DELTA_MILLIS: u64 = 60_000;
 const ACL_LOG_GROUPING_SCAN_LIMIT: usize = 10;
 const DEFAULT_ACL_LOG_MAX_LEN: usize = 128;
+
+fn parse_slowlog_threshold_config_value(value: &[u8]) -> i64 {
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_SLOWLOG_THRESHOLD_MICROS)
+}
+
+fn parse_slowlog_max_len_config_value(value: &[u8]) -> usize {
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_SLOWLOG_MAX_LEN)
+}
 
 fn acl_log_reason_matches(error: &AclAuthorizationError) -> AclLogReason {
     match error {
@@ -2668,6 +2793,12 @@ const CLIENT_PAUSE_TYPE_NONE: u8 = 0;
 const CLIENT_PAUSE_TYPE_WRITE: u8 = 1;
 const CLIENT_PAUSE_TYPE_ALL: u8 = 2;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ClientPauseSnapshot {
+    pause_type: u8,
+    end_millis: u64,
+}
+
 const CLIENT_REPLY_ON: u8 = 0;
 const CLIENT_REPLY_OFF: u8 = 1;
 const CLIENT_REPLY_SKIP: u8 = 2;
@@ -2771,6 +2902,7 @@ impl RequestProcessor {
         let mut string_expiration_counts = Vec::with_capacity(store_shard_count);
         let mut string_key_registries = Vec::with_capacity(store_shard_count);
         let mut object_key_registries = Vec::with_capacity(store_shard_count);
+        let side_state_shard_count = store_shard_count;
         for _ in 0..store_shard_count {
             string_stores.push(OrderedMutex::new(
                 TsavoriteKV::new(string_store_config)?,
@@ -2824,11 +2956,18 @@ impl RequestProcessor {
                 side_state: DbCatalogSideState {
                     forced_list_quicklist_keys: Mutex::new(DbKeySetState::default()),
                     forced_raw_string_keys: Mutex::new(DbKeySetState::default()),
+                    forced_raw_string_keys_count: AtomicUsize::new(0),
                     forced_set_encoding_floors: Mutex::new(DbKeyMapState::default()),
                     set_object_hot_state: Mutex::new(SetObjectHotState::default()),
                     set_debug_ht_state: Mutex::new(DbKeyMapState::default()),
-                    key_lru_access_millis: Mutex::new(DbKeyMapState::default()),
-                    key_lfu_frequency: Mutex::new(DbKeyMapState::default()),
+                    key_lru_access_millis: (0..side_state_shard_count)
+                        .map(|_| Mutex::new(DbKeyMapState::default()))
+                        .collect::<Vec<_>>()
+                        .into(),
+                    key_lfu_frequency: (0..side_state_shard_count)
+                        .map(|_| Mutex::new(DbKeyMapState::default()))
+                        .collect::<Vec<_>>()
+                        .into(),
                 },
             },
             watch_versions: (0..WATCH_VERSION_MAP_SIZE)
@@ -2855,6 +2994,9 @@ impl RequestProcessor {
             blocked_clients: AtomicU64::new(0),
             connected_clients: AtomicU64::new(0),
             watching_clients: AtomicU64::new(0),
+            tracking_clients: AtomicU64::new(0),
+            access_clock_start: current_instant(),
+            access_clock_start_unix_millis: current_unix_time_millis().unwrap_or(0),
             executed_command_count: AtomicU64::new(0),
             rdb_key_save_delay_micros: AtomicU64::new(0),
             rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
@@ -2863,16 +3005,24 @@ impl RequestProcessor {
             command_rejected_calls: Mutex::new(HashMap::new()),
             command_failed_calls: Mutex::new(HashMap::new()),
             error_reply_counts: Mutex::new(HashMap::new()),
+            acl_access_denied_auth: AtomicU64::new(0),
+            acl_access_denied_cmd: AtomicU64::new(0),
+            acl_access_denied_key: AtomicU64::new(0),
+            acl_access_denied_channel: AtomicU64::new(0),
+            default_acl_user_unrestricted: AtomicBool::new(true),
             acl_log_entries: Mutex::new(VecDeque::new()),
             acl_log_max_len: AtomicUsize::new(DEFAULT_ACL_LOG_MAX_LEN),
             next_acl_log_entry_id: AtomicU64::new(0),
             latency_events: Mutex::new(HashMap::new()),
             slowlog_entries: Mutex::new(VecDeque::new()),
             slowlog_next_id: AtomicU64::new(0),
+            slowlog_threshold_micros: AtomicI64::new(DEFAULT_SLOWLOG_THRESHOLD_MICROS),
+            slowlog_max_len: AtomicUsize::new(DEFAULT_SLOWLOG_MAX_LEN),
             pubsub_state: Mutex::new(PubSubState::default()),
             tracking_state: Mutex::new(TrackingState::default()),
             tracking_table_max_keys: AtomicU64::new(1_000_000),
             config_overrides: Mutex::new(default_config_overrides()),
+            oidc_auth_runtime: Mutex::new(None),
             lazy_expired_keys_for_replication: Mutex::new(Vec::new()),
             script_replication_effects: Mutex::new(Vec::new()),
             script_cache: Mutex::new(HashMap::new()),
@@ -2905,6 +3055,7 @@ impl RequestProcessor {
             set_max_intset_entries: AtomicUsize::new(DEFAULT_SET_MAX_INTSET_ENTRIES),
             allow_access_expired: AtomicBool::new(false),
             functions: KvSessionFunctions,
+            write_only_functions: KvWriteOnlySessionFunctions,
             object_functions: ObjectSessionFunctions,
             client_pause_end_millis: AtomicU64::new(0),
             client_pause_type: AtomicU8::new(CLIENT_PAUSE_TYPE_NONE),
@@ -2919,7 +3070,9 @@ impl RequestProcessor {
             cluster_config_store: OnceLock::new(),
             server_metrics: OnceLock::new(),
             replication_coordinator: OnceLock::new(),
-            aof_durability_runtime: OnceLock::new(),
+            aof_durability_runtime: RwLock::new(None),
+            aof_durability_runtime_config: Mutex::new(None),
+            local_aof_publish_enabled: AtomicBool::new(false),
         })
     }
 
@@ -3228,6 +3381,11 @@ impl RequestProcessor {
             remove_all_pubsub_client_subscriptions(
                 &mut state,
                 client_id,
+                PubSubTargetKind::ShardChannel,
+            );
+            remove_all_pubsub_client_subscriptions(
+                &mut state,
+                client_id,
                 PubSubTargetKind::Pattern,
             );
             let _ = state.pending_messages.remove(&client_id);
@@ -3272,10 +3430,15 @@ impl RequestProcessor {
             return;
         };
         if config.mode == ClientTrackingModeSetting::Off {
-            let _ = state.clients.remove(&client_id);
+            let removed = state.clients.remove(&client_id);
+            drop(state);
+            if removed.is_some() {
+                self.unregister_tracking_client();
+            }
             return;
         }
 
+        let inserted = !state.clients.contains_key(&client_id);
         let client_state = state.clients.entry(client_id).or_default();
         if config.bcast {
             client_state.tracked_keys.clear();
@@ -3283,6 +3446,9 @@ impl RequestProcessor {
         client_state.config = config;
         client_state.broken_redirect = false;
         client_state.broken_redirect_notified = false;
+        if inserted {
+            self.register_tracking_client();
+        }
     }
 
     pub(crate) fn set_client_tracking_caching(&self, client_id: ClientId, caching: Option<bool>) {
@@ -3318,7 +3484,11 @@ impl RequestProcessor {
         let Ok(mut state) = self.tracking_state.lock() else {
             return;
         };
-        let _ = state.clients.remove(&client_id);
+        let removed = state.clients.remove(&client_id);
+        drop(state);
+        if removed.is_some() {
+            self.unregister_tracking_client();
+        }
     }
 
     pub(crate) fn client_tracking_redirect_broken(&self, client_id: ClientId) -> bool {
@@ -3360,6 +3530,9 @@ impl RequestProcessor {
     }
 
     pub(crate) fn invalidate_all_tracking_entries(&self) {
+        if !self.has_tracking_clients() {
+            return;
+        }
         let Ok(mut state) = self.tracking_state.lock() else {
             return;
         };
@@ -3377,6 +3550,9 @@ impl RequestProcessor {
     }
 
     pub(crate) fn enforce_tracking_table_max_keys(&self) {
+        if !self.has_tracking_clients() {
+            return;
+        }
         let max_keys = usize::try_from(self.tracking_table_max_keys.load(Ordering::Acquire))
             .unwrap_or(usize::MAX);
         let Ok(mut state) = self.tracking_state.lock() else {
@@ -3415,6 +3591,9 @@ impl RequestProcessor {
     }
 
     pub(crate) fn track_read_key_for_current_client(&self, key: &[u8]) {
+        if !self.has_tracking_clients() {
+            return;
+        }
         if !current_request_tracking_reads_enabled() {
             return;
         }
@@ -3447,6 +3626,9 @@ impl RequestProcessor {
 
     fn apply_deferred_tracking_reads_for_client(&self, client_id: ClientId, keys: &[RedisKey]) {
         if keys.is_empty() {
+            return;
+        }
+        if !self.has_tracking_clients() {
             return;
         }
         let Ok(mut state) = self.tracking_state.lock() else {
@@ -3521,6 +3703,14 @@ impl RequestProcessor {
         self.pubsub_subscribe_targets(client_id, patterns, PubSubTargetKind::Pattern)
     }
 
+    pub(crate) fn pubsub_subscribe_shard_channels(
+        &self,
+        client_id: ClientId,
+        channels: &[&[u8]],
+    ) -> Vec<(Vec<u8>, usize)> {
+        self.pubsub_subscribe_targets(client_id, channels, PubSubTargetKind::ShardChannel)
+    }
+
     fn pubsub_subscribe_targets(
         &self,
         client_id: ClientId,
@@ -3543,6 +3733,11 @@ impl RequestProcessor {
                     .entry(client_id)
                     .or_default()
                     .insert(target_vec.clone()),
+                PubSubTargetKind::ShardChannel => state
+                    .client_shard_channels
+                    .entry(client_id)
+                    .or_default()
+                    .insert(target_vec.clone()),
                 PubSubTargetKind::Pattern => state
                     .client_patterns
                     .entry(client_id)
@@ -3554,6 +3749,13 @@ impl RequestProcessor {
                     PubSubTargetKind::Channel => {
                         state
                             .channel_subscribers
+                            .entry(target_vec.clone())
+                            .or_default()
+                            .insert(client_id);
+                    }
+                    PubSubTargetKind::ShardChannel => {
+                        state
+                            .shard_channel_subscribers
                             .entry(target_vec.clone())
                             .or_default()
                             .insert(client_id);
@@ -3591,6 +3793,14 @@ impl RequestProcessor {
         self.pubsub_unsubscribe_targets(client_id, patterns, PubSubTargetKind::Pattern)
     }
 
+    pub(crate) fn pubsub_unsubscribe_shard_channels(
+        &self,
+        client_id: ClientId,
+        channels: &[&[u8]],
+    ) -> Vec<(Option<Vec<u8>>, usize)> {
+        self.pubsub_unsubscribe_targets(client_id, channels, PubSubTargetKind::ShardChannel)
+    }
+
     fn pubsub_unsubscribe_targets(
         &self,
         client_id: ClientId,
@@ -3602,6 +3812,7 @@ impl RequestProcessor {
         };
         let existing_subscriptions = match target_kind {
             PubSubTargetKind::Channel => state.client_channels.get(&client_id),
+            PubSubTargetKind::ShardChannel => state.client_shard_channels.get(&client_id),
             PubSubTargetKind::Pattern => state.client_patterns.get(&client_id),
         };
         let targets = collect_pubsub_unsubscribe_targets(existing_subscriptions, targets);
@@ -3617,6 +3828,11 @@ impl RequestProcessor {
                     client_id,
                     &target,
                 ),
+                PubSubTargetKind::ShardChannel => remove_pubsub_client_subscription(
+                    &mut state.client_shard_channels,
+                    client_id,
+                    &target,
+                ),
                 PubSubTargetKind::Pattern => remove_pubsub_client_subscription(
                     &mut state.client_patterns,
                     client_id,
@@ -3628,6 +3844,11 @@ impl RequestProcessor {
                     PubSubTargetKind::Channel => {
                         remove_pubsub_subscriber(&mut state.channel_subscribers, &target, client_id)
                     }
+                    PubSubTargetKind::ShardChannel => remove_pubsub_subscriber(
+                        &mut state.shard_channel_subscribers,
+                        &target,
+                        client_id,
+                    ),
                     PubSubTargetKind::Pattern => {
                         remove_pubsub_subscriber(&mut state.pattern_subscribers, &target, client_id)
                     }
@@ -3739,6 +3960,27 @@ impl RequestProcessor {
             .collect()
     }
 
+    pub(crate) fn pubsub_shardnumsub(&self, channels: &[&[u8]]) -> Vec<(Vec<u8>, usize)> {
+        let Ok(state) = self.pubsub_state.lock() else {
+            return channels
+                .iter()
+                .map(|channel| ((*channel).to_vec(), 0usize))
+                .collect();
+        };
+        channels
+            .iter()
+            .map(|channel| {
+                (
+                    (*channel).to_vec(),
+                    state
+                        .shard_channel_subscribers
+                        .get(*channel)
+                        .map_or(0, HashSet::len),
+                )
+            })
+            .collect()
+    }
+
     pub(crate) fn pubsub_numpat(&self) -> usize {
         let Ok(state) = self.pubsub_state.lock() else {
             return 0;
@@ -3752,6 +3994,28 @@ impl RequestProcessor {
         };
         let mut channels = state
             .channel_subscribers
+            .keys()
+            .filter(|channel| match pattern {
+                Some(pattern) => self::server_commands::redis_glob_match(
+                    pattern,
+                    channel.as_slice(),
+                    self::server_commands::CaseSensitivity::Sensitive,
+                    0,
+                ),
+                None => true,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        channels.sort();
+        channels
+    }
+
+    pub(crate) fn pubsub_shardchannels(&self, pattern: Option<&[u8]>) -> Vec<Vec<u8>> {
+        let Ok(state) = self.pubsub_state.lock() else {
+            return Vec::new();
+        };
+        let mut channels = state
+            .shard_channel_subscribers
             .keys()
             .filter(|channel| match pattern {
                 Some(pattern) => self::server_commands::redis_glob_match(
@@ -3809,6 +4073,9 @@ impl RequestProcessor {
         origin_client_id: Option<ClientId>,
     ) {
         if keys.is_empty() {
+            return;
+        }
+        if !self.has_tracking_clients() {
             return;
         }
         let (connected_clients, source_resp_versions) = {
@@ -3898,6 +4165,9 @@ impl RequestProcessor {
         key: &[u8],
         origin_client_id: Option<ClientId>,
     ) {
+        if !self.has_tracking_clients() {
+            return;
+        }
         if origin_client_id.is_some() && collect_tracking_invalidation_key(key) {
             return;
         }
@@ -4023,6 +4293,30 @@ impl RequestProcessor {
         self.connected_clients.load(Ordering::Acquire)
     }
 
+    pub(crate) fn register_watching_client(&self) {
+        self.watching_clients.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn unregister_watching_client(&self) {
+        let _ = self.watching_clients.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn register_tracking_client(&self) {
+        self.tracking_clients.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn unregister_tracking_client(&self) {
+        let _ = self.tracking_clients.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn has_watching_clients(&self) -> bool {
+        self.watching_clients.load(Ordering::Acquire) != 0
+    }
+
+    fn has_tracking_clients(&self) -> bool {
+        self.tracking_clients.load(Ordering::Acquire) != 0
+    }
+
     pub(super) fn watching_clients(&self) -> u64 {
         self.watching_clients.load(Ordering::Acquire)
     }
@@ -4142,6 +4436,14 @@ impl RequestProcessor {
             .iter()
             .map(|byte| byte.to_ascii_lowercase())
             .collect::<Vec<u8>>();
+        if normalized.as_slice() == b"slowlog-log-slower-than" {
+            let parsed = parse_slowlog_threshold_config_value(&value);
+            self.slowlog_threshold_micros
+                .store(parsed, Ordering::Release);
+        } else if normalized.as_slice() == b"slowlog-max-len" {
+            let parsed = parse_slowlog_max_len_config_value(&value);
+            self.slowlog_max_len.store(parsed, Ordering::Release);
+        }
         if let Ok(mut values) = self.config_overrides.lock() {
             values.insert(normalized, value);
         }
@@ -4154,6 +4456,508 @@ impl RequestProcessor {
             .unwrap_or_default()
     }
 
+    pub(crate) fn acl_pubsub_default_allchannels(&self) -> bool {
+        let Ok(values) = self.config_overrides.lock() else {
+            return false;
+        };
+        values
+            .get(b"acl-pubsub-default".as_slice())
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"allchannels"))
+    }
+
+    fn configured_acl_file_path(&self) -> Option<std::path::PathBuf> {
+        let Ok(values) = self.config_overrides.lock() else {
+            return None;
+        };
+        optional_configured_file_path_from_values(&values, b"aclfile")
+    }
+
+    fn configured_oidc_jwks_path_from_values(
+        values: &HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Option<std::path::PathBuf> {
+        optional_configured_file_path_from_values(values, b"auth-oidc-jwks-file")
+    }
+
+    fn oidc_algorithm_name(algorithm: JwtAlgorithm) -> &'static str {
+        match algorithm {
+            JwtAlgorithm::HS256 => "HS256",
+            JwtAlgorithm::HS384 => "HS384",
+            JwtAlgorithm::HS512 => "HS512",
+            JwtAlgorithm::ES256 => "ES256",
+            JwtAlgorithm::ES384 => "ES384",
+            JwtAlgorithm::RS256 => "RS256",
+            JwtAlgorithm::RS384 => "RS384",
+            JwtAlgorithm::RS512 => "RS512",
+            JwtAlgorithm::PS256 => "PS256",
+            JwtAlgorithm::PS384 => "PS384",
+            JwtAlgorithm::PS512 => "PS512",
+            JwtAlgorithm::EdDSA => "EdDSA",
+        }
+    }
+
+    fn parse_oidc_algorithms(value: &[u8]) -> Result<Vec<JwtAlgorithm>, String> {
+        let mut algorithms = Vec::new();
+        for token in value
+            .split(|byte| *byte == b',' || byte.is_ascii_whitespace())
+            .filter(|part| !part.is_empty())
+        {
+            let token_text = std::str::from_utf8(token).map_err(|_| {
+                "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-algorithms') - argument must be a comma-separated list of asymmetric JWT algorithms".to_string()
+            })?;
+            let algorithm = JwtAlgorithm::from_str(token_text).map_err(|_| {
+                "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-algorithms') - argument must be a comma-separated list of asymmetric JWT algorithms".to_string()
+            })?;
+            if matches!(
+                algorithm,
+                JwtAlgorithm::HS256 | JwtAlgorithm::HS384 | JwtAlgorithm::HS512
+            ) {
+                return Err(
+                    "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-algorithms') - symmetric JWT algorithms are not allowed for OIDC auth".to_string(),
+                );
+            }
+            if !algorithms.contains(&algorithm) {
+                algorithms.push(algorithm);
+            }
+        }
+
+        if algorithms.is_empty() {
+            return Err(
+                "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-algorithms') - argument must contain at least one asymmetric JWT algorithm".to_string(),
+            );
+        }
+        Ok(algorithms)
+    }
+
+    pub(super) fn canonical_oidc_algorithms_config_value(algorithms: &[JwtAlgorithm]) -> Vec<u8> {
+        algorithms
+            .iter()
+            .map(|algorithm| Self::oidc_algorithm_name(*algorithm))
+            .collect::<Vec<_>>()
+            .join(",")
+            .into_bytes()
+    }
+
+    fn oidc_key_algorithm_to_jwt_algorithm(algorithm: JwtKeyAlgorithm) -> Option<JwtAlgorithm> {
+        match algorithm {
+            JwtKeyAlgorithm::ES256 => Some(JwtAlgorithm::ES256),
+            JwtKeyAlgorithm::ES384 => Some(JwtAlgorithm::ES384),
+            JwtKeyAlgorithm::RS256 => Some(JwtAlgorithm::RS256),
+            JwtKeyAlgorithm::RS384 => Some(JwtAlgorithm::RS384),
+            JwtKeyAlgorithm::RS512 => Some(JwtAlgorithm::RS512),
+            JwtKeyAlgorithm::PS256 => Some(JwtAlgorithm::PS256),
+            JwtKeyAlgorithm::PS384 => Some(JwtAlgorithm::PS384),
+            JwtKeyAlgorithm::PS512 => Some(JwtAlgorithm::PS512),
+            JwtKeyAlgorithm::EdDSA => Some(JwtAlgorithm::EdDSA),
+            JwtKeyAlgorithm::HS256
+            | JwtKeyAlgorithm::HS384
+            | JwtKeyAlgorithm::HS512
+            | JwtKeyAlgorithm::RSA1_5
+            | JwtKeyAlgorithm::RSA_OAEP
+            | JwtKeyAlgorithm::RSA_OAEP_256
+            | JwtKeyAlgorithm::UNKNOWN_ALGORITHM => None,
+        }
+    }
+
+    fn oidc_key_supports_algorithm(key: &OidcAuthKey, algorithm: JwtAlgorithm) -> bool {
+        let family_matches = match algorithm {
+            JwtAlgorithm::RS256
+            | JwtAlgorithm::RS384
+            | JwtAlgorithm::RS512
+            | JwtAlgorithm::PS256
+            | JwtAlgorithm::PS384
+            | JwtAlgorithm::PS512 => key.decoding_key.family() == JwtAlgorithmFamily::Rsa,
+            JwtAlgorithm::ES256 | JwtAlgorithm::ES384 => {
+                key.decoding_key.family() == JwtAlgorithmFamily::Ec
+            }
+            JwtAlgorithm::EdDSA => key.decoding_key.family() == JwtAlgorithmFamily::Ed,
+            JwtAlgorithm::HS256 | JwtAlgorithm::HS384 | JwtAlgorithm::HS512 => false,
+        };
+        family_matches
+            && key
+                .key_algorithm
+                .is_none_or(|candidate| candidate == algorithm)
+    }
+
+    fn oidc_auth_config_snapshot_from_values(
+        values: &HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Option<OidcAuthConfigSnapshot>, String> {
+        let Some(jwks_path) = Self::configured_oidc_jwks_path_from_values(values) else {
+            return Ok(None);
+        };
+
+        let issuer = values
+            .get(b"auth-oidc-issuer".as_slice())
+            .cloned()
+            .unwrap_or_default();
+        let audience = values
+            .get(b"auth-oidc-audience".as_slice())
+            .cloned()
+            .unwrap_or_default();
+        if issuer.is_empty() || audience.is_empty() {
+            return Err(
+                "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-jwks-file') - auth-oidc-issuer and auth-oidc-audience must be configured together with auth-oidc-jwks-file".to_string(),
+            );
+        }
+
+        let principal_claim = values
+            .get(b"auth-oidc-principal-claim".as_slice())
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_OIDC_PRINCIPAL_CLAIM.to_vec());
+        if principal_claim.is_empty() {
+            return Err(
+                "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-principal-claim') - argument must be a non-empty UTF-8 string".to_string(),
+            );
+        }
+
+        let algorithms_raw = values
+            .get(b"auth-oidc-algorithms".as_slice())
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_OIDC_ALLOWED_ALGORITHMS.to_vec());
+        let allowed_algorithms = Self::parse_oidc_algorithms(&algorithms_raw)?;
+
+        let issuer = String::from_utf8(issuer).map_err(|_| {
+            "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-issuer') - argument must be valid UTF-8".to_string()
+        })?;
+        let audience = String::from_utf8(audience).map_err(|_| {
+            "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-audience') - argument must be valid UTF-8".to_string()
+        })?;
+        let principal_claim = String::from_utf8(principal_claim).map_err(|_| {
+            "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-principal-claim') - argument must be a non-empty UTF-8 string".to_string()
+        })?;
+
+        Ok(Some(OidcAuthConfigSnapshot {
+            jwks_path,
+            issuer,
+            audience,
+            principal_claim,
+            allowed_algorithms,
+        }))
+    }
+
+    fn build_oidc_auth_runtime(
+        snapshot: &OidcAuthConfigSnapshot,
+    ) -> Result<OidcAuthRuntime, String> {
+        let payload = std::fs::read(&snapshot.jwks_path).map_err(|error| {
+            format!(
+                "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-jwks-file') - unable to read JWKS file '{}': {error}",
+                snapshot.jwks_path.display()
+            )
+        })?;
+        let jwks = serde_json::from_slice::<JwtJwkSet>(&payload).map_err(|error| {
+            format!(
+                "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-jwks-file') - invalid JWKS JSON in '{}': {error}",
+                snapshot.jwks_path.display()
+            )
+        })?;
+
+        let mut keys = Vec::new();
+        for jwk in jwks.keys {
+            if jwk
+                .common
+                .public_key_use
+                .as_ref()
+                .is_some_and(|use_hint| *use_hint != JwtPublicKeyUse::Signature)
+            {
+                continue;
+            }
+            if jwk
+                .common
+                .key_operations
+                .as_ref()
+                .is_some_and(|operations| {
+                    !operations
+                        .iter()
+                        .any(|operation| *operation == JwtKeyOperations::Verify)
+                })
+            {
+                continue;
+            }
+
+            let key_algorithm = jwk
+                .common
+                .key_algorithm
+                .and_then(Self::oidc_key_algorithm_to_jwt_algorithm);
+            if key_algorithm
+                .as_ref()
+                .is_some_and(|algorithm| !snapshot.allowed_algorithms.contains(algorithm))
+            {
+                continue;
+            }
+
+            let Ok(decoding_key) = JwtDecodingKey::from_jwk(&jwk) else {
+                continue;
+            };
+            if decoding_key.family() == JwtAlgorithmFamily::Hmac {
+                continue;
+            }
+
+            keys.push(OidcAuthKey {
+                key_id: jwk.common.key_id.clone(),
+                key_algorithm,
+                decoding_key,
+            });
+        }
+
+        if keys.is_empty() {
+            return Err(format!(
+                "ERR CONFIG SET failed (possibly related to argument 'auth-oidc-jwks-file') - no usable signature-verification keys were found in '{}'",
+                snapshot.jwks_path.display()
+            ));
+        }
+
+        Ok(OidcAuthRuntime {
+            snapshot: snapshot.clone(),
+            keys,
+        })
+    }
+
+    fn oidc_auth_runtime_from_config_items(
+        &self,
+        values: &HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Option<OidcAuthRuntime>, String> {
+        let Some(snapshot) = Self::oidc_auth_config_snapshot_from_values(values)? else {
+            return Ok(None);
+        };
+        Self::build_oidc_auth_runtime(&snapshot).map(Some)
+    }
+
+    pub(super) fn validate_oidc_auth_config_items(
+        &self,
+        values: &HashMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(), String> {
+        self.oidc_auth_runtime_from_config_items(values).map(|_| ())
+    }
+
+    fn current_oidc_auth_runtime(&self) -> Option<OidcAuthRuntime> {
+        let snapshot = {
+            let Ok(values) = self.config_overrides.lock() else {
+                return None;
+            };
+            match Self::oidc_auth_config_snapshot_from_values(&values) {
+                Ok(snapshot) => snapshot,
+                Err(_) => None,
+            }
+        };
+
+        let Some(snapshot) = snapshot else {
+            let Ok(mut runtime) = self.oidc_auth_runtime.lock() else {
+                return None;
+            };
+            *runtime = None;
+            return None;
+        };
+
+        let Ok(mut runtime) = self.oidc_auth_runtime.lock() else {
+            return None;
+        };
+        if runtime
+            .as_ref()
+            .is_some_and(|cached| cached.snapshot == snapshot)
+        {
+            return runtime.clone();
+        }
+
+        let Ok(rebuilt) = Self::build_oidc_auth_runtime(&snapshot) else {
+            return None;
+        };
+        *runtime = Some(rebuilt.clone());
+        Some(rebuilt)
+    }
+
+    fn authenticate_oidc_token(&self, token: &[u8]) -> Option<Vec<u8>> {
+        let Ok(token_text) = std::str::from_utf8(token) else {
+            return None;
+        };
+        let Some(runtime) = self.current_oidc_auth_runtime() else {
+            return None;
+        };
+        let Ok(header) = decode_jwt_header(token_text) else {
+            return None;
+        };
+        if !runtime.snapshot.allowed_algorithms.contains(&header.alg) {
+            return None;
+        }
+
+        let candidates = if let Some(key_id) = header.kid.as_deref() {
+            runtime
+                .keys
+                .iter()
+                .filter(|key| {
+                    key.key_id.as_deref() == Some(key_id)
+                        && Self::oidc_key_supports_algorithm(key, header.alg)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            runtime
+                .keys
+                .iter()
+                .filter(|key| Self::oidc_key_supports_algorithm(key, header.alg))
+                .collect::<Vec<_>>()
+        };
+
+        if header.kid.is_none() && candidates.len() != 1 {
+            return None;
+        }
+
+        let mut validation = JwtValidation::new(
+            *runtime
+                .snapshot
+                .allowed_algorithms
+                .first()
+                .unwrap_or(&JwtAlgorithm::RS256),
+        );
+        validation.algorithms = runtime.snapshot.allowed_algorithms.clone();
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+        validation.set_issuer(&[runtime.snapshot.issuer.as_str()]);
+        validation.set_audience(&[runtime.snapshot.audience.as_str()]);
+
+        for candidate in candidates {
+            let Ok(token_data) =
+                decode_jwt::<JsonValue>(token_text, &candidate.decoding_key, &validation)
+            else {
+                continue;
+            };
+            let Some(claims) = token_data.claims.as_object() else {
+                continue;
+            };
+            let Some(principal) = claims
+                .get(&runtime.snapshot.principal_claim)
+                .and_then(JsonValue::as_str)
+            else {
+                continue;
+            };
+            if principal.is_empty() {
+                continue;
+            }
+            let principal_bytes = principal.as_bytes();
+            let Some(profile) = self.acl_user_profile(principal_bytes) else {
+                continue;
+            };
+            if !profile.enabled {
+                continue;
+            }
+            return Some(principal_bytes.to_vec());
+        }
+
+        None
+    }
+
+    fn acl_file_not_configured_error() -> String {
+        "ERR This Redis instance is not configured to use an ACL file".to_string()
+    }
+
+    pub(crate) fn save_acl_users_to_configured_file(&self) -> Result<(), String> {
+        let Some(path) = self.configured_acl_file_path() else {
+            return Err(Self::acl_file_not_configured_error());
+        };
+
+        let users = self.acl_users_snapshot();
+        let mut ordered_users = users;
+        ordered_users.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut payload = Vec::new();
+        for (index, (username, profile)) in ordered_users.iter().enumerate() {
+            if index > 0 {
+                payload.push(b'\n');
+            }
+            payload.extend_from_slice(&server_commands::render_acl_file_line(username, profile));
+        }
+        payload.push(b'\n');
+
+        std::fs::write(&path, payload).map_err(|error| {
+            format!(
+                "ERR Failed saving ACLs to file '{}': {error}",
+                path.display()
+            )
+        })
+    }
+
+    pub(crate) fn load_acl_users_from_configured_file(&self) -> Result<(), String> {
+        let Some(path) = self.configured_acl_file_path() else {
+            return Err(Self::acl_file_not_configured_error());
+        };
+
+        let file_bytes = std::fs::read(&path).map_err(|error| {
+            format!(
+                "ERR Failed loading ACLs from file '{}': {error}",
+                path.display()
+            )
+        })?;
+        let file_text = String::from_utf8_lossy(&file_bytes);
+        let default_all_channels = self.acl_pubsub_default_allchannels();
+        let mut loaded_users = HashMap::<Vec<u8>, AclUserProfile>::new();
+
+        for raw_line in file_text.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            let tokens = line
+                .split_ascii_whitespace()
+                .map(str::as_bytes)
+                .collect::<Vec<_>>();
+            if tokens.len() < 2 || !tokens[0].eq_ignore_ascii_case(b"user") {
+                return Err(format!(
+                    "ERR Bad ACL definition in file '{}'",
+                    path.display()
+                ));
+            }
+
+            let username = tokens[1];
+            if !server_commands::acl_username_is_valid(username) {
+                return Err(format!(
+                    "ERR Invalid user '{}' found in ACL file",
+                    String::from_utf8_lossy(username)
+                ));
+            }
+            if loaded_users.contains_key(username) {
+                return Err(format!(
+                    "ERR Duplicate user '{}' found in ACL file",
+                    String::from_utf8_lossy(username)
+                ));
+            }
+
+            let profile = server_commands::parse_acl_setuser_profile(
+                None,
+                &tokens[2..],
+                default_all_channels,
+            )?;
+            loaded_users.insert(username.to_vec(), profile);
+        }
+
+        loaded_users
+            .entry(b"default".to_vec())
+            .or_insert_with(AclUserProfile::default_superuser);
+
+        let previous_users = self.acl_users_snapshot();
+        {
+            let Ok(mut users) = self.acl_users.lock() else {
+                return Err("ERR ACL state is unavailable".to_string());
+            };
+            *users = loaded_users.clone();
+            self.update_default_acl_user_unrestricted_from_users(&users);
+        }
+
+        let mut removed_client_ids = Vec::new();
+        if let Some(metrics) = self.server_metrics.get() {
+            for (username, _) in previous_users {
+                if loaded_users.contains_key(username.as_slice()) {
+                    continue;
+                }
+                removed_client_ids.extend(metrics.client_ids_for_user(&username));
+            }
+        }
+        if let Some(metrics) = self.server_metrics.get() {
+            metrics.mark_clients_killed(&removed_client_ids);
+        }
+        for (username, profile) in &loaded_users {
+            self.reconcile_acl_pubsub_clients_for_user(username, profile);
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn attach_metrics(&self, metrics: Arc<crate::ServerMetrics>) {
         let _ = self.server_metrics.set(metrics);
     }
@@ -4163,6 +4967,17 @@ impl RequestProcessor {
             .lock()
             .map(|users| users.contains_key(user))
             .unwrap_or(false)
+    }
+
+    fn update_default_acl_user_unrestricted_from_users(
+        &self,
+        users: &HashMap<Vec<u8>, AclUserProfile>,
+    ) {
+        let unrestricted = users
+            .get(b"default".as_slice())
+            .is_some_and(AclUserProfile::is_unrestricted_runtime);
+        self.default_acl_user_unrestricted
+            .store(unrestricted, Ordering::Release);
     }
 
     pub(crate) fn acl_user_profile(&self, user: &[u8]) -> Option<AclUserProfile> {
@@ -4197,6 +5012,7 @@ impl RequestProcessor {
             return Err(RequestExecutionError::StorageBusy);
         };
         users.insert(user.to_vec(), profile);
+        self.update_default_acl_user_unrestricted_from_users(&users);
         drop(users);
         self.reconcile_acl_pubsub_clients_for_user(user, &profile_for_reconcile);
         Ok(())
@@ -4222,6 +5038,8 @@ impl RequestProcessor {
                 }
             }
         }
+        self.update_default_acl_user_unrestricted_from_users(&users);
+        drop(users);
         if let Some(metrics) = self.server_metrics.get() {
             metrics.mark_clients_killed(&killed_clients);
         }
@@ -4234,31 +5052,36 @@ impl RequestProcessor {
         password: &[u8],
         single_arg_default_auth: bool,
     ) -> AclAuthenticationResult {
-        let Some(profile) = self.acl_user_profile(user) else {
-            return AclAuthenticationResult::WrongPass;
-        };
-        if !profile.enabled {
+        if !single_arg_default_auth && acl_username_is_oidc_sentinel(user) {
+            if let Some(principal) = self.authenticate_oidc_token(password) {
+                return AclAuthenticationResult::Authenticated(principal);
+            }
             return AclAuthenticationResult::WrongPass;
         }
-        if profile.nopass || profile.password_matches(password) {
-            return AclAuthenticationResult::Authenticated;
+        if let Some(profile) = self.acl_user_profile(user)
+            && profile.enabled
+            && (profile.nopass || profile.password_matches(password))
+        {
+            return AclAuthenticationResult::Authenticated(user.to_vec());
         }
         if single_arg_default_auth
             && ascii_eq_ignore_case(user, b"default")
-            && profile.password_hashes.is_empty()
-            && !profile.nopass
+            && self
+                .acl_user_profile(user)
+                .is_some_and(|profile| profile.password_hashes.is_empty() && !profile.nopass)
         {
             return AclAuthenticationResult::DefaultPasswordNotConfigured;
         }
         AclAuthenticationResult::WrongPass
     }
 
-    fn acl_authorize_profile_command(
+    fn acl_authorize_profile_command_with_mode(
         &self,
         profile: &AclUserProfile,
         selected_db: DbName,
         command: CommandId,
         args: &[&[u8]],
+        mode: AclAuthorizationMode,
     ) -> Result<(), AclAuthorizationError> {
         let base_token = acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec());
         let specific_token = acl_specific_rule_token(command, args);
@@ -4272,6 +5095,7 @@ impl RequestProcessor {
                 specific_token.as_deref(),
                 selected_db,
                 self.configured_databases(),
+                mode,
             ) {
                 Ok(()) => return Ok(()),
                 Err(error) => {
@@ -4311,6 +5135,22 @@ impl RequestProcessor {
         })
     }
 
+    fn acl_authorize_profile_command(
+        &self,
+        profile: &AclUserProfile,
+        selected_db: DbName,
+        command: CommandId,
+        args: &[&[u8]],
+    ) -> Result<(), AclAuthorizationError> {
+        self.acl_authorize_profile_command_with_mode(
+            profile,
+            selected_db,
+            command,
+            args,
+            AclAuthorizationMode::Live,
+        )
+    }
+
     pub(crate) fn acl_authorize_user_command(
         &self,
         user: &[u8],
@@ -4331,6 +5171,27 @@ impl RequestProcessor {
         self.acl_authorize_profile_command(&profile, selected_db, command, args)
     }
 
+    pub(crate) fn acl_authorize_user_dryrun_command(
+        &self,
+        user: &[u8],
+        selected_db: DbName,
+        command: CommandId,
+        args: &[&[u8]],
+    ) -> Result<(), AclAuthorizationError> {
+        let Some(profile) = self.acl_user_profile(user) else {
+            return Err(AclAuthorizationError::Command(
+                acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),
+            ));
+        };
+        self.acl_authorize_profile_command_with_mode(
+            &profile,
+            selected_db,
+            command,
+            args,
+            AclAuthorizationMode::DryRun,
+        )
+    }
+
     pub(crate) fn acl_authorize_client_command(
         &self,
         client_id: ClientId,
@@ -4344,12 +5205,17 @@ impl RequestProcessor {
                 .acl_authorize_user_command(&user, selected_db, command, args)
                 .map_err(ClientAclAuthorizationError::Denied);
         };
-        if !metrics.client_is_authenticated(client_id) {
+        let Some((authenticated, user)) = metrics.client_auth_state(client_id) else {
+            return Err(ClientAclAuthorizationError::AuthenticationRequired);
+        };
+        if !authenticated {
             return Err(ClientAclAuthorizationError::AuthenticationRequired);
         }
-        let user = metrics
-            .client_user(client_id)
-            .unwrap_or_else(|| b"default".to_vec());
+        if user.as_slice() == b"default"
+            && self.default_acl_user_unrestricted.load(Ordering::Acquire)
+        {
+            return Ok(());
+        }
         let Some(profile) = self.acl_user_profile(&user) else {
             return Err(ClientAclAuthorizationError::Denied(
                 AclAuthorizationError::Command(
@@ -4372,6 +5238,62 @@ impl RequestProcessor {
             .and_then(|metrics| metrics.client_user(client_id))
             .unwrap_or_else(|| b"default".to_vec());
         acl_denial_message_for_user(&user, error)
+    }
+
+    pub(crate) fn acl_current_user_has_sort_pattern_lookup_access(
+        &self,
+        selected_db: DbName,
+        command: CommandId,
+        args: &[&[u8]],
+    ) -> bool {
+        let user = self
+            .server_metrics
+            .get()
+            .and_then(|metrics| {
+                current_request_client_id().map(|client_id| {
+                    if metrics.client_is_authenticated(client_id) {
+                        metrics
+                            .client_user(client_id)
+                            .unwrap_or_else(|| b"default".to_vec())
+                    } else {
+                        b"default".to_vec()
+                    }
+                })
+            })
+            .unwrap_or_else(|| b"default".to_vec());
+        let Some(profile) = self.acl_user_profile(&user) else {
+            return false;
+        };
+        let specific_token = acl_specific_rule_token(command, args);
+
+        for selector in std::iter::once(&profile.root_selector).chain(profile.selectors.iter()) {
+            if !acl_selector_allows_command(selector, command, args, specific_token.as_deref()) {
+                continue;
+            }
+            if acl_first_denied_database(
+                selector,
+                command,
+                args,
+                selected_db,
+                self.configured_databases(),
+            )
+            .is_some()
+            {
+                continue;
+            }
+            if acl_first_denied_key(selector, command, args, AclAuthorizationMode::Live).is_some() {
+                continue;
+            }
+            if !acl_selector_allows_unrestricted_key_permission(
+                selector,
+                AclRequiredKeyPermission::Read,
+            ) {
+                continue;
+            }
+            return true;
+        }
+
+        false
     }
 
     pub(crate) fn default_user_starts_authenticated(&self) -> bool {
@@ -4403,6 +5325,18 @@ impl RequestProcessor {
         error: &AclAuthorizationError,
         context: AclLogContext,
     ) {
+        match error {
+            AclAuthorizationError::Command(_) | AclAuthorizationError::Database(_) => {
+                self.acl_access_denied_cmd.fetch_add(1, Ordering::Relaxed);
+            }
+            AclAuthorizationError::Key(_) => {
+                self.acl_access_denied_key.fetch_add(1, Ordering::Relaxed);
+            }
+            AclAuthorizationError::Channel(_) => {
+                self.acl_access_denied_channel
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
         let reason = acl_log_reason_matches(error);
         let object = match error {
             AclAuthorizationError::Command(command)
@@ -4430,6 +5364,7 @@ impl RequestProcessor {
     }
 
     pub(crate) fn record_acl_auth_failure_for_current_client(&self, username: &[u8]) {
+        self.acl_access_denied_auth.fetch_add(1, Ordering::Relaxed);
         let client_id = current_request_client_id();
         let client_info = client_id
             .map(|id| self.acl_log_client_info(id))
@@ -4446,6 +5381,17 @@ impl RequestProcessor {
             timestamp_created: 0,
         };
         self.push_acl_log_entry(entry);
+    }
+
+    pub(crate) fn mark_current_client_authenticated_as(&self, username: &[u8]) {
+        let Some(client_id) = current_request_client_id() else {
+            return;
+        };
+        let Some(metrics) = self.server_metrics.get() else {
+            return;
+        };
+        metrics.set_client_user(client_id, username.to_vec());
+        metrics.set_client_authenticated(client_id, true);
     }
 
     fn push_acl_log_entry(&self, mut entry: AclLogEntry) {
@@ -4501,12 +5447,17 @@ impl RequestProcessor {
     pub(crate) fn pubsub_client_subscriptions(
         &self,
         client_id: ClientId,
-    ) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    ) -> (Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
         let Ok(state) = self.pubsub_state.lock() else {
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), Vec::new(), Vec::new());
         };
         let channels = state
             .client_channels
+            .get(&client_id)
+            .map(|entries| entries.iter().cloned().collect())
+            .unwrap_or_default();
+        let shard_channels = state
+            .client_shard_channels
             .get(&client_id)
             .map(|entries| entries.iter().cloned().collect())
             .unwrap_or_default();
@@ -4515,7 +5466,7 @@ impl RequestProcessor {
             .get(&client_id)
             .map(|entries| entries.iter().cloned().collect())
             .unwrap_or_default();
-        (channels, patterns)
+        (channels, shard_channels, patterns)
     }
 
     fn reconcile_acl_pubsub_clients_for_user(&self, user: &[u8], profile: &AclUserProfile) {
@@ -4525,18 +5476,21 @@ impl RequestProcessor {
 
         let mut clients_to_kill = Vec::new();
         for client_id in metrics.client_ids_for_user(user) {
-            let (channels, patterns) = self.pubsub_client_subscriptions(client_id);
-            if channels.is_empty() && patterns.is_empty() {
+            let (channels, shard_channels, patterns) = self.pubsub_client_subscriptions(client_id);
+            if channels.is_empty() && shard_channels.is_empty() && patterns.is_empty() {
                 continue;
             }
 
             let channels_allowed = channels
                 .iter()
                 .all(|channel| profile.enabled && acl_user_allows_single_channel(profile, channel));
+            let shard_channels_allowed = shard_channels
+                .iter()
+                .all(|channel| profile.enabled && acl_user_allows_single_channel(profile, channel));
             let patterns_allowed = patterns
                 .iter()
-                .all(|pattern| profile.enabled && acl_user_allows_single_channel(profile, pattern));
-            if channels_allowed && patterns_allowed {
+                .all(|pattern| profile.enabled && acl_user_allows_single_pattern(profile, pattern));
+            if channels_allowed && shard_channels_allowed && patterns_allowed {
                 continue;
             }
             clients_to_kill.push(client_id);
@@ -4559,28 +5513,56 @@ impl RequestProcessor {
     pub(crate) fn ensure_live_aof_durability_runtime(
         &self,
     ) -> io::Result<Option<Arc<LiveAofDurabilityRuntime>>> {
-        if let Some(runtime) = self.aof_durability_runtime.get() {
-            return Ok(Some(Arc::clone(runtime)));
-        }
         let Some(config) = self.live_aof_durability_config() else {
             return Ok(None);
         };
-        let runtime = LiveAofDurabilityRuntime::start(config)?;
-        if self
-            .aof_durability_runtime
-            .set(Arc::clone(&runtime))
-            .is_err()
-            && let Some(existing) = self.aof_durability_runtime.get()
-        {
-            return Ok(Some(Arc::clone(existing)));
+        if let Some(runtime) = self.aof_durability_runtime() {
+            if let Some(existing_config) = self.live_aof_durability_runtime_config()
+                && existing_config != config
+            {
+                return Err(io::Error::other(
+                    "live AOF runtime reconfiguration is not supported",
+                ));
+            }
+            self.local_aof_publish_enabled
+                .store(true, Ordering::Release);
+            return Ok(Some(runtime));
         }
+        let runtime = LiveAofDurabilityRuntime::start(config)?;
+        let runtime_config = self.live_aof_durability_config().ok_or_else(|| {
+            io::Error::other("appendonly was disabled before the live AOF runtime started")
+        })?;
+        {
+            let mut runtime_guard = self
+                .aof_durability_runtime
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(existing) = runtime_guard.as_ref() {
+                self.local_aof_publish_enabled
+                    .store(true, Ordering::Release);
+                return Ok(Some(Arc::clone(existing)));
+            }
+            *runtime_guard = Some(Arc::clone(&runtime));
+        }
+        *self
+            .aof_durability_runtime_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(runtime_config);
+        self.local_aof_publish_enabled
+            .store(true, Ordering::Release);
         Ok(Some(runtime))
+    }
+
+    pub(crate) fn reconfigure_live_aof_durability_runtime(
+        &self,
+    ) -> io::Result<Option<Arc<LiveAofDurabilityRuntime>>> {
+        self.stop_live_aof_durability_runtime();
+        self.ensure_live_aof_durability_runtime()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn local_aof_frontiers_snapshot(&self) -> Option<LocalAofFrontiersSnapshot> {
-        self.aof_durability_runtime
-            .get()
+        self.aof_durability_runtime()
             .map(|runtime| runtime.snapshot())
     }
 
@@ -4589,9 +5571,15 @@ impl RequestProcessor {
     }
 
     pub(crate) fn publish_local_aof_frame(&self, frame: &[u8]) -> Option<AofOffset> {
-        let Some(runtime) = self.aof_durability_runtime.get() else {
+        if !self.local_aof_publish_enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        let Some(runtime) = self.aof_durability_runtime() else {
             return None;
         };
+        if !self.appendonly_enabled() {
+            return None;
+        }
         Some(runtime.publish_frame(frame).append_offset)
     }
 
@@ -4614,7 +5602,7 @@ impl RequestProcessor {
         if self.local_aof_fsync_satisfied(target_offset) {
             return true;
         }
-        let Some(runtime) = self.aof_durability_runtime.get() else {
+        let Some(runtime) = self.aof_durability_runtime() else {
             return false;
         };
         let timeout = if timeout_millis == 0 {
@@ -4655,15 +5643,15 @@ impl RequestProcessor {
         duration: Duration,
         client_id: Option<ClientId>,
     ) {
-        if should_skip_slowlog_for_command(command, args) {
-            return;
-        }
         let threshold_micros = self.slowlog_threshold_micros();
         if threshold_micros < 0 {
             return;
         }
         let max_len = self.slowlog_max_len();
         if max_len == 0 {
+            return;
+        }
+        if should_skip_slowlog_for_command(command, args) {
             return;
         }
         let duration_micros = duration.as_micros().min(i64::MAX as u128) as i64;
@@ -4695,25 +5683,11 @@ impl RequestProcessor {
     }
 
     fn slowlog_threshold_micros(&self) -> i64 {
-        let Ok(values) = self.config_overrides.lock() else {
-            return 10_000;
-        };
-        values
-            .get(b"slowlog-log-slower-than".as_slice())
-            .and_then(|value| std::str::from_utf8(value).ok())
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(10_000)
+        self.slowlog_threshold_micros.load(Ordering::Acquire)
     }
 
     fn slowlog_max_len(&self) -> usize {
-        let Ok(values) = self.config_overrides.lock() else {
-            return 128;
-        };
-        values
-            .get(b"slowlog-max-len".as_slice())
-            .and_then(|value| std::str::from_utf8(value).ok())
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(128)
+        self.slowlog_max_len.load(Ordering::Acquire)
     }
 
     fn live_aof_durability_config(&self) -> Option<LiveAofDurabilityConfig> {
@@ -4730,17 +5704,85 @@ impl RequestProcessor {
             .get(b"appendfsync".as_slice())
             .and_then(|value| AppendFsyncPolicy::parse(value))
             .unwrap_or(AppendFsyncPolicy::Everysec);
-        let dir = values
-            .get(b"dir".as_slice())
-            .cloned()
-            .unwrap_or_else(default_config_dir_value);
-        let appendfilename = values
-            .get(b"appendfilename".as_slice())
-            .cloned()
-            .unwrap_or_else(|| b"appendonly.aof".to_vec());
-        let mut path = std::path::PathBuf::from(String::from_utf8_lossy(&dir).into_owned());
-        path.push(String::from_utf8_lossy(&appendfilename).into_owned());
+        let path = configured_file_path_from_values(&values, b"appendfilename", b"appendonly.aof");
         Some(LiveAofDurabilityConfig::new(path, fsync_policy))
+    }
+
+    pub(crate) fn live_aof_runtime_active(&self) -> bool {
+        self.aof_durability_runtime
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    pub(crate) fn live_aof_durability_runtime_config(&self) -> Option<LiveAofDurabilityConfig> {
+        self.aof_durability_runtime_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn local_aof_append_target_offset(&self) -> Option<AofOffset> {
+        self.aof_durability_runtime()
+            .map(|runtime| runtime.append_target_offset())
+    }
+
+    pub(crate) fn wait_for_local_aof_append_blocking(
+        &self,
+        target_offset: AofOffset,
+        timeout: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self
+                .local_aof_frontiers_snapshot()
+                .is_some_and(|snapshot| snapshot.append_offset >= target_offset)
+            {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return self
+                    .local_aof_frontiers_snapshot()
+                    .is_some_and(|snapshot| snapshot.append_offset >= target_offset);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    pub(crate) fn stop_live_aof_durability_runtime(&self) {
+        self.local_aof_publish_enabled
+            .store(false, Ordering::Release);
+        let runtime = self
+            .aof_durability_runtime
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        self.aof_durability_runtime_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(runtime) = runtime {
+            let target_offset = runtime.append_target_offset();
+            let append_deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                if runtime.snapshot().append_offset >= target_offset {
+                    break;
+                }
+                if Instant::now() >= append_deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let _ = runtime.shutdown_and_wait(Duration::from_secs(1));
+        }
+    }
+
+    fn aof_durability_runtime(&self) -> Option<Arc<LiveAofDurabilityRuntime>> {
+        self.aof_durability_runtime
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(Arc::clone)
     }
 
     fn slowlog_client_metadata(&self, client_id: Option<ClientId>) -> (Vec<u8>, Vec<u8>) {
@@ -4783,10 +5825,18 @@ impl RequestProcessor {
         if command_name.is_empty() {
             return;
         }
-        let normalized = normalize_ascii_lower(command_name);
-        if let Ok(mut calls) = self.command_calls.lock() {
-            *calls.entry(normalized).or_insert(0) += 1;
+        increment_command_stats_counter(&self.command_calls, command_name, None);
+    }
+
+    pub(crate) fn record_command_call_with_subcommand(
+        &self,
+        command_name: &[u8],
+        subcommand_name: Option<&[u8]>,
+    ) {
+        if command_name.is_empty() {
+            return;
         }
+        increment_command_stats_counter(&self.command_calls, command_name, subcommand_name);
     }
 
     pub(crate) fn command_call_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
@@ -4804,20 +5854,14 @@ impl RequestProcessor {
         if command_name.is_empty() {
             return;
         }
-        let normalized = normalize_ascii_lower(command_name);
-        if let Ok(mut failed_calls) = self.command_failed_calls.lock() {
-            *failed_calls.entry(normalized).or_insert(0) += 1;
-        }
+        increment_command_stats_counter(&self.command_failed_calls, command_name, None);
     }
 
     pub(crate) fn record_command_rejection(&self, command_name: &[u8]) {
         if command_name.is_empty() {
             return;
         }
-        let normalized = normalize_ascii_lower(command_name);
-        if let Ok(mut rejected_calls) = self.command_rejected_calls.lock() {
-            *rejected_calls.entry(normalized).or_insert(0) += 1;
-        }
+        increment_command_stats_counter(&self.command_rejected_calls, command_name, None);
     }
 
     pub(crate) fn record_error_reply(&self, error_name: &[u8]) {
@@ -5019,6 +6063,13 @@ impl RequestProcessor {
         }
     }
 
+    pub(crate) fn reset_acl_access_denied_stats(&self) {
+        self.acl_access_denied_auth.store(0, Ordering::Relaxed);
+        self.acl_access_denied_cmd.store(0, Ordering::Relaxed);
+        self.acl_access_denied_key.store(0, Ordering::Relaxed);
+        self.acl_access_denied_channel.store(0, Ordering::Relaxed);
+    }
+
     pub(crate) fn render_commandstats_info_payload(&self) -> String {
         let mut payload = String::from("# Commandstats\r\n");
         let mut ordered = BTreeMap::<Vec<u8>, u64>::new();
@@ -5070,6 +6121,24 @@ impl RequestProcessor {
         payload
     }
 
+    pub(crate) fn undo_recorded_command_call(&self, command_name: &[u8]) {
+        if command_name.is_empty() {
+            return;
+        }
+        let normalized = normalize_ascii_lower(command_name);
+        let Ok(mut calls) = self.command_calls.lock() else {
+            return;
+        };
+        let Some(count) = calls.get_mut(&normalized) else {
+            return;
+        };
+        if *count <= 1 {
+            calls.remove(&normalized);
+        } else {
+            *count -= 1;
+        }
+    }
+
     pub(super) fn record_key_access(&self, key: DbKeyRef<'_>, force_touch: bool) {
         if key.key().is_empty() {
             return;
@@ -5077,8 +6146,11 @@ impl RequestProcessor {
         if !force_touch && current_client_no_touch_mode() {
             return;
         }
-        let now_millis = current_unix_time_millis().unwrap_or(0);
-        if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
+        let now_millis = self.current_access_metadata_millis();
+        let shard_index = self.string_store_shard_index_for_key(key.key());
+        if let Ok(mut lru_state) =
+            self.db_catalog.side_state.key_lru_access_millis[shard_index].lock()
+        {
             lru_state.insert(key, now_millis);
         }
     }
@@ -5087,16 +6159,22 @@ impl RequestProcessor {
         if key.key().is_empty() {
             return;
         }
-        if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
+        if let Ok(mut lru_state) =
+            self.db_catalog.side_state.key_lru_access_millis[shard_index].lock()
+        {
             let _ = lru_state.remove(key);
         }
-        if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() {
+        if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency[shard_index].lock()
+        {
             let _ = lfu_state.remove(key);
         }
     }
 
     pub(super) fn key_lru_millis(&self, key: DbKeyRef<'_>) -> Option<u64> {
-        let Ok(lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() else {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
+        let Ok(lru_state) = self.db_catalog.side_state.key_lru_access_millis[shard_index].lock()
+        else {
             return None;
         };
         lru_state.get_copied(key)
@@ -5104,7 +6182,7 @@ impl RequestProcessor {
 
     pub(super) fn key_idle_seconds(&self, key: DbKeyRef<'_>) -> Option<i64> {
         let last_access_millis = self.key_lru_millis(key)?;
-        let now_millis = current_unix_time_millis().unwrap_or(last_access_millis);
+        let now_millis = self.current_access_metadata_millis();
         let idle_millis = now_millis.saturating_sub(last_access_millis);
         i64::try_from(idle_millis / 1000).ok()
     }
@@ -5113,10 +6191,13 @@ impl RequestProcessor {
         if key.key().is_empty() {
             return;
         }
-        let now_millis = current_unix_time_millis().unwrap_or(0);
+        let now_millis = self.current_access_metadata_millis();
         let idle_millis = idle_seconds.saturating_mul(1000);
         let lru_millis = now_millis.saturating_sub(idle_millis);
-        if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
+        if let Ok(mut lru_state) =
+            self.db_catalog.side_state.key_lru_access_millis[shard_index].lock()
+        {
             lru_state.insert(key, lru_millis);
         }
     }
@@ -5125,13 +6206,24 @@ impl RequestProcessor {
         if key.key().is_empty() {
             return;
         }
-        if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
+        if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency[shard_index].lock()
+        {
             lfu_state.insert(key, frequency);
         }
     }
 
+    fn current_access_metadata_millis(&self) -> u64 {
+        let now = current_instant();
+        let elapsed = now.saturating_duration_since(self.access_clock_start);
+        let elapsed_millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        self.access_clock_start_unix_millis
+            .saturating_add(elapsed_millis)
+    }
+
     pub(super) fn key_frequency(&self, key: DbKeyRef<'_>) -> Option<u8> {
-        let Ok(lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() else {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
+        let Ok(lfu_state) = self.db_catalog.side_state.key_lfu_frequency[shard_index].lock() else {
             return None;
         };
         lfu_state.get_copied(key)
@@ -5551,6 +6643,20 @@ impl RequestProcessor {
         }
     }
 
+    pub(crate) fn client_pause_snapshot(&self) -> ClientPauseSnapshot {
+        ClientPauseSnapshot {
+            pause_type: self.client_pause_type.load(Ordering::Acquire),
+            end_millis: self.client_pause_end_millis.load(Ordering::Acquire),
+        }
+    }
+
+    pub(crate) fn restore_client_pause(&self, snapshot: ClientPauseSnapshot) {
+        self.client_pause_type
+            .store(snapshot.pause_type, Ordering::Release);
+        self.client_pause_end_millis
+            .store(snapshot.end_millis, Ordering::Release);
+    }
+
     /// Remove CLIENT PAUSE state.
     pub(crate) fn client_unpause(&self) {
         // TLA+ : ClientUnpause
@@ -5849,6 +6955,15 @@ impl RequestProcessor {
     }
 
     pub(super) fn string_encoding_is_forced_raw(&self, key: DbKeyRef<'_>) -> bool {
+        if self
+            .db_catalog
+            .side_state
+            .forced_raw_string_keys_count
+            .load(Ordering::Relaxed)
+            == 0
+        {
+            return false;
+        }
         self.db_catalog
             .side_state
             .forced_raw_string_keys
@@ -5859,13 +6974,32 @@ impl RequestProcessor {
 
     pub(super) fn force_raw_string_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
-            forced.insert(key);
+            if forced.insert(key) {
+                self.db_catalog
+                    .side_state
+                    .forced_raw_string_keys_count
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
     pub(super) fn clear_forced_raw_string_encoding(&self, key: DbKeyRef<'_>) {
+        if self
+            .db_catalog
+            .side_state
+            .forced_raw_string_keys_count
+            .load(Ordering::Relaxed)
+            == 0
+        {
+            return;
+        }
         if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
-            forced.remove(key);
+            if forced.remove(key) {
+                self.db_catalog
+                    .side_state
+                    .forced_raw_string_keys_count
+                    .fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -6026,6 +7160,17 @@ impl RequestProcessor {
 
     pub(super) fn lastsave_unix_seconds(&self) -> u64 {
         self.lastsave_unix_seconds.load(Ordering::Acquire)
+    }
+
+    pub(super) fn record_successful_rdb_save(&self) {
+        let now = current_unix_time_millis().unwrap_or(0) / 1000;
+        self.lastsave_unix_seconds.store(now, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_lastsave_unix_seconds_for_test(&self, unix_seconds: u64) {
+        self.lastsave_unix_seconds
+            .store(unix_seconds, Ordering::Release);
     }
 
     pub(crate) fn record_rdb_change(&self, delta: u64) {
@@ -6753,6 +7898,27 @@ enum AclSelectorAuthorizationError {
     Channel(usize, Vec<u8>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AclAuthorizationMode {
+    Live,
+    DryRun,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AclRequiredKeyPermission {
+    Any,
+    Read,
+    Write,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AclCommandKeyAccess<'a> {
+    argument_index: usize,
+    key: &'a [u8],
+    permission: AclRequiredKeyPermission,
+}
+
 fn acl_selector_error_priority(error: &AclSelectorAuthorizationError) -> u8 {
     match error {
         AclSelectorAuthorizationError::Database(_, _) => 0,
@@ -7097,60 +8263,521 @@ fn acl_first_denied_key(
     selector: &AclSelectorProfile,
     command: CommandId,
     args: &[&[u8]],
+    mode: AclAuthorizationMode,
 ) -> Option<(usize, Vec<u8>)> {
-    let keys = acl_command_key_arguments(command, args);
-    if keys.is_empty() {
+    let accesses = acl_command_key_accesses(command, args, mode);
+    if accesses.is_empty() {
         return None;
     }
     if selector.key_patterns.is_empty() {
-        return Some((1, keys[0].to_vec()));
+        let denied = accesses[0];
+        return Some((denied.argument_index, denied.key.to_vec()));
     }
-    for (index, key) in keys.iter().enumerate() {
-        let allowed = selector.key_patterns.iter().any(|pattern| {
-            self::server_commands::redis_glob_match(
-                pattern,
-                *key,
-                self::server_commands::CaseSensitivity::Sensitive,
-                0,
-            )
-        });
-        if !allowed {
-            return Some((index.saturating_add(1), (*key).to_vec()));
+    for access in accesses {
+        if !acl_selector_allows_key_access(selector, access.key, access.permission) {
+            return Some((access.argument_index, access.key.to_vec()));
         }
     }
     None
 }
 
-fn acl_command_key_arguments<'a>(command: CommandId, args: &[&'a [u8]]) -> Vec<&'a [u8]> {
+fn acl_selector_allows_key_access(
+    selector: &AclSelectorProfile,
+    key: &[u8],
+    required_permission: AclRequiredKeyPermission,
+) -> bool {
+    selector.key_patterns.iter().any(|rule| {
+        self::server_commands::redis_glob_match(
+            rule.pattern.as_slice(),
+            key,
+            self::server_commands::CaseSensitivity::Sensitive,
+            0,
+        ) && acl_key_permissions_allow_required(rule.permissions, required_permission)
+    })
+}
+
+fn acl_selector_allows_unrestricted_key_permission(
+    selector: &AclSelectorProfile,
+    required_permission: AclRequiredKeyPermission,
+) -> bool {
+    selector.key_patterns.iter().any(|rule| {
+        rule.pattern.as_slice() == b"*"
+            && acl_key_permissions_allow_required(rule.permissions, required_permission)
+    })
+}
+
+fn acl_key_permissions_allow_required(
+    granted: AclKeyPermissions,
+    required: AclRequiredKeyPermission,
+) -> bool {
+    match required {
+        AclRequiredKeyPermission::Any => granted.contains_any(AclKeyPermissions::ALL),
+        AclRequiredKeyPermission::Read => granted.contains_all(AclKeyPermissions::READ),
+        AclRequiredKeyPermission::Write => granted.contains_all(AclKeyPermissions::WRITE),
+        AclRequiredKeyPermission::ReadWrite => granted.contains_all(AclKeyPermissions::ALL),
+    }
+}
+
+fn push_acl_key_access<'a>(
+    accesses: &mut Vec<AclCommandKeyAccess<'a>>,
+    argument_index: usize,
+    key: &'a [u8],
+    permission: AclRequiredKeyPermission,
+) {
+    accesses.push(AclCommandKeyAccess {
+        argument_index,
+        key,
+        permission,
+    });
+}
+
+fn acl_default_key_permission(command: CommandId, args: &[&[u8]]) -> AclRequiredKeyPermission {
+    match command {
+        CommandId::Exists
+        | CommandId::Touch
+        | CommandId::Memory
+        | CommandId::Type
+        | CommandId::Strlen
+        | CommandId::Hlen
+        | CommandId::Hexists
+        | CommandId::Hstrlen
+        | CommandId::Llen
+        | CommandId::Sismember
+        | CommandId::Scard
+        | CommandId::Zcard
+        | CommandId::Xlen => AclRequiredKeyPermission::Any,
+        CommandId::Get
+        | CommandId::Mget
+        | CommandId::Sintercard
+        | CommandId::Zcount
+        | CommandId::Pfcount
+        | CommandId::Zintercard
+        | CommandId::BitfieldRo
+        | CommandId::SortRo => AclRequiredKeyPermission::Read,
+        _ => {
+            if command_is_effectively_mutating(command, args.get(1).copied()) {
+                AclRequiredKeyPermission::Write
+            } else {
+                AclRequiredKeyPermission::Read
+            }
+        }
+    }
+}
+
+fn acl_set_required_permission(args: &[&[u8]]) -> AclRequiredKeyPermission {
+    if args
+        .iter()
+        .skip(3)
+        .any(|token| ascii_eq_ignore_case(token, b"GET"))
+    {
+        AclRequiredKeyPermission::ReadWrite
+    } else {
+        AclRequiredKeyPermission::Write
+    }
+}
+
+fn acl_bitfield_required_permission(
+    command: CommandId,
+    args: &[&[u8]],
+) -> AclRequiredKeyPermission {
+    if command == CommandId::BitfieldRo {
+        return AclRequiredKeyPermission::Read;
+    }
+
+    let mut saw_get = false;
+    let mut index = 2usize;
+    while index < args.len() {
+        let token = args[index];
+        if ascii_eq_ignore_case(token, b"OVERFLOW") {
+            index = index.saturating_add(2);
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"GET") {
+            saw_get = true;
+            index = index.saturating_add(3);
+            continue;
+        }
+        return AclRequiredKeyPermission::ReadWrite;
+    }
+
+    if saw_get {
+        AclRequiredKeyPermission::Read
+    } else {
+        AclRequiredKeyPermission::ReadWrite
+    }
+}
+
+fn acl_eval_key_accesses<'a>(
+    args: &[&'a [u8]],
+    permission: AclRequiredKeyPermission,
+) -> Vec<AclCommandKeyAccess<'a>> {
+    if args.len() < 3 {
+        return Vec::new();
+    }
+    let Some(numkeys) = parse_i64_ascii(args[2]) else {
+        return Vec::new();
+    };
+    if numkeys < 0 {
+        return Vec::new();
+    }
+    let Ok(numkeys) = usize::try_from(numkeys) else {
+        return Vec::new();
+    };
+    if args.len() < 3 + numkeys {
+        return Vec::new();
+    }
+
+    let mut accesses = Vec::with_capacity(numkeys);
+    for offset in 0..numkeys {
+        let argument_index = 3 + offset;
+        push_acl_key_access(
+            &mut accesses,
+            argument_index,
+            args[argument_index],
+            permission,
+        );
+    }
+    accesses
+}
+
+fn acl_migrate_key_accesses<'a>(args: &[&'a [u8]]) -> Vec<AclCommandKeyAccess<'a>> {
+    if args.len() < 6 {
+        return Vec::new();
+    }
+
+    let mut accesses = Vec::new();
+    if !args[3].is_empty() {
+        push_acl_key_access(
+            &mut accesses,
+            3,
+            args[3],
+            AclRequiredKeyPermission::ReadWrite,
+        );
+    }
+
+    let mut index = 6usize;
+    while index < args.len() {
+        let token = args[index];
+        if ascii_eq_ignore_case(token, b"COPY") || ascii_eq_ignore_case(token, b"REPLACE") {
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"AUTH") {
+            if index + 1 >= args.len() {
+                break;
+            }
+            index += 2;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"AUTH2") {
+            if index + 2 >= args.len() {
+                break;
+            }
+            index += 3;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"KEYS") {
+            for key_index in index + 1..args.len() {
+                if args[key_index].is_empty() {
+                    break;
+                }
+                push_acl_key_access(
+                    &mut accesses,
+                    key_index,
+                    args[key_index],
+                    AclRequiredKeyPermission::ReadWrite,
+                );
+            }
+            break;
+        }
+        break;
+    }
+
+    accesses
+}
+
+fn acl_sort_key_accesses<'a>(
+    command: CommandId,
+    args: &[&'a [u8]],
+) -> Vec<AclCommandKeyAccess<'a>> {
+    let mut accesses = Vec::new();
+    if let Some(source) = args.get(1) {
+        push_acl_key_access(&mut accesses, 1, *source, AclRequiredKeyPermission::Read);
+    }
+
+    let mut index = 2usize;
+    while index < args.len() {
+        let token = args[index];
+        if ascii_eq_ignore_case(token, b"LIMIT") {
+            index = index.saturating_add(3);
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"BY") || ascii_eq_ignore_case(token, b"GET") {
+            index = index.saturating_add(2);
+            continue;
+        }
+        if command == CommandId::Sort && ascii_eq_ignore_case(token, b"STORE") {
+            if index + 1 < args.len() {
+                push_acl_key_access(
+                    &mut accesses,
+                    index + 1,
+                    args[index + 1],
+                    AclRequiredKeyPermission::Write,
+                );
+            }
+            break;
+        }
+        if ascii_eq_ignore_case(token, b"ASC")
+            || ascii_eq_ignore_case(token, b"DESC")
+            || ascii_eq_ignore_case(token, b"ALPHA")
+        {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+
+    accesses
+}
+
+fn acl_georadius_key_accesses<'a>(
+    command: CommandId,
+    args: &[&'a [u8]],
+) -> Vec<AclCommandKeyAccess<'a>> {
+    let mut accesses = Vec::new();
+    if let Some(source) = args.get(1) {
+        push_acl_key_access(&mut accesses, 1, *source, AclRequiredKeyPermission::Read);
+    }
+
+    let mut index = match command {
+        CommandId::Georadius | CommandId::GeoradiusRo => 6usize,
+        CommandId::Georadiusbymember | CommandId::GeoradiusbymemberRo => 5usize,
+        _ => return accesses,
+    };
+
+    while index < args.len() {
+        let token = args[index];
+        if ascii_eq_ignore_case(token, b"STORE") || ascii_eq_ignore_case(token, b"STOREDIST") {
+            if index + 1 < args.len() {
+                push_acl_key_access(
+                    &mut accesses,
+                    index + 1,
+                    args[index + 1],
+                    AclRequiredKeyPermission::Write,
+                );
+            }
+            index += 2;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"COUNT") {
+            index = index.saturating_add(2);
+            continue;
+        }
+        index += 1;
+    }
+
+    accesses
+}
+
+fn acl_counted_key_accesses<'a>(
+    args: &[&'a [u8]],
+    count_index: usize,
+    first_key_index: usize,
+    permission: AclRequiredKeyPermission,
+) -> Vec<AclCommandKeyAccess<'a>> {
+    let Some(count_raw) = args.get(count_index) else {
+        return Vec::new();
+    };
+    let Some(count) = parse_i64_ascii(count_raw) else {
+        return Vec::new();
+    };
+    if count <= 0 {
+        return Vec::new();
+    }
+    let Ok(count) = usize::try_from(count) else {
+        return Vec::new();
+    };
+    if args.len() < first_key_index + count {
+        return Vec::new();
+    }
+
+    let mut accesses = Vec::with_capacity(count);
+    for offset in 0..count {
+        let argument_index = first_key_index + offset;
+        push_acl_key_access(
+            &mut accesses,
+            argument_index,
+            args[argument_index],
+            permission,
+        );
+    }
+    accesses
+}
+
+fn acl_command_key_accesses<'a>(
+    command: CommandId,
+    args: &[&'a [u8]],
+    _mode: AclAuthorizationMode,
+) -> Vec<AclCommandKeyAccess<'a>> {
     match command {
         CommandId::Del
         | CommandId::Exists
         | CommandId::Mget
         | CommandId::Touch
         | CommandId::Unlink
-        | CommandId::Watch => args.iter().skip(1).copied().collect(),
-        CommandId::Mset | CommandId::Msetnx => args.iter().skip(1).step_by(2).copied().collect(),
-        CommandId::Blpop | CommandId::Brpop => {
-            if args.len() <= 2 {
-                Vec::new()
-            } else {
-                args[1..args.len() - 1].to_vec()
+        | CommandId::Watch => {
+            let permission = acl_default_key_permission(command, args);
+            let mut accesses = Vec::with_capacity(args.len().saturating_sub(1));
+            for (argument_index, key) in args.iter().enumerate().skip(1) {
+                push_acl_key_access(&mut accesses, argument_index, *key, permission);
             }
+            accesses
+        }
+        CommandId::Mset | CommandId::Msetnx => {
+            let permission = acl_default_key_permission(command, args);
+            let mut accesses = Vec::new();
+            for argument_index in (1..args.len()).step_by(2) {
+                push_acl_key_access(
+                    &mut accesses,
+                    argument_index,
+                    args[argument_index],
+                    permission,
+                );
+            }
+            accesses
+        }
+        CommandId::Blpop | CommandId::Brpop => {
+            let permission = acl_default_key_permission(command, args);
+            let mut accesses = Vec::new();
+            if args.len() > 2 {
+                for (argument_index, key) in args
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .take(args.len().saturating_sub(2))
+                {
+                    push_acl_key_access(&mut accesses, argument_index, *key, permission);
+                }
+            }
+            accesses
         }
         CommandId::Lmove | CommandId::Rpoplpush | CommandId::Blmove | CommandId::Brpoplpush => {
-            args.iter().skip(1).take(2).copied().collect()
-        }
-        CommandId::Smove => args.iter().skip(1).take(2).copied().collect(),
-        CommandId::Copy => {
-            if args.len() >= 3 {
-                vec![args[1], args[2]]
-            } else {
-                Vec::new()
+            let mut accesses = Vec::new();
+            if let Some(source) = args.get(1) {
+                push_acl_key_access(
+                    &mut accesses,
+                    1,
+                    *source,
+                    AclRequiredKeyPermission::ReadWrite,
+                );
             }
+            if let Some(destination) = args.get(2) {
+                push_acl_key_access(
+                    &mut accesses,
+                    2,
+                    *destination,
+                    AclRequiredKeyPermission::Write,
+                );
+            }
+            accesses
+        }
+        CommandId::Smove => {
+            let mut accesses = Vec::new();
+            if let Some(source) = args.get(1) {
+                push_acl_key_access(
+                    &mut accesses,
+                    1,
+                    *source,
+                    AclRequiredKeyPermission::ReadWrite,
+                );
+            }
+            if let Some(destination) = args.get(2) {
+                push_acl_key_access(
+                    &mut accesses,
+                    2,
+                    *destination,
+                    AclRequiredKeyPermission::Write,
+                );
+            }
+            accesses
+        }
+        CommandId::Copy => {
+            let mut accesses = Vec::new();
+            if let Some(source) = args.get(1) {
+                push_acl_key_access(&mut accesses, 1, *source, AclRequiredKeyPermission::Read);
+            }
+            if let Some(destination) = args.get(2) {
+                push_acl_key_access(
+                    &mut accesses,
+                    2,
+                    *destination,
+                    AclRequiredKeyPermission::Write,
+                );
+            }
+            accesses
+        }
+        CommandId::Set => args
+            .get(1)
+            .map(|key| {
+                vec![AclCommandKeyAccess {
+                    argument_index: 1,
+                    key,
+                    permission: acl_set_required_permission(args),
+                }]
+            })
+            .unwrap_or_default(),
+        CommandId::Bitfield | CommandId::BitfieldRo => args
+            .get(1)
+            .map(|key| {
+                vec![AclCommandKeyAccess {
+                    argument_index: 1,
+                    key,
+                    permission: acl_bitfield_required_permission(command, args),
+                }]
+            })
+            .unwrap_or_default(),
+        CommandId::Memory => {
+            let mut accesses = Vec::new();
+            if args.len() >= 3 && ascii_eq_ignore_case(args[1], b"USAGE") {
+                push_acl_key_access(&mut accesses, 2, args[2], AclRequiredKeyPermission::Any);
+            }
+            accesses
+        }
+        CommandId::Sort | CommandId::SortRo => acl_sort_key_accesses(command, args),
+        CommandId::Migrate => acl_migrate_key_accesses(args),
+        CommandId::Eval | CommandId::Evalsha | CommandId::Fcall => {
+            acl_eval_key_accesses(args, AclRequiredKeyPermission::ReadWrite)
+        }
+        CommandId::EvalRo | CommandId::EvalshaRo | CommandId::FcallRo => {
+            acl_eval_key_accesses(args, AclRequiredKeyPermission::Read)
+        }
+        CommandId::Georadius
+        | CommandId::GeoradiusRo
+        | CommandId::Georadiusbymember
+        | CommandId::GeoradiusbymemberRo => acl_georadius_key_accesses(command, args),
+        CommandId::Sintercard | CommandId::Zintercard => {
+            acl_counted_key_accesses(args, 1, 2, AclRequiredKeyPermission::Read)
         }
         _ => match command_key_access_pattern(command) {
-            KeyAccessPattern::FirstKey => args.get(1).copied().into_iter().collect(),
-            _ => Vec::new(),
+            KeyAccessPattern::FirstKey => args
+                .get(1)
+                .map(|key| {
+                    vec![AclCommandKeyAccess {
+                        argument_index: 1,
+                        key,
+                        permission: acl_default_key_permission(command, args),
+                    }]
+                })
+                .unwrap_or_default(),
+            KeyAccessPattern::AllKeysFromArg1 => {
+                let permission = acl_default_key_permission(command, args);
+                let mut accesses = Vec::with_capacity(args.len().saturating_sub(1));
+                for (argument_index, key) in args.iter().enumerate().skip(1) {
+                    push_acl_key_access(&mut accesses, argument_index, *key, permission);
+                }
+                accesses
+            }
+            KeyAccessPattern::None => Vec::new(),
         },
     }
 }
@@ -7165,7 +8792,12 @@ fn acl_first_denied_channel(
         return None;
     }
     for (index, channel) in channels.iter().enumerate() {
-        if !acl_selector_allows_single_channel(selector, channel) {
+        let allowed = if command == CommandId::Psubscribe {
+            acl_selector_allows_single_pattern(selector, channel)
+        } else {
+            acl_selector_allows_single_channel(selector, channel)
+        };
+        if !allowed {
             return Some((index.saturating_add(1), (*channel).to_vec()));
         }
     }
@@ -7199,10 +8831,26 @@ fn acl_selector_allows_single_channel(selector: &AclSelectorProfile, channel: &[
     })
 }
 
+fn acl_selector_allows_single_pattern(selector: &AclSelectorProfile, pattern: &[u8]) -> bool {
+    if selector.allow_all_channels {
+        return true;
+    }
+    selector
+        .channel_patterns
+        .iter()
+        .any(|allowed| allowed.as_slice() == pattern)
+}
+
 fn acl_user_allows_single_channel(profile: &AclUserProfile, channel: &[u8]) -> bool {
     std::iter::once(&profile.root_selector)
         .chain(profile.selectors.iter())
         .any(|selector| acl_selector_allows_single_channel(selector, channel))
+}
+
+fn acl_user_allows_single_pattern(profile: &AclUserProfile, pattern: &[u8]) -> bool {
+    std::iter::once(&profile.root_selector)
+        .chain(profile.selectors.iter())
+        .any(|selector| acl_selector_allows_single_pattern(selector, pattern))
 }
 
 fn acl_selector_allows_database(selector: &AclSelectorProfile, database: DbName) -> bool {
@@ -7407,6 +9055,7 @@ fn acl_authorize_selector_command(
     specific_token: Option<&[u8]>,
     selected_db: DbName,
     configured_databases: usize,
+    mode: AclAuthorizationMode,
 ) -> Result<(), AclSelectorAuthorizationError> {
     let base_token = acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec());
     if !acl_selector_allows_command(selector, command, args, specific_token) {
@@ -7424,7 +9073,7 @@ fn acl_authorize_selector_command(
             database,
         ));
     }
-    if let Some((argument_index, key)) = acl_first_denied_key(selector, command, args) {
+    if let Some((argument_index, key)) = acl_first_denied_key(selector, command, args, mode) {
         return Err(AclSelectorAuthorizationError::Key(argument_index, key));
     }
     if let Some((argument_index, channel)) = acl_first_denied_channel(selector, command, args) {
@@ -7441,11 +9090,17 @@ fn pubsub_total_subscriptions_for_client(state: &PubSubState, client_id: ClientI
         .client_channels
         .get(&client_id)
         .map_or(0, HashSet::len);
+    let shard_channels = state
+        .client_shard_channels
+        .get(&client_id)
+        .map_or(0, HashSet::len);
     let patterns = state
         .client_patterns
         .get(&client_id)
         .map_or(0, HashSet::len);
-    channels.saturating_add(patterns)
+    channels
+        .saturating_add(shard_channels)
+        .saturating_add(patterns)
 }
 
 fn tracking_groups_for_key(config: &ClientTrackingConfig, key: &[u8]) -> Vec<Vec<u8>> {
@@ -7468,6 +9123,7 @@ fn remove_all_pubsub_client_subscriptions(
 ) {
     let targets = match target_kind {
         PubSubTargetKind::Channel => state.client_channels.remove(&client_id),
+        PubSubTargetKind::ShardChannel => state.client_shard_channels.remove(&client_id),
         PubSubTargetKind::Pattern => state.client_patterns.remove(&client_id),
     };
     let Some(targets) = targets else {
@@ -7477,6 +9133,9 @@ fn remove_all_pubsub_client_subscriptions(
         match target_kind {
             PubSubTargetKind::Channel => {
                 remove_pubsub_subscriber(&mut state.channel_subscribers, &target, client_id)
+            }
+            PubSubTargetKind::ShardChannel => {
+                remove_pubsub_subscriber(&mut state.shard_channel_subscribers, &target, client_id)
             }
             PubSubTargetKind::Pattern => {
                 remove_pubsub_subscriber(&mut state.pattern_subscribers, &target, client_id)
@@ -8057,6 +9716,84 @@ fn normalize_ascii_lower(value: &[u8]) -> Vec<u8> {
         .iter()
         .map(|byte| byte.to_ascii_lowercase())
         .collect::<Vec<u8>>()
+}
+
+fn ascii_lower_into(source: &[u8], target: &mut [u8]) {
+    debug_assert_eq!(source.len(), target.len());
+    for (source_byte, target_byte) in source.iter().zip(target.iter_mut()) {
+        *target_byte = source_byte.to_ascii_lowercase();
+    }
+}
+
+fn try_normalize_command_stats_name_into<'a>(
+    command_name: &[u8],
+    subcommand_name: Option<&[u8]>,
+    scratch: &'a mut [u8; INLINE_COMMAND_STATS_NAME_CAPACITY],
+) -> Option<&'a [u8]> {
+    let Some(subcommand_name) = subcommand_name.filter(|name| !name.is_empty()) else {
+        if command_name.len() > scratch.len() {
+            return None;
+        }
+        ascii_lower_into(command_name, &mut scratch[..command_name.len()]);
+        return Some(&scratch[..command_name.len()]);
+    };
+
+    let total_len = command_name
+        .len()
+        .checked_add(1)?
+        .checked_add(subcommand_name.len())?;
+    if total_len > scratch.len() {
+        return None;
+    }
+
+    let command_end = command_name.len();
+    ascii_lower_into(command_name, &mut scratch[..command_end]);
+    scratch[command_end] = b'|';
+    ascii_lower_into(subcommand_name, &mut scratch[(command_end + 1)..total_len]);
+    Some(&scratch[..total_len])
+}
+
+fn normalize_command_stats_name(command_name: &[u8], subcommand_name: Option<&[u8]>) -> Vec<u8> {
+    let subcommand_name = subcommand_name.filter(|name| !name.is_empty());
+    let mut normalized = match subcommand_name {
+        Some(subcommand_name) => Vec::with_capacity(command_name.len() + 1 + subcommand_name.len()),
+        None => Vec::with_capacity(command_name.len()),
+    };
+    normalized.extend(command_name.iter().map(|byte| byte.to_ascii_lowercase()));
+    if let Some(subcommand_name) = subcommand_name {
+        normalized.push(b'|');
+        normalized.extend(subcommand_name.iter().map(|byte| byte.to_ascii_lowercase()));
+    }
+    normalized
+}
+
+fn increment_command_stats_counter(
+    counters: &Mutex<HashMap<Vec<u8>, u64>>,
+    command_name: &[u8],
+    subcommand_name: Option<&[u8]>,
+) {
+    let Ok(mut counters) = counters.lock() else {
+        return;
+    };
+
+    let mut scratch = [0u8; INLINE_COMMAND_STATS_NAME_CAPACITY];
+    if let Some(normalized) =
+        try_normalize_command_stats_name_into(command_name, subcommand_name, &mut scratch)
+    {
+        if let Some(count) = counters.get_mut(normalized) {
+            *count += 1;
+            return;
+        }
+        counters.insert(normalized.to_vec(), 1);
+        return;
+    }
+
+    let normalized = normalize_command_stats_name(command_name, subcommand_name);
+    if let Some(count) = counters.get_mut(normalized.as_slice()) {
+        *count += 1;
+        return;
+    }
+    counters.insert(normalized, 1);
 }
 
 fn normalize_ascii_upper(value: &[u8]) -> Vec<u8> {

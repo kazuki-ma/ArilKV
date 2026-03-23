@@ -1,0 +1,9 @@
+previous_vs_current
+garnet.set_ops_pct=29.82
+garnet.get_ops_pct=-4.23
+garnet.set_p99_ms_pct=-39.69
+garnet.get_p99_ms_pct=0.00
+dragonfly.set_ops_pct=22.91
+dragonfly.get_ops_pct=-3.60
+dragonfly.set_p99_ms_pct=-58.08
+dragonfly.get_p99_ms_pct=-8.38

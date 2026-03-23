@@ -15,6 +15,10 @@ TARGETS="${TARGETS:-garnet dragonfly}"
 WORKLOADS="${WORKLOADS:-set get}"
 SERVER_CPU_SET="${SERVER_CPU_SET:-}"
 CLIENT_CPU_SET="${CLIENT_CPU_SET:-}"
+TOKIO_WORKER_THREADS="${TOKIO_WORKER_THREADS:-}"
+GARNET_STRING_OWNER_THREADS="${GARNET_STRING_OWNER_THREADS:-}"
+DRAGONFLY_PROACTOR_THREADS="${DRAGONFLY_PROACTOR_THREADS:-}"
+DRAGONFLY_CONN_IO_THREADS="${DRAGONFLY_CONN_IO_THREADS:-}"
 THREADS="${THREADS:-8}"
 CONNS="${CONNS:-16}"
 REQUESTS="${REQUESTS:-50000}"
@@ -227,6 +231,7 @@ start_target_server() {
     local target="$1"
     local port="$2"
     local server_log="$3"
+    local -a server_cmd=()
 
     stop_server
 
@@ -236,19 +241,40 @@ start_target_server() {
     fi
 
     if [[ "${target}" == "garnet" ]]; then
-        taskset -c "${SERVER_CPU_SET}" env \
-            GARNET_BIND_ADDR="${HOST}:${port}" \
-            GARNET_TSAVORITE_STRING_STORE_SHARDS="${GARNET_TSAVORITE_STRING_STORE_SHARDS:-2}" \
-            GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-262144}" \
-            "${GARNET_BIN}" >"${server_log}" 2>&1 &
+        server_cmd=(taskset -c "${SERVER_CPU_SET}" env)
+        if [[ -n "${TOKIO_WORKER_THREADS}" ]]; then
+            server_cmd+=("TOKIO_WORKER_THREADS=${TOKIO_WORKER_THREADS}")
+        fi
+        if [[ -n "${GARNET_STRING_OWNER_THREADS}" ]]; then
+            server_cmd+=("GARNET_STRING_OWNER_THREADS=${GARNET_STRING_OWNER_THREADS}")
+        fi
+        server_cmd+=(
+            "GARNET_BIND_ADDR=${HOST}:${port}"
+            "GARNET_TSAVORITE_STRING_STORE_SHARDS=${GARNET_TSAVORITE_STRING_STORE_SHARDS:-2}"
+            "GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES=${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-262144}"
+            "${GARNET_BIN}"
+        )
+        "${server_cmd[@]}" >"${server_log}" 2>&1 &
         SERVER_PID=$!
     elif [[ "${target}" == "dragonfly" ]]; then
         if [[ -z "${DRAGONFLY_BIN}" ]]; then
             echo "dragonfly binary not found; set DRAGONFLY_BIN=/path/to/dragonfly" >&2
             exit 1
         fi
-        taskset -c "${SERVER_CPU_SET}" \
-            "${DRAGONFLY_BIN}" --bind "${HOST}" --port "${port}" --dbfilename "" >"${server_log}" 2>&1 &
+        server_cmd=(
+            taskset -c "${SERVER_CPU_SET}"
+            "${DRAGONFLY_BIN}"
+            --bind "${HOST}"
+            --port "${port}"
+            --dbfilename ""
+        )
+        if [[ -n "${DRAGONFLY_PROACTOR_THREADS}" ]]; then
+            server_cmd+=(--proactor_threads "${DRAGONFLY_PROACTOR_THREADS}")
+        fi
+        if [[ -n "${DRAGONFLY_CONN_IO_THREADS}" ]]; then
+            server_cmd+=(--conn_io_threads "${DRAGONFLY_CONN_IO_THREADS}")
+        fi
+        "${server_cmd[@]}" >"${server_log}" 2>&1 &
         SERVER_PID=$!
     else
         echo "unknown target: ${target}" >&2

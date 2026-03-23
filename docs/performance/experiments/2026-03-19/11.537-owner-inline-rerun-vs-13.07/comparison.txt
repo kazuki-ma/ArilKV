@@ -1,0 +1,9 @@
+comparison
+garnet_vs_dragonfly.set_ops_pct=60.19
+garnet_vs_dragonfly.get_ops_pct=44.79
+garnet_vs_old13_07.set_ops_pct=-35.61
+garnet_vs_old13_07.get_ops_pct=26.32
+garnet_vs_old13_07.set_p99_ms_pct=25.40
+garnet_vs_old13_07.get_p99_ms_pct=11.27
+dragonfly_vs_old13_07.set_ops_pct=-8.36
+dragonfly_vs_old13_07.get_ops_pct=0.37

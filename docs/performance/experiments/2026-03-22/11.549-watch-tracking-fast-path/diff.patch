@@ -1,0 +1,187 @@
+--- /tmp/garnet-11.549-baseline.KX7iTE/garnet-rs/crates/garnet-server/src/request_lifecycle.rs	2026-03-22 23:03:27
++++ garnet-rs/crates/garnet-server/src/request_lifecycle.rs	2026-03-22 22:59:01
+@@ -2453,6 +2453,7 @@
+     blocked_clients: AtomicU64,
+     connected_clients: AtomicU64,
+     watching_clients: AtomicU64,
++    tracking_clients: AtomicU64,
+     executed_command_count: AtomicU64,
+     rdb_key_save_delay_micros: AtomicU64,
+     rdb_bgsave_deadline_unix_millis: AtomicU64,
+@@ -2966,6 +2967,7 @@
+             blocked_clients: AtomicU64::new(0),
+             connected_clients: AtomicU64::new(0),
+             watching_clients: AtomicU64::new(0),
++            tracking_clients: AtomicU64::new(0),
+             executed_command_count: AtomicU64::new(0),
+             rdb_key_save_delay_micros: AtomicU64::new(0),
+             rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
+@@ -3396,10 +3398,15 @@
+             return;
+         };
+         if config.mode == ClientTrackingModeSetting::Off {
+-            let _ = state.clients.remove(&client_id);
++            let removed = state.clients.remove(&client_id);
++            drop(state);
++            if removed.is_some() {
++                self.unregister_tracking_client();
++            }
+             return;
+         }
+ 
++        let inserted = !state.clients.contains_key(&client_id);
+         let client_state = state.clients.entry(client_id).or_default();
+         if config.bcast {
+             client_state.tracked_keys.clear();
+@@ -3407,6 +3414,9 @@
+         client_state.config = config;
+         client_state.broken_redirect = false;
+         client_state.broken_redirect_notified = false;
++        if inserted {
++            self.register_tracking_client();
++        }
+     }
+ 
+     pub(crate) fn set_client_tracking_caching(&self, client_id: ClientId, caching: Option<bool>) {
+@@ -3442,7 +3452,11 @@
+         let Ok(mut state) = self.tracking_state.lock() else {
+             return;
+         };
+-        let _ = state.clients.remove(&client_id);
++        let removed = state.clients.remove(&client_id);
++        drop(state);
++        if removed.is_some() {
++            self.unregister_tracking_client();
++        }
+     }
+ 
+     pub(crate) fn client_tracking_redirect_broken(&self, client_id: ClientId) -> bool {
+@@ -3484,6 +3498,9 @@
+     }
+ 
+     pub(crate) fn invalidate_all_tracking_entries(&self) {
++        if !self.has_tracking_clients() {
++            return;
++        }
+         let Ok(mut state) = self.tracking_state.lock() else {
+             return;
+         };
+@@ -3501,6 +3518,9 @@
+     }
+ 
+     pub(crate) fn enforce_tracking_table_max_keys(&self) {
++        if !self.has_tracking_clients() {
++            return;
++        }
+         let max_keys = usize::try_from(self.tracking_table_max_keys.load(Ordering::Acquire))
+             .unwrap_or(usize::MAX);
+         let Ok(mut state) = self.tracking_state.lock() else {
+@@ -3539,6 +3559,9 @@
+     }
+ 
+     pub(crate) fn track_read_key_for_current_client(&self, key: &[u8]) {
++        if !self.has_tracking_clients() {
++            return;
++        }
+         if !current_request_tracking_reads_enabled() {
+             return;
+         }
+@@ -3571,6 +3594,9 @@
+ 
+     fn apply_deferred_tracking_reads_for_client(&self, client_id: ClientId, keys: &[RedisKey]) {
+         if keys.is_empty() {
++            return;
++        }
++        if !self.has_tracking_clients() {
+             return;
+         }
+         let Ok(mut state) = self.tracking_state.lock() else {
+@@ -4015,6 +4041,9 @@
+         origin_client_id: Option<ClientId>,
+     ) {
+         if keys.is_empty() {
++            return;
++        }
++        if !self.has_tracking_clients() {
+             return;
+         }
+         let (connected_clients, source_resp_versions) = {
+@@ -4104,6 +4133,9 @@
+         key: &[u8],
+         origin_client_id: Option<ClientId>,
+     ) {
++        if !self.has_tracking_clients() {
++            return;
++        }
+         if origin_client_id.is_some() && collect_tracking_invalidation_key(key) {
+             return;
+         }
+@@ -4237,6 +4269,22 @@
+         let _ = self.watching_clients.fetch_sub(1, Ordering::AcqRel);
+     }
+ 
++    fn register_tracking_client(&self) {
++        self.tracking_clients.fetch_add(1, Ordering::AcqRel);
++    }
++
++    fn unregister_tracking_client(&self) {
++        let _ = self.tracking_clients.fetch_sub(1, Ordering::AcqRel);
++    }
++
++    fn has_watching_clients(&self) -> bool {
++        self.watching_clients.load(Ordering::Acquire) != 0
++    }
++
++    fn has_tracking_clients(&self) -> bool {
++        self.tracking_clients.load(Ordering::Acquire) != 0
++    }
++
+     pub(super) fn watching_clients(&self) -> u64 {
+         self.watching_clients.load(Ordering::Acquire)
+     }
+--- /tmp/garnet-11.549-baseline.KX7iTE/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs	2026-03-22 23:03:16
++++ garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs	2026-03-22 22:56:47
+@@ -1474,9 +1474,18 @@
+     }
+ 
+     pub(super) fn bump_watch_version_in_db(&self, db: DbName, key: &[u8]) {
+-        let slot = watch_version_slot(db, key);
+-        self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
+-        self.enqueue_tracking_invalidation_for_key(key);
++        let watching_clients = self.has_watching_clients();
++        let tracking_clients = self.has_tracking_clients();
++        if !watching_clients && !tracking_clients {
++            return;
++        }
++        if watching_clients {
++            let slot = watch_version_slot(db, key);
++            self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
++        }
++        if tracking_clients {
++            self.enqueue_tracking_invalidation_for_key(key);
++        }
+     }
+ 
+     pub(super) fn bump_watch_version(&self, key: DbKeyRef<'_>) {
+@@ -1484,9 +1493,18 @@
+     }
+ 
+     pub(super) fn bump_watch_version_server_origin_in_db(&self, db: DbName, key: &[u8]) {
+-        let slot = watch_version_slot(db, key);
+-        self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
+-        self.enqueue_tracking_invalidation_for_key_as_server(key);
++        let watching_clients = self.has_watching_clients();
++        let tracking_clients = self.has_tracking_clients();
++        if !watching_clients && !tracking_clients {
++            return;
++        }
++        if watching_clients {
++            let slot = watch_version_slot(db, key);
++            self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
++        }
++        if tracking_clients {
++            self.enqueue_tracking_invalidation_for_key_as_server(key);
++        }
+     }
+ 
+     pub(super) fn bump_watch_version_server_origin(&self, key: DbKeyRef<'_>) {

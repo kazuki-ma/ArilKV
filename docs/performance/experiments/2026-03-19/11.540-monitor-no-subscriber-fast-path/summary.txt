@@ -1,0 +1,24 @@
+Slice: `11.540`
+
+Goal
+- Stop paying monitor-formatting allocation cost on every command when nobody is subscribed to `MONITOR`.
+
+What changed
+- Added a cheap `has_monitor_subscribers()` probe on `ServerMetrics`.
+- Guarded monitor event formatting/publish in `connection_handler`.
+- Added an exact TCP regression to prove subscribed `MONITOR` still receives `SET` events.
+
+Validated result
+- `RUNS=5` owner-inline A/B:
+  - `SET ops/sec 99828 -> 113049` (`+13.24%`)
+  - `GET ops/sec 119189 -> 138964` (`+16.59%`)
+  - `SET p99 0.087 -> 0.079 ms` (`-9.20%`)
+  - `GET p99 0.095 -> 0.071 ms` (`-25.26%`)
+
+Verified gates
+- `cargo test -p garnet-server monitor_receives_set_events_when_subscribed_like_external_scenario -- --nocapture`
+- `cargo test -p garnet-server acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes -- --nocapture`
+- `make fmt`
+- `make fmt-check`
+- `make test-server`
+- Final counts: `704 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`

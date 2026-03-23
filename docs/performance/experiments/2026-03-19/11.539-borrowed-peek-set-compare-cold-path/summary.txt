@@ -1,0 +1,27 @@
+Slice: `11.539`
+
+Goal
+- Add a callback-bounded borrowed read API to `tsavorite` so compare-only `SET` conditions can inspect the current value without cloning it.
+
+Key design decisions
+- Keep the epoch pin scoped to the peek callback, not the whole command.
+- Keep `SET GET` on the owned-read path because the old value must outlive the storage callback.
+- Keep compare-only peek logic out of the common overwrite fast path by routing it through a cold helper.
+
+Outcome
+- The borrowed peek API is now available as `TsavoriteSession::peek(...)`.
+- `SET` compare-only conditions (`IFEQ`, `IFNE`, `IFDEQ`, `IFDNE`) use borrowed peek safely.
+- Plain owner-inline `SET` remains faster than the corrected `11.538` baseline after moving the compare-only branch out of line.
+
+Validation
+- `cargo test -p tsavorite peek_ -- --nocapture`
+- `cargo test -p garnet-server extended_set_conditions_match_external_string_scenarios -- --nocapture`
+- `cargo test -p garnet-server set_get_option_returns_old_value -- --nocapture`
+- `make fmt`
+- `make fmt-check`
+- `make test-server`
+
+Verified gate counts
+- `703 passed; 0 failed; 16 ignored`
+- plus `26 passed`
+- plus `1 passed`

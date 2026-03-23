@@ -1,4 +1,5 @@
 use super::*;
+use crate::aof_durability::AppendFsyncPolicy;
 use crate::debug_concurrency;
 use crate::testkit::CommandHarnessError;
 use crate::testkit::assert_command_error;
@@ -15,6 +16,7 @@ use garnet_cluster::Worker;
 use garnet_cluster::WorkerRole;
 use garnet_common::parse_resp_command_arg_slices;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -37,6 +39,23 @@ fn parse_integer_response(response: &[u8]) -> i64 {
         .unwrap()
         .parse::<i64>()
         .unwrap()
+}
+
+fn unique_aof_test_dir(prefix: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("garnet-request-aof-{prefix}-{nanos}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn configure_test_aof_path(processor: &RequestProcessor, prefix: &str) -> PathBuf {
+    let dir = unique_aof_test_dir(prefix);
+    processor.set_config_value(b"dir", dir.to_string_lossy().into_owned().into_bytes());
+    processor.set_config_value(b"appendfilename", format!("{prefix}.aof").into_bytes());
+    dir
 }
 
 fn parse_integer_array_response(response: &[u8]) -> Vec<i64> {
@@ -80,6 +99,572 @@ fn parse_resp_integer(response: &[u8], index: &mut usize) -> i64 {
         .unwrap();
     *index += 2;
     value
+}
+
+#[derive(Clone)]
+struct RawRedisRdbEntry {
+    db: DbName,
+    key: Vec<u8>,
+    expiration_unix_millis: Option<u64>,
+    rdb_type: u8,
+    payload: Vec<u8>,
+}
+
+const TEST_REDIS_RDB_TYPE_LIST_ZIPLIST: u8 = 10;
+const TEST_REDIS_RDB_TYPE_ZSET_ZIPLIST: u8 = 12;
+const TEST_REDIS_RDB_TYPE_HASH_ZIPLIST: u8 = 13;
+const TEST_REDIS_RDB_TYPE_LIST_QUICKLIST: u8 = 14;
+const TEST_REDIS_RDB_OPCODE_AUX: u8 = 250;
+const TEST_REDIS_RDB_OPCODE_RESIZEDB: u8 = 251;
+const TEST_REDIS_RDB_OPCODE_EXPIRETIME_MS: u8 = 252;
+const TEST_REDIS_RDB_OPCODE_SELECTDB: u8 = 254;
+const TEST_REDIS_RDB_OPCODE_EOF: u8 = 255;
+
+fn encode_legacy_full_redis_rdb_snapshot(entries: &[RawRedisRdbEntry]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(b"REDIS0011");
+    test_append_redis_rdb_aux_field(&mut encoded, b"redis-ver", b"6.2.14");
+    test_append_redis_rdb_aux_field(&mut encoded, b"redis-bits", b"64");
+    test_append_redis_rdb_aux_field(&mut encoded, b"aof-base", b"0");
+
+    let mut current_db = None;
+    let mut remaining_entries = entries.iter().peekable();
+    while let Some(entry) = remaining_entries.next() {
+        if current_db != Some(entry.db) {
+            current_db = Some(entry.db);
+            encoded.push(TEST_REDIS_RDB_OPCODE_SELECTDB);
+            test_append_redis_rdb_len(&mut encoded, usize::from(entry.db) as u64);
+
+            let mut remaining_entries_in_db = 1u64;
+            let mut remaining_expiring_entries_in_db =
+                u64::from(entry.expiration_unix_millis.is_some());
+            for candidate in remaining_entries.clone() {
+                if candidate.db != entry.db {
+                    break;
+                }
+                remaining_entries_in_db += 1;
+                if candidate.expiration_unix_millis.is_some() {
+                    remaining_expiring_entries_in_db += 1;
+                }
+            }
+            encoded.push(TEST_REDIS_RDB_OPCODE_RESIZEDB);
+            test_append_redis_rdb_len(&mut encoded, remaining_entries_in_db);
+            test_append_redis_rdb_len(&mut encoded, remaining_expiring_entries_in_db);
+        }
+
+        if let Some(expiration_unix_millis) = entry.expiration_unix_millis {
+            encoded.push(TEST_REDIS_RDB_OPCODE_EXPIRETIME_MS);
+            encoded.extend_from_slice(&expiration_unix_millis.to_le_bytes());
+        }
+        encoded.push(entry.rdb_type);
+        test_append_redis_rdb_string(&mut encoded, entry.key.as_slice());
+        encoded.extend_from_slice(entry.payload.as_slice());
+    }
+
+    encoded.push(TEST_REDIS_RDB_OPCODE_EOF);
+    let checksum = test_redis_crc64(&encoded);
+    encoded.extend_from_slice(&checksum.to_le_bytes());
+    encoded
+}
+
+fn encode_redis_rdb_string_payload(bytes: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    test_append_redis_rdb_string(&mut payload, bytes);
+    payload
+}
+
+fn encode_legacy_list_quicklist_payload(nodes: &[Vec<u8>]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    test_append_redis_rdb_len(&mut payload, nodes.len() as u64);
+    for node in nodes {
+        test_append_redis_rdb_string(&mut payload, node.as_slice());
+    }
+    payload
+}
+
+fn encode_redis_ziplist(entries: &[&[u8]]) -> Vec<u8> {
+    const REDIS_ZIPLIST_END: u8 = 0xff;
+    const REDIS_ZIPLIST_BIG_PREVLEN: usize = 254;
+
+    let mut encoded = vec![0; 10];
+    let mut previous_entry_len = 0usize;
+    let mut last_entry_offset = 10usize;
+
+    for entry in entries {
+        last_entry_offset = encoded.len();
+        if previous_entry_len < REDIS_ZIPLIST_BIG_PREVLEN {
+            encoded.push(previous_entry_len as u8);
+        } else {
+            encoded.push(REDIS_ZIPLIST_BIG_PREVLEN as u8);
+            encoded.extend_from_slice(&(previous_entry_len as u32).to_le_bytes());
+        }
+
+        if entry.len() <= 0x3f {
+            encoded.push(entry.len() as u8);
+        } else if entry.len() <= 0x3fff {
+            encoded.push(0x40 | ((entry.len() >> 8) as u8 & 0x3f));
+            encoded.push((entry.len() & 0xff) as u8);
+        } else {
+            encoded.push(0x80);
+            encoded.extend_from_slice(&(entry.len() as u32).to_be_bytes());
+        }
+        encoded.extend_from_slice(entry);
+        previous_entry_len = encoded.len() - last_entry_offset;
+    }
+
+    encoded.push(REDIS_ZIPLIST_END);
+    let total_bytes = encoded.len() as u32;
+    encoded[0..4].copy_from_slice(&total_bytes.to_le_bytes());
+    encoded[4..8].copy_from_slice(&(last_entry_offset as u32).to_le_bytes());
+    encoded[8..10].copy_from_slice(&(entries.len().min(u16::MAX as usize) as u16).to_le_bytes());
+    encoded
+}
+
+fn test_append_redis_rdb_aux_field(target: &mut Vec<u8>, key: &[u8], value: &[u8]) {
+    target.push(TEST_REDIS_RDB_OPCODE_AUX);
+    test_append_redis_rdb_string(target, key);
+    test_append_redis_rdb_string(target, value);
+}
+
+fn test_append_redis_rdb_string(target: &mut Vec<u8>, bytes: &[u8]) {
+    test_append_redis_rdb_len(target, bytes.len() as u64);
+    target.extend_from_slice(bytes);
+}
+
+fn test_append_redis_rdb_len(target: &mut Vec<u8>, len: u64) {
+    if len < (1 << 6) {
+        target.push(len as u8);
+    } else if len < (1 << 14) {
+        target.push(0b01_000000 | ((len >> 8) as u8 & 0x3f));
+        target.push((len & 0xff) as u8);
+    } else if u32::try_from(len).is_ok() {
+        target.push(0x80);
+        target.extend_from_slice(&(len as u32).to_be_bytes());
+    } else {
+        target.push(0x81);
+        target.extend_from_slice(&len.to_be_bytes());
+    }
+}
+
+fn test_redis_crc64(payload: &[u8]) -> u64 {
+    const POLY: u64 = 0xad93_d235_94c9_35a9;
+
+    let mut crc = 0u64;
+    for &byte in payload {
+        let mut mask = 1u8;
+        while mask != 0 {
+            let mut bit = (crc & (1u64 << 63)) != 0;
+            if byte & mask != 0 {
+                bit = !bit;
+            }
+            crc <<= 1;
+            if bit {
+                crc ^= POLY;
+            }
+            mask = mask.wrapping_shl(1);
+        }
+    }
+
+    crc.reverse_bits()
+}
+
+#[test]
+fn redis_rdb_snapshot_round_trips_strings_ttls_and_nonzero_db() {
+    let source = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let target = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    assert_command_response(&source, "SET seed value", b"+OK\r\n");
+    assert_command_response(&source, "PSETEX ttlkey 60000 ttlvalue", b"+OK\r\n");
+    assert_command_response_in_db(&source, "SET shared other", b"+OK\r\n", DbName::new(9));
+
+    let snapshot = source
+        .build_full_redis_rdb_snapshot(false)
+        .unwrap()
+        .unwrap();
+    assert!(target.reload_redis_rdb_snapshot_bytes(snapshot).unwrap());
+
+    assert_command_response(&target, "GET seed", b"$5\r\nvalue\r\n");
+    assert_command_response(&target, "GET ttlkey", b"$8\r\nttlvalue\r\n");
+    assert_command_response_in_db(&target, "GET shared", b"$5\r\nother\r\n", DbName::new(9));
+
+    let ttl_response = execute_command_line(&target, "PTTL ttlkey").unwrap();
+    let ttl_millis = parse_integer_response(&ttl_response);
+    assert!(ttl_millis > 0, "expected positive TTL after RDB round-trip");
+}
+
+#[test]
+fn redis_rdb_snapshot_round_trips_hashes_sets_zsets_and_object_ttls() {
+    let source = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let target = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    assert_command_response(
+        &source,
+        "HSET seed:hash field1 value1 field2 value2",
+        b":2\r\n",
+    );
+    assert_command_response(&source, "PEXPIRE seed:hash 60000", b":1\r\n");
+    assert_command_response(&source, "SADD seed:set alpha beta gamma", b":3\r\n");
+    assert_command_response(&source, "ZADD seed:zset 1 one 2 two", b":2\r\n");
+    assert_command_response_in_db(
+        &source,
+        "HSET shared:hash field shared-value",
+        b":1\r\n",
+        DbName::new(9),
+    );
+
+    let snapshot = source
+        .build_full_redis_rdb_snapshot(false)
+        .unwrap()
+        .unwrap();
+    assert!(target.reload_redis_rdb_snapshot_bytes(snapshot).unwrap());
+
+    assert_command_response(&target, "HGET seed:hash field1", b"$6\r\nvalue1\r\n");
+    assert_command_response(&target, "HGET seed:hash field2", b"$6\r\nvalue2\r\n");
+    assert_command_response(&target, "SISMEMBER seed:set alpha", b":1\r\n");
+    assert_command_response(&target, "SISMEMBER seed:set gamma", b":1\r\n");
+    assert_command_response(&target, "ZSCORE seed:zset one", b"$1\r\n1\r\n");
+    assert_command_response(&target, "ZSCORE seed:zset two", b"$1\r\n2\r\n");
+    assert_command_response_in_db(
+        &target,
+        "HGET shared:hash field",
+        b"$12\r\nshared-value\r\n",
+        DbName::new(9),
+    );
+
+    let ttl_response = execute_command_line(&target, "PTTL seed:hash").unwrap();
+    let ttl_millis = parse_integer_response(&ttl_response);
+    assert!(
+        ttl_millis > 0,
+        "expected positive object TTL after RDB round-trip"
+    );
+}
+
+#[test]
+fn redis_rdb_snapshot_round_trips_hash_field_expirations() {
+    let source = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let target = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let future_millis = current_unix_time_millis().unwrap() + 60_000;
+
+    assert_command_response(
+        &source,
+        "HSET seed:hfe field1 value1 field2 value2",
+        b":2\r\n",
+    );
+    assert_command_response(
+        &source,
+        &format!("HPEXPIREAT seed:hfe {future_millis} FIELDS 1 field1"),
+        b"*1\r\n:1\r\n",
+    );
+    assert_command_response_in_db(
+        &source,
+        "HSET shared:hfe field shared-value",
+        b":1\r\n",
+        DbName::new(9),
+    );
+    assert_command_response_in_db(
+        &source,
+        &format!("HPEXPIREAT shared:hfe {future_millis} FIELDS 1 field"),
+        b"*1\r\n:1\r\n",
+        DbName::new(9),
+    );
+
+    let snapshot = source
+        .build_full_redis_rdb_snapshot(false)
+        .unwrap()
+        .unwrap();
+    assert!(
+        snapshot.starts_with(b"REDIS0012"),
+        "expected HFE snapshot to use RDB version 12"
+    );
+    assert!(target.reload_redis_rdb_snapshot_bytes(snapshot).unwrap());
+
+    assert_command_response(&target, "HGET seed:hfe field1", b"$6\r\nvalue1\r\n");
+    assert_command_response(&target, "HGET seed:hfe field2", b"$6\r\nvalue2\r\n");
+    assert_command_response(
+        &target,
+        "OBJECT ENCODING seed:hfe",
+        b"$10\r\nlistpackex\r\n",
+    );
+    let hpexpiretime =
+        execute_command_line(&target, "HPEXPIRETIME seed:hfe FIELDS 2 field1 field2").unwrap();
+    let expirations = parse_integer_array_response(&hpexpiretime);
+    assert_eq!(expirations.len(), 2);
+    assert!(expirations[0] > current_unix_time_millis().unwrap() as i64);
+    assert_eq!(expirations[1], -1);
+
+    assert_command_response_in_db(
+        &target,
+        "HGET shared:hfe field",
+        b"$12\r\nshared-value\r\n",
+        DbName::new(9),
+    );
+    let shared_hpexpiretime = execute_command_line_in_db(
+        &target,
+        "HPEXPIRETIME shared:hfe FIELDS 1 field",
+        DbName::new(9),
+    );
+    assert!(parse_integer_array_response(&shared_hpexpiretime)[0] > 0);
+}
+
+#[test]
+fn redis_rdb_snapshot_round_trips_lists_and_preserves_quicklist_encoding() {
+    let source = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let target = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let large_list_value = vec![b'x'; 9000];
+
+    assert_eq!(
+        execute_frame(
+            &source,
+            &encode_resp(&[
+                b"RPUSH",
+                b"seed:list",
+                b"alpha",
+                large_list_value.as_slice(),
+                b"omega",
+            ])
+        ),
+        b":3\r\n"
+    );
+    assert_command_response(&source, "PEXPIRE seed:list 60000", b":1\r\n");
+    assert_command_response_in_db(
+        &source,
+        "RPUSH shared:list left right",
+        b":2\r\n",
+        DbName::new(9),
+    );
+    assert_command_response(&source, "OBJECT ENCODING seed:list", b"$9\r\nquicklist\r\n");
+
+    let snapshot = source
+        .build_full_redis_rdb_snapshot(false)
+        .unwrap()
+        .unwrap();
+    assert!(target.reload_redis_rdb_snapshot_bytes(snapshot).unwrap());
+
+    assert_command_response(&target, "LLEN seed:list", b":3\r\n");
+    assert_command_response(&target, "LINDEX seed:list 0", b"$5\r\nalpha\r\n");
+    assert_eq!(
+        parse_bulk_payload(&execute_frame(
+            &target,
+            &encode_resp(&[b"LINDEX", b"seed:list", b"1"])
+        ))
+        .unwrap(),
+        large_list_value
+    );
+    assert_command_response(&target, "LINDEX seed:list 2", b"$5\r\nomega\r\n");
+    assert_command_response(&target, "OBJECT ENCODING seed:list", b"$9\r\nquicklist\r\n");
+    assert_command_response_in_db(
+        &target,
+        "LRANGE shared:list 0 -1",
+        b"*2\r\n$4\r\nleft\r\n$5\r\nright\r\n",
+        DbName::new(9),
+    );
+
+    let ttl_response = execute_command_line(&target, "PTTL seed:list").unwrap();
+    let ttl_millis = parse_integer_response(&ttl_response);
+    assert!(
+        ttl_millis > 0,
+        "expected positive list TTL after RDB round-trip"
+    );
+}
+
+#[test]
+fn redis_rdb_snapshot_round_trips_streams_groups_pending_and_ttls() {
+    let source = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let target = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    assert_command_response(&source, "XADD seed:stream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&source, "XADD seed:stream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&source, "XADD seed:stream 3-0 f v3", b"$3\r\n3-0\r\n");
+    assert_command_response(&source, "PEXPIRE seed:stream 60000", b":1\r\n");
+    assert_command_response(&source, "XGROUP CREATE seed:stream group1 0", b"+OK\r\n");
+    assert_eq!(
+        parse_xreadgroup_maybe_claim_single_stream_response(
+            &execute_command_line(
+                &source,
+                "XREADGROUP GROUP group1 consumer1 COUNT 1 STREAMS seed:stream >",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .1
+        .len(),
+        1
+    );
+    assert_eq!(
+        parse_xreadgroup_maybe_claim_single_stream_response(
+            &execute_command_line(
+                &source,
+                "XREADGROUP GROUP group1 consumer2 COUNT 1 STREAMS seed:stream >",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .1
+        .len(),
+        1
+    );
+    assert_command_response_in_db(
+        &source,
+        "XADD shared:stream 4-0 f v4",
+        b"$3\r\n4-0\r\n",
+        DbName::new(9),
+    );
+    assert_command_response_in_db(
+        &source,
+        "XGROUP CREATE shared:stream group9 0",
+        b"+OK\r\n",
+        DbName::new(9),
+    );
+
+    let snapshot = source
+        .build_full_redis_rdb_snapshot(false)
+        .unwrap()
+        .unwrap();
+    assert!(target.reload_redis_rdb_snapshot_bytes(snapshot).unwrap());
+
+    assert_command_response(&target, "XLEN seed:stream", b":3\r\n");
+    let (pending_total, smallest, greatest, consumers) = parse_xpending_summary_response(
+        &execute_command_line(&target, "XPENDING seed:stream group1").unwrap(),
+    );
+    assert_eq!(pending_total, 2);
+    assert_eq!(smallest.as_deref(), Some(b"1-0".as_slice()));
+    assert_eq!(greatest.as_deref(), Some(b"2-0".as_slice()));
+    assert_eq!(
+        consumers,
+        vec![(b"consumer1".to_vec(), 1), (b"consumer2".to_vec(), 1),]
+    );
+
+    let (stream_name, pending_delivery) = parse_xreadgroup_maybe_claim_single_stream_response(
+        &execute_command_line(
+            &target,
+            "XREADGROUP GROUP group1 consumer3 COUNT 1 STREAMS seed:stream >",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stream_name, b"seed:stream");
+    assert_eq!(pending_delivery.len(), 1);
+    assert_eq!(pending_delivery[0].0, b"3-0");
+
+    assert_command_response_in_db(
+        &target,
+        "XRANGE shared:stream - +",
+        b"*1\r\n*2\r\n$3\r\n4-0\r\n*2\r\n$1\r\nf\r\n$2\r\nv4\r\n",
+        DbName::new(9),
+    );
+
+    let ttl_response = execute_command_line(&target, "PTTL seed:stream").unwrap();
+    let ttl_millis = parse_integer_response(&ttl_response);
+    assert!(
+        ttl_millis > 0,
+        "expected positive stream TTL after RDB round-trip"
+    );
+}
+
+#[test]
+fn redis_rdb_snapshot_imports_legacy_ziplist_and_quicklist_encodings() {
+    let target = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let quicklist_large_value = vec![b'x'; 9000];
+    let expiration_unix_millis = current_unix_time_millis().unwrap() + 60_000;
+
+    let snapshot = encode_legacy_full_redis_rdb_snapshot(&[
+        RawRedisRdbEntry {
+            db: DbName::db0(),
+            key: b"seed:listzip".to_vec(),
+            expiration_unix_millis: Some(expiration_unix_millis),
+            rdb_type: TEST_REDIS_RDB_TYPE_LIST_ZIPLIST,
+            payload: encode_redis_rdb_string_payload(&encode_redis_ziplist(&[
+                b"alpha".as_slice(),
+                b"beta".as_slice(),
+                b"gamma".as_slice(),
+            ])),
+        },
+        RawRedisRdbEntry {
+            db: DbName::db0(),
+            key: b"seed:hashzip".to_vec(),
+            expiration_unix_millis: None,
+            rdb_type: TEST_REDIS_RDB_TYPE_HASH_ZIPLIST,
+            payload: encode_redis_rdb_string_payload(&encode_redis_ziplist(&[
+                b"field1".as_slice(),
+                b"value1".as_slice(),
+                b"field2".as_slice(),
+                b"value2".as_slice(),
+            ])),
+        },
+        RawRedisRdbEntry {
+            db: DbName::db0(),
+            key: b"seed:zsetzip".to_vec(),
+            expiration_unix_millis: None,
+            rdb_type: TEST_REDIS_RDB_TYPE_ZSET_ZIPLIST,
+            payload: encode_redis_rdb_string_payload(&encode_redis_ziplist(&[
+                b"one".as_slice(),
+                b"1".as_slice(),
+                b"two".as_slice(),
+                b"2".as_slice(),
+            ])),
+        },
+        RawRedisRdbEntry {
+            db: DbName::db0(),
+            key: b"seed:quicklist".to_vec(),
+            expiration_unix_millis: None,
+            rdb_type: TEST_REDIS_RDB_TYPE_LIST_QUICKLIST,
+            payload: encode_legacy_list_quicklist_payload(&[
+                encode_redis_ziplist(&[b"left".as_slice(), quicklist_large_value.as_slice()]),
+                encode_redis_ziplist(&[b"right".as_slice()]),
+            ]),
+        },
+        RawRedisRdbEntry {
+            db: DbName::new(9),
+            key: b"shared:listzip".to_vec(),
+            expiration_unix_millis: None,
+            rdb_type: TEST_REDIS_RDB_TYPE_LIST_ZIPLIST,
+            payload: encode_redis_rdb_string_payload(&encode_redis_ziplist(&[
+                b"db9-left".as_slice(),
+                b"db9-right".as_slice(),
+            ])),
+        },
+    ]);
+
+    assert!(target.reload_redis_rdb_snapshot_bytes(snapshot).unwrap());
+
+    assert_command_response(
+        &target,
+        "LRANGE seed:listzip 0 -1",
+        b"*3\r\n$5\r\nalpha\r\n$4\r\nbeta\r\n$5\r\ngamma\r\n",
+    );
+    assert_command_response(&target, "HGET seed:hashzip field1", b"$6\r\nvalue1\r\n");
+    assert_command_response(&target, "HGET seed:hashzip field2", b"$6\r\nvalue2\r\n");
+    assert_command_response(&target, "ZSCORE seed:zsetzip one", b"$1\r\n1\r\n");
+    assert_command_response(&target, "ZSCORE seed:zsetzip two", b"$1\r\n2\r\n");
+    assert_command_response(
+        &target,
+        "OBJECT ENCODING seed:quicklist",
+        b"$9\r\nquicklist\r\n",
+    );
+    assert_command_response(&target, "LLEN seed:quicklist", b":3\r\n");
+    assert_command_response(&target, "LINDEX seed:quicklist 0", b"$4\r\nleft\r\n");
+    assert_eq!(
+        parse_bulk_payload(&execute_frame(
+            &target,
+            &encode_resp(&[b"LINDEX", b"seed:quicklist", b"1"])
+        ))
+        .unwrap(),
+        quicklist_large_value
+    );
+    assert_command_response(&target, "LINDEX seed:quicklist 2", b"$5\r\nright\r\n");
+    assert_command_response_in_db(
+        &target,
+        "LRANGE shared:listzip 0 -1",
+        b"*2\r\n$8\r\ndb9-left\r\n$9\r\ndb9-right\r\n",
+        DbName::new(9),
+    );
+
+    let ttl_response = execute_command_line(&target, "PTTL seed:listzip").unwrap();
+    let ttl_millis = parse_integer_response(&ttl_response);
+    assert!(
+        ttl_millis > 0,
+        "expected positive TTL after importing legacy list ziplist"
+    );
 }
 
 fn parse_bulk_payload(response: &[u8]) -> Option<Vec<u8>> {
@@ -7925,10 +8510,23 @@ fn watch_versions_are_scoped_by_explicit_db() {
 
     assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", db9);
 
+    let version0_without_watchers = processor.watch_key_version_in_db(db0, b"shared");
+    let version9_without_watchers = processor.watch_key_version_in_db(db9, b"shared");
+    assert_eq!(version0_without_watchers, version0_before);
+    assert_eq!(version9_without_watchers, version9_before);
+
+    processor.register_watching_client();
     let version0_after = processor.watch_key_version_in_db(db0, b"shared");
     let version9_after = processor.watch_key_version_in_db(db9, b"shared");
-    assert_eq!(version0_after, version0_before);
-    assert_ne!(version9_after, version9_before);
+    assert_command_response_in_db(&processor, "SET shared db9-next", b"+OK\r\n", db9);
+    let version0_after_write = processor.watch_key_version_in_db(db0, b"shared");
+    let version9_after_write = processor.watch_key_version_in_db(db9, b"shared");
+    processor.unregister_watching_client();
+
+    assert_eq!(version0_after, version0_without_watchers);
+    assert_eq!(version9_after, version9_without_watchers);
+    assert_eq!(version0_after_write, version0_after);
+    assert_ne!(version9_after_write, version9_after);
 }
 
 #[test]
@@ -13420,6 +14018,99 @@ fn slowlog_surface_validation_matches_external_scenarios() {
 }
 
 #[test]
+fn slowlog_runtime_config_cache_tracks_config_set_updates() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(processor.slowlog_threshold_micros(), 10_000);
+    assert_eq!(processor.slowlog_max_len(), 128);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET slowlog-log-slower-than 0",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "CONFIG SET slowlog-max-len 4", b"+OK\r\n");
+    assert_eq!(processor.slowlog_threshold_micros(), 0);
+    assert_eq!(processor.slowlog_max_len(), 4);
+    processor.reset_slowlog();
+    processor.record_slowlog_command(
+        &[b"set", b"cache", b"warm"],
+        CommandId::Set,
+        Duration::from_micros(1),
+        None,
+    );
+    let entries = processor.slowlog_entries(None);
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].args,
+        vec![b"set".to_vec(), b"cache".to_vec(), b"warm".to_vec()]
+    );
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET slowlog-log-slower-than -1",
+        b"+OK\r\n",
+    );
+    assert_eq!(processor.slowlog_threshold_micros(), -1);
+    processor.reset_slowlog();
+    processor.record_slowlog_command(
+        &[b"set", b"cache", b"disabled-by-threshold"],
+        CommandId::Set,
+        Duration::from_secs(1),
+        None,
+    );
+    assert_eq!(processor.slowlog_len(), 0);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET slowlog-log-slower-than 0",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "CONFIG SET slowlog-max-len 0", b"+OK\r\n");
+    assert_eq!(processor.slowlog_threshold_micros(), 0);
+    assert_eq!(processor.slowlog_max_len(), 0);
+    processor.reset_slowlog();
+    processor.record_slowlog_command(
+        &[b"set", b"cache", b"disabled-by-len"],
+        CommandId::Set,
+        Duration::from_secs(1),
+        None,
+    );
+    assert_eq!(processor.slowlog_len(), 0);
+}
+
+#[test]
+fn default_acl_user_unrestricted_fast_path_tracks_profile_updates() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert!(
+        processor
+            .default_acl_user_unrestricted
+            .load(Ordering::Acquire)
+    );
+
+    let mut restricted = AclUserProfile::restricted_with_pubsub_default(false);
+    restricted.enabled = true;
+    processor
+        .set_acl_user_profile(b"default", restricted)
+        .unwrap();
+    assert!(
+        !processor
+            .default_acl_user_unrestricted
+            .load(Ordering::Acquire)
+    );
+
+    processor
+        .set_acl_user_profile(b"default", AclUserProfile::default_superuser())
+        .unwrap();
+    assert!(
+        processor
+            .default_acl_user_unrestricted
+            .load(Ordering::Acquire)
+    );
+}
+
+#[test]
 fn latency_histogram_and_event_queries_cover_compatibility_shapes() {
     let processor = RequestProcessor::new().unwrap();
     processor.record_command_call(b"config|resetstat");
@@ -13494,6 +14185,29 @@ fn latency_histogram_and_event_queries_cover_compatibility_shapes() {
         &processor,
         "LATENCY HELP extra",
         b"-ERR wrong number of arguments for 'latency|help' command\r\n",
+    );
+}
+
+#[test]
+fn commandstats_normalize_subcommand_names_when_recorded_from_parts() {
+    let processor = RequestProcessor::new().unwrap();
+    processor.record_command_call_with_subcommand(b"CLIENT", Some(b"LIST"));
+    processor.record_command_call_with_subcommand(b"CLIENT", Some(b"LIST"));
+    processor.record_command_call_with_subcommand(b"SET", None);
+
+    let commandstats = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
+    ))
+    .expect("INFO COMMANDSTATS should return bulk payload");
+    let commandstats_text = String::from_utf8_lossy(&commandstats);
+    assert!(
+        commandstats_text.contains("cmdstat_client|list:calls=2"),
+        "unexpected INFO COMMANDSTATS payload: {commandstats_text}"
+    );
+    assert!(
+        commandstats_text.contains("cmdstat_set:calls=1"),
+        "unexpected INFO COMMANDSTATS payload: {commandstats_text}"
     );
 }
 
@@ -14968,7 +15682,9 @@ fn debug_set_disable_deny_scripts_toggles_script_command_gate() {
 #[test]
 fn debug_loadaof_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
+    let temp_dir = configure_test_aof_path(&processor, "empty-loadaof");
     assert_command_response(&processor, "DEBUG LOADAOF", b"+OK\r\n");
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -18373,6 +19089,139 @@ fn config_set_and_get_round_trip() {
     );
 }
 
+#[tokio::test]
+async fn config_set_appendonly_yes_starts_runtime_allows_appendfsync_reconfig_and_rejects_retarget_while_enabled()
+ {
+    let processor = RequestProcessor::new().unwrap();
+    let temp_dir = configure_test_aof_path(&processor, "config-appendonly");
+
+    assert_command_response(&processor, "CONFIG SET appendfsync everysec", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG SET appendonly yes", b"+OK\r\n");
+    assert!(
+        processor.local_aof_frontiers_snapshot().is_some(),
+        "appendonly runtime did not start"
+    );
+    let initial_runtime_config = processor
+        .live_aof_durability_runtime_config()
+        .expect("appendonly runtime config should be present");
+    assert_eq!(
+        initial_runtime_config.fsync_policy,
+        AppendFsyncPolicy::Everysec
+    );
+
+    assert_command_response(&processor, "CONFIG SET appendfsync always", b"+OK\r\n");
+    let reconfigured_runtime = processor
+        .live_aof_durability_runtime_config()
+        .expect("appendonly runtime config should remain present after reconfiguration");
+    assert_eq!(reconfigured_runtime.fsync_policy, AppendFsyncPolicy::Always);
+    assert_eq!(reconfigured_runtime.path, initial_runtime_config.path);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET appendfilename switched.aof",
+        b"-ERR CONFIG SET failed (possibly related to argument 'appendfilename') - immutable config\r\n",
+    );
+
+    assert_command_response(&processor, "CONFIG SET appendonly no", b"+OK\r\n");
+    assert!(!processor.live_aof_runtime_active());
+    assert_command_response(
+        &processor,
+        "CONFIG SET appendfilename switched.aof",
+        b"-ERR CONFIG SET failed (possibly related to argument 'appendfilename') - immutable config\r\n",
+    );
+
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn config_set_appendonly_yes_persists_loaded_function_libraries_for_debug_loadaof() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let temp_dir = configure_test_aof_path(&processor, "config-appendonly-functions");
+    let function_library = b"#!lua name=aoflib\nredis.register_function{function_name='setv', callback=function(keys, args) redis.call('set', keys[1], args[1]); return args[1] end}";
+
+    assert_command_response(&processor, "CONFIG SET appendfsync always", b"+OK\r\n");
+    let loaded_library = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"LOAD", function_library]),
+    ))
+    .expect("FUNCTION LOAD should return the library name");
+    assert_eq!(loaded_library, b"aoflib");
+
+    assert_command_response(&processor, "CONFIG SET appendonly yes", b"+OK\r\n");
+
+    processor.clear_function_registry(false);
+    assert_command_error(
+        &processor,
+        "FCALL setv 1 config:aof:key missing",
+        b"-ERR Function not found\r\n",
+    );
+
+    assert_command_response(&processor, "DEBUG LOADAOF", b"+OK\r\n");
+    let restored_value = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[
+            b"FCALL",
+            b"setv",
+            b"1",
+            b"config:aof:key",
+            b"restored-value",
+        ]),
+    ))
+    .expect("FCALL should return the stored value after DEBUG LOADAOF");
+    assert_eq!(restored_value, b"restored-value");
+    assert_command_response(
+        &processor,
+        "GET config:aof:key",
+        b"$14\r\nrestored-value\r\n",
+    );
+
+    processor.stop_live_aof_durability_runtime();
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[test]
+fn save_and_bgsave_update_lastsave_timestamp() {
+    let save_processor = RequestProcessor::new().unwrap();
+    let save_dir = unique_aof_test_dir("lastsave-save");
+    save_processor.set_config_value(b"dir", save_dir.to_string_lossy().into_owned().into_bytes());
+    save_processor.set_lastsave_unix_seconds_for_test(0);
+
+    assert_command_response(&save_processor, "SAVE", b"+OK\r\n");
+    assert_eq!(
+        parse_integer_response(&execute_command_line(&save_processor, "LASTSAVE").unwrap()),
+        save_processor.lastsave_unix_seconds() as i64
+    );
+    assert!(
+        save_processor.lastsave_unix_seconds() > 0,
+        "SAVE should advance LASTSAVE"
+    );
+
+    let bgsave_processor = RequestProcessor::new().unwrap();
+    let bgsave_dir = unique_aof_test_dir("lastsave-bgsave");
+    bgsave_processor.set_config_value(
+        b"dir",
+        bgsave_dir.to_string_lossy().into_owned().into_bytes(),
+    );
+    bgsave_processor.set_lastsave_unix_seconds_for_test(0);
+
+    assert_command_response(
+        &bgsave_processor,
+        "BGSAVE",
+        b"+Background saving started\r\n",
+    );
+    assert_eq!(
+        parse_integer_response(&execute_command_line(&bgsave_processor, "LASTSAVE").unwrap()),
+        bgsave_processor.lastsave_unix_seconds() as i64
+    );
+    assert!(
+        bgsave_processor.lastsave_unix_seconds() > 0,
+        "BGSAVE should advance LASTSAVE after the snapshot is persisted"
+    );
+
+    let _ = std::fs::remove_dir_all(save_dir);
+    let _ = std::fs::remove_dir_all(bgsave_dir);
+}
+
 #[test]
 fn config_resetstat_clears_stats_and_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
@@ -18422,6 +19271,11 @@ fn config_set_immutable_param_returns_error() {
         &processor,
         "CONFIG SET daemonize yes",
         b"-ERR CONFIG SET failed (possibly related to argument 'daemonize') - immutable config\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "CONFIG SET appendfilename switched.aof",
+        b"-ERR CONFIG SET failed (possibly related to argument 'appendfilename') - immutable config\r\n",
     );
 }
 
@@ -20190,13 +21044,18 @@ fn acl_deluser_genpass_log_save_load_stubs() {
     let log_nan = execute_command_line(&processor, "ACL LOG abc");
     assert!(log_nan.is_err(), "ACL LOG abc should fail");
 
-    // ACL SAVE returns OK
+    // ACL SAVE / LOAD require a configured aclfile.
     let save = execute_command_line(&processor, "ACL SAVE").unwrap();
-    assert_eq!(save, b"+OK\r\n");
+    assert!(
+        save.starts_with(b"-ERR This Redis instance is not configured to use an ACL file\r\n"),
+        "ACL SAVE without aclfile should fail, got {save:?}"
+    );
 
-    // ACL LOAD returns OK
     let load = execute_command_line(&processor, "ACL LOAD").unwrap();
-    assert_eq!(load, b"+OK\r\n");
+    assert!(
+        load.starts_with(b"-ERR This Redis instance is not configured to use an ACL file\r\n"),
+        "ACL LOAD without aclfile should fail, got {load:?}"
+    );
 }
 
 #[test]
@@ -20447,6 +21306,18 @@ fn acl_dryrun_and_cluster_saveconfig_countkeysinslot_getkeysinslot() {
     // ACL DRYRUN authorizes against the live ACL profile.
     let dryrun = execute_command_line(&processor, "ACL DRYRUN default GET key").unwrap();
     assert_eq!(dryrun, b"+OK\r\n");
+
+    let scripter =
+        execute_command_line(&processor, "ACL SETUSER scripter on nopass +readonly").unwrap();
+    assert_eq!(scripter, b"+OK\r\n");
+    let dryrun_denied =
+        execute_command_line(&processor, "ACL DRYRUN scripter EVAL_RO \"\" 0").unwrap();
+    let denial_text = String::from_utf8_lossy(&dryrun_denied);
+    assert!(
+        dryrun_denied.starts_with(b"$")
+            && denial_text.contains("has no permissions to run the 'eval_ro' command"),
+        "ACL DRYRUN denial should be returned as a string reply, got {dryrun_denied:?}"
+    );
 
     // ACL DRYRUN requires at least username + command
     let dryrun_short = execute_command_line(&processor, "ACL DRYRUN default");
@@ -20841,6 +21712,94 @@ fn acl_cat_returns_full_category_list_and_getuser_returns_default_profile() {
     processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
     let unknown = execute_command_line(&processor, "ACL BADCMD");
     assert!(unknown.is_err(), "ACL BADCMD should return error");
+}
+
+#[test]
+fn acl_getuser_rendering_and_surface_errors_match_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    execute_command_line(
+        &processor,
+        "ACL SETUSER newuser reset +@all ~* -@string +incr -debug +debug|digest",
+    )
+    .unwrap();
+    let getuser =
+        parse_resp_test_value(&execute_command_line(&processor, "ACL GETUSER newuser").unwrap());
+    let getuser_map = resp_test_flat_map(&getuser);
+    assert_eq!(
+        resp_test_bulk(getuser_map[&b"commands".to_vec()]),
+        b"+@all -@string +incr -debug +debug|digest",
+    );
+
+    execute_command_line(
+        &processor,
+        "ACL SETUSER newuser reset +@string -incr +acl +debug|digest +debug|segfault",
+    )
+    .unwrap();
+    let getuser =
+        parse_resp_test_value(&execute_command_line(&processor, "ACL GETUSER newuser").unwrap());
+    let getuser_map = resp_test_flat_map(&getuser);
+    assert_eq!(
+        resp_test_bulk(getuser_map[&b"commands".to_vec()]),
+        b"-@all +@string -incr +acl +debug|digest +debug|segfault",
+    );
+
+    execute_command_line(&processor, "ACL SETUSER adv-test").unwrap();
+    execute_command_line(&processor, "ACL SETUSER adv-test +@all -@hash -@slow +hget").unwrap();
+    let getuser =
+        parse_resp_test_value(&execute_command_line(&processor, "ACL GETUSER adv-test").unwrap());
+    let getuser_map = resp_test_flat_map(&getuser);
+    assert_eq!(
+        resp_test_bulk(getuser_map[&b"commands".to_vec()]),
+        b"+@all -@hash -@slow +hget",
+    );
+
+    execute_command_line(&processor, "ACL SETUSER adv-test -@hash").unwrap();
+    let getuser =
+        parse_resp_test_value(&execute_command_line(&processor, "ACL GETUSER adv-test").unwrap());
+    let getuser_map = resp_test_flat_map(&getuser);
+    assert_eq!(
+        resp_test_bulk(getuser_map[&b"commands".to_vec()]),
+        b"+@all -@slow +hget -@hash",
+    );
+
+    execute_command_line(
+        &processor,
+        "ACL SETUSER adv-test -@all +client|list +client|list +config|get +config +acl|list -acl",
+    )
+    .unwrap();
+    let getuser =
+        parse_resp_test_value(&execute_command_line(&processor, "ACL GETUSER adv-test").unwrap());
+    let getuser_map = resp_test_flat_map(&getuser);
+    assert_eq!(
+        resp_test_bulk(getuser_map[&b"commands".to_vec()]),
+        b"-@all +client|list +config -acl",
+    );
+
+    execute_command_line(&processor, "ACL SETUSER bob +memory|doctor").unwrap();
+    execute_command_line(&processor, "ACL SETUSER bob +memory").unwrap();
+    execute_command_line(&processor, "ACL SETUSER bob +@all +client|id").unwrap();
+    let getuser =
+        parse_resp_test_value(&execute_command_line(&processor, "ACL GETUSER bob").unwrap());
+    let getuser_map = resp_test_flat_map(&getuser);
+    assert_eq!(
+        resp_test_bulk(getuser_map[&b"commands".to_vec()]),
+        b"+@all +client|id",
+    );
+
+    assert_eq!(
+        execute_command_line(&processor, "ACL CAT NON_EXISTS NON_EXISTS2").unwrap(),
+        b"-ERR unknown subcommand or wrong number of arguments for 'CAT'. Try ACL HELP.\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ACL HELP xxx",
+        b"-ERR wrong number of arguments for 'acl|help' command\r\n",
+    );
+    assert_eq!(
+        execute_command_line(&processor, "ACL GENPASS -236").unwrap(),
+        b"-ERR ACL GENPASS argument must be the number of bits for the output password, a positive number up to 4096\r\n",
+    );
 }
 
 #[test]
@@ -22078,6 +23037,7 @@ fn xcfgset_and_xinfo_idmp_match_external_stream_scenarios() {
 #[test]
 fn idmp_and_xcfgset_persistence_match_external_stream_scenarios() {
     let processor = RequestProcessor::new().unwrap();
+    let temp_dir = configure_test_aof_path(&processor, "stream-persistence");
 
     fn xinfo_stream_map(
         processor: &RequestProcessor,
@@ -22225,6 +23185,7 @@ fn idmp_and_xcfgset_persistence_match_external_stream_scenarios() {
         resp_test_integer(&aof_info[&b"idmp-maxsize".to_vec()]),
         4500
     );
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -22250,6 +23211,7 @@ fn debug_reload_preserves_mixed_dataset_digest_like_external_other_scenario() {
 #[test]
 fn expires_survive_debug_reload_and_loadaof_like_external_other_scenario() {
     let processor = RequestProcessor::new().unwrap();
+    let temp_dir = configure_test_aof_path(&processor, "expires-loadaof");
 
     // Redis tests/unit/other.tcl:
     // - "EXPIRES after a reload (snapshot + append only file rewrite)"
@@ -22279,6 +23241,7 @@ fn expires_survive_debug_reload_and_loadaof_like_external_other_scenario() {
         ttl_after_loadaof > 900 && ttl_after_loadaof <= 1000,
         "expected TTL after DEBUG LOADAOF to stay in (900, 1000], got {ttl_after_loadaof}"
     );
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[test]

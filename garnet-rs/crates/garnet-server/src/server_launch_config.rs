@@ -1,5 +1,9 @@
 use garnet_server::ServerConfig;
+use garnet_server::StartupConfigOverrides;
+use std::ffi::OsStr;
 use std::net::SocketAddr;
+use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServerLaunchConfig {
@@ -8,6 +12,7 @@ pub(super) struct ServerLaunchConfig {
     pub(super) multi_port_slot_policy: SlotOwnershipPolicy,
     pub(super) owner_thread_pinning: ThreadPinningConfig,
     pub(super) read_buffer_size: usize,
+    pub(super) startup_config_overrides: StartupConfigOverrides,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +45,54 @@ fn parse_read_buffer_size(read_buffer_size: Option<&str>) -> std::io::Result<usi
             )
         }),
         None => Ok(ServerConfig::default().read_buffer_size),
+    }
+}
+
+fn parse_non_empty_path_value(raw: Option<&str>, key: &str) -> std::io::Result<Option<PathBuf>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid {key} ``: expected a non-empty path"),
+        ));
+    }
+    Ok(Some(PathBuf::from(raw)))
+}
+
+fn parse_filename_value(raw: Option<&str>, key: &str) -> std::io::Result<Option<String>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid {key} ``: expected a non-empty filename"),
+        ));
+    }
+    let path = Path::new(raw);
+    let filename_only = path.file_name() == Some(OsStr::new(raw)) && path.components().count() == 1;
+    if !filename_only {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid {key} `{raw}`: expected a filename, not a path"),
+        ));
+    }
+    Ok(Some(raw.to_string()))
+}
+
+fn parse_appendfsync_value(raw: Option<&str>) -> std::io::Result<Option<String>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "always" | "everysec" | "no" => Ok(Some(normalized)),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid GARNET_APPENDFSYNC `{raw}`: expected one of always/everysec/no"),
+        )),
     }
 }
 
@@ -148,6 +201,27 @@ fn parse_thread_pinning_config(
     Ok(ThreadPinningConfig { enabled, cpu_set })
 }
 
+pub(super) fn parse_startup_config_overrides_from_values(
+    dir: Option<&str>,
+    dbfilename: Option<&str>,
+    appendonly: Option<&str>,
+    appendfsync: Option<&str>,
+    appendfilename: Option<&str>,
+    aclfile: Option<&str>,
+) -> std::io::Result<StartupConfigOverrides> {
+    Ok(StartupConfigOverrides {
+        dir: parse_non_empty_path_value(dir, "GARNET_DIR")?,
+        dbfilename: parse_filename_value(dbfilename, "GARNET_DBFILENAME")?,
+        appendonly: match appendonly {
+            Some(_) => Some(parse_bool_env_flag(appendonly, "GARNET_APPENDONLY")?),
+            None => None,
+        },
+        appendfsync: parse_appendfsync_value(appendfsync)?,
+        appendfilename: parse_filename_value(appendfilename, "GARNET_APPENDFILENAME")?,
+        aclfile: parse_non_empty_path_value(aclfile, "GARNET_ACLFILE")?,
+    })
+}
+
 fn expand_bind_addrs_from_base(
     base: SocketAddr,
     owner_node_count: usize,
@@ -243,11 +317,12 @@ pub(super) fn parse_server_launch_config_from_values(
         multi_port_slot_policy,
         owner_thread_pinning,
         read_buffer_size,
+        startup_config_overrides: StartupConfigOverrides::default(),
     })
 }
 
 pub(super) fn parse_server_launch_config_from_env() -> std::io::Result<ServerLaunchConfig> {
-    parse_server_launch_config_from_values(
+    let mut launch = parse_server_launch_config_from_values(
         std::env::var("GARNET_BIND_ADDR").ok().as_deref(),
         std::env::var("GARNET_BIND_ADDRS").ok().as_deref(),
         std::env::var("GARNET_OWNER_NODE_COUNT").ok().as_deref(),
@@ -260,5 +335,14 @@ pub(super) fn parse_server_launch_config_from_env() -> std::io::Result<ServerLau
         std::env::var("GARNET_OWNER_THREAD_PINNING").ok().as_deref(),
         std::env::var("GARNET_OWNER_THREAD_CPU_SET").ok().as_deref(),
         std::env::var("GARNET_READ_BUFFER_SIZE").ok().as_deref(),
-    )
+    )?;
+    launch.startup_config_overrides = parse_startup_config_overrides_from_values(
+        std::env::var("GARNET_DIR").ok().as_deref(),
+        std::env::var("GARNET_DBFILENAME").ok().as_deref(),
+        std::env::var("GARNET_APPENDONLY").ok().as_deref(),
+        std::env::var("GARNET_APPENDFSYNC").ok().as_deref(),
+        std::env::var("GARNET_APPENDFILENAME").ok().as_deref(),
+        std::env::var("GARNET_ACLFILE").ok().as_deref(),
+    )?;
+    Ok(launch)
 }

@@ -39,12 +39,23 @@ pub(super) async fn read_line(
     }
 }
 
+#[allow(dead_code)]
 pub(super) async fn discard_bulk_payload(
     stream: &mut TcpStream,
     receive_buffer: &mut Vec<u8>,
     scratch: &mut [u8],
     payload_len: usize,
 ) -> io::Result<()> {
+    let _ = read_bulk_payload(stream, receive_buffer, scratch, payload_len).await?;
+    Ok(())
+}
+
+pub(super) async fn read_bulk_payload(
+    stream: &mut TcpStream,
+    receive_buffer: &mut Vec<u8>,
+    scratch: &mut [u8],
+    payload_len: usize,
+) -> io::Result<Vec<u8>> {
     while receive_buffer.len() < payload_len {
         let bytes_read = stream.read(scratch).await?;
         if bytes_read == 0 {
@@ -55,7 +66,7 @@ pub(super) async fn discard_bulk_payload(
         }
         receive_buffer.extend_from_slice(&scratch[..bytes_read]);
     }
-    receive_buffer.drain(..payload_len);
+    let payload = receive_buffer.drain(..payload_len).collect::<Vec<u8>>();
 
     // Redis FULLRESYNC bulk transfer framing is observed both with and without a
     // trailing CRLF before command streaming; tolerate either shape.
@@ -63,7 +74,7 @@ pub(super) async fn discard_bulk_payload(
         receive_buffer.drain(..2);
     }
 
-    Ok(())
+    Ok(payload)
 }
 
 pub(super) fn parse_bulk_length(raw: &[u8]) -> io::Result<usize> {

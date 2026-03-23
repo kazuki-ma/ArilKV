@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=baseline
+new_label=single_binding_lookup
+baseline.median_set_ops=104448.000
+baseline.median_get_ops=109159.000
+baseline.median_set_p99_ms=0.11100
+baseline.median_get_p99_ms=0.11900
+single_binding_lookup.median_set_ops=101487.000
+single_binding_lookup.median_get_ops=110223.000
+single_binding_lookup.median_set_p99_ms=0.12700
+single_binding_lookup.median_get_p99_ms=0.11100
+delta.set_ops_pct=-2.83
+delta.get_ops_pct=0.97
+delta.set_p99_ms_pct=14.41
+delta.get_p99_ms_pct=-6.72

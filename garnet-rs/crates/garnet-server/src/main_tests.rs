@@ -312,6 +312,78 @@ fn resolve_core_assignments_rejects_unavailable_requested_cpu() {
 }
 
 #[test]
+fn parse_startup_config_overrides_accepts_valid_persistence_and_acl_values() {
+    let overrides = parse_startup_config_overrides_from_values(
+        Some("./data"),
+        Some("custom.rdb"),
+        Some("yes"),
+        Some("always"),
+        Some("append.aof"),
+        Some("users.acl"),
+    )
+    .unwrap();
+    assert_eq!(overrides.dir, Some(std::path::PathBuf::from("./data")));
+    assert_eq!(overrides.dbfilename.as_deref(), Some("custom.rdb"));
+    assert_eq!(overrides.appendonly, Some(true));
+    assert_eq!(overrides.appendfsync.as_deref(), Some("always"));
+    assert_eq!(overrides.appendfilename.as_deref(), Some("append.aof"));
+    assert_eq!(
+        overrides.aclfile,
+        Some(std::path::PathBuf::from("users.acl"))
+    );
+}
+
+#[test]
+fn parse_startup_config_overrides_rejects_invalid_appendfilename_and_appendfsync() {
+    let appendfilename_error = parse_startup_config_overrides_from_values(
+        None,
+        None,
+        None,
+        None,
+        Some("nested/append.aof"),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(
+        appendfilename_error.kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert!(
+        appendfilename_error
+            .to_string()
+            .contains("GARNET_APPENDFILENAME")
+    );
+
+    let appendfsync_error =
+        parse_startup_config_overrides_from_values(None, None, None, Some("sometimes"), None, None)
+            .unwrap_err();
+    assert_eq!(appendfsync_error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(appendfsync_error.to_string().contains("GARNET_APPENDFSYNC"));
+}
+
+#[test]
+fn validate_server_launch_config_rejects_multi_port_with_startup_overrides() {
+    let mut launch = parse_server_launch_config_from_values(
+        Some("127.0.0.1:7600"),
+        None,
+        Some("2"),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    launch.startup_config_overrides =
+        parse_startup_config_overrides_from_values(Some("./data"), None, None, None, None, None)
+            .unwrap();
+
+    let error = validate_server_launch_config(&launch).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("multi-port"));
+}
+
+#[test]
 fn build_multi_port_cluster_stores_assigns_slot_owners_by_modulo() {
     let bind_addrs = vec![
         "127.0.0.1:8101".parse::<SocketAddr>().unwrap(),

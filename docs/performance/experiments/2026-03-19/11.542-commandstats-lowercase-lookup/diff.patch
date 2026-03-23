@@ -1,0 +1,208 @@
+--- /tmp/garnet-bench-11.542-base/garnet-rs/crates/garnet-server/src/request_lifecycle.rs	2026-03-19 22:24:37
++++ /Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/crates/garnet-server/src/request_lifecycle.rs	2026-03-19 22:14:47
+@@ -5711,10 +5711,18 @@
+         if command_name.is_empty() {
+             return;
+         }
+-        let normalized = normalize_ascii_lower(command_name);
+-        if let Ok(mut calls) = self.command_calls.lock() {
+-            *calls.entry(normalized).or_insert(0) += 1;
++        increment_command_stats_counter(&self.command_calls, command_name, None);
++    }
++
++    pub(crate) fn record_command_call_with_subcommand(
++        &self,
++        command_name: &[u8],
++        subcommand_name: Option<&[u8]>,
++    ) {
++        if command_name.is_empty() {
++            return;
+         }
++        increment_command_stats_counter(&self.command_calls, command_name, subcommand_name);
+     }
+ 
+     pub(crate) fn command_call_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
+@@ -5732,20 +5740,14 @@
+         if command_name.is_empty() {
+             return;
+         }
+-        let normalized = normalize_ascii_lower(command_name);
+-        if let Ok(mut failed_calls) = self.command_failed_calls.lock() {
+-            *failed_calls.entry(normalized).or_insert(0) += 1;
+-        }
++        increment_command_stats_counter(&self.command_failed_calls, command_name, None);
+     }
+ 
+     pub(crate) fn record_command_rejection(&self, command_name: &[u8]) {
+         if command_name.is_empty() {
+             return;
+         }
+-        let normalized = normalize_ascii_lower(command_name);
+-        if let Ok(mut rejected_calls) = self.command_rejected_calls.lock() {
+-            *rejected_calls.entry(normalized).or_insert(0) += 1;
+-        }
++        increment_command_stats_counter(&self.command_rejected_calls, command_name, None);
+     }
+ 
+     pub(crate) fn record_error_reply(&self, error_name: &[u8]) {
+--- /tmp/garnet-bench-11.542-base/garnet-rs/crates/garnet-server/src/connection_handler.rs	2026-03-19 22:24:37
++++ /Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/crates/garnet-server/src/connection_handler.rs	2026-03-19 22:14:47
+@@ -494,14 +494,21 @@
+     )
+ }
+ 
+-fn command_call_name_for_stats(
++fn command_stats_subcommand_name(
+     command: CommandId,
+-    command_name: &[u8],
+     subcommand_name: Option<&[u8]>,
+-) -> Vec<u8> {
++) -> Option<&[u8]> {
+     if !command_uses_subcommand_stats(command) {
+-        return command_name.to_vec();
++        return None;
++    }
++    let subcommand_name = subcommand_name?;
++    if subcommand_name.is_empty() {
++        return None;
+     }
++    Some(subcommand_name)
++}
++
++fn command_call_name_for_stats(command_name: &[u8], subcommand_name: Option<&[u8]>) -> Vec<u8> {
+     let Some(subcommand_name) = subcommand_name else {
+         return command_name.to_vec();
+     };
+@@ -516,6 +523,16 @@
+     combined
+ }
+ 
++fn ensure_command_call_name<'a>(
++    cached_name: &'a mut Option<Vec<u8>>,
++    command_name: &[u8],
++    subcommand_name: Option<&[u8]>,
++) -> &'a [u8] {
++    cached_name
++        .get_or_insert_with(|| command_call_name_for_stats(command_name, subcommand_name))
++        .as_slice()
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum ClientReplyMode {
+     On,
+@@ -999,9 +1016,9 @@
+             processor.set_resp_protocol_version(client_state.resp_protocol_version);
+             metrics.add_client_input_bytes(client_id, frame_bytes_consumed as u64);
+             metrics.set_client_last_command(client_id, command_name, subcommand_name);
+-            let command_call_name =
+-                command_call_name_for_stats(command, command_name, subcommand_name);
+-            processor.record_command_call(&command_call_name);
++            let stats_subcommand_name = command_stats_subcommand_name(command, subcommand_name);
++            processor.record_command_call_with_subcommand(command_name, stats_subcommand_name);
++            let mut command_call_name = None;
+             let should_publish_monitor_event = command != CommandId::Monitor
+                 && command != CommandId::Unknown
+                 && metrics.has_monitor_subscribers();
+@@ -1040,7 +1057,11 @@
+                             append_acl_denial_response(
+                                 &processor,
+                                 client_id,
+-                                &command_call_name,
++                                ensure_command_call_name(
++                                    &mut command_call_name,
++                                    command_name,
++                                    stats_subcommand_name,
++                                ),
+                                 &mut responses,
+                                 &error,
+                                 AclLogContext::Toplevel,
+@@ -1428,7 +1449,11 @@
+                                 append_acl_denial_response(
+                                     &processor,
+                                     client_id,
+-                                    &command_call_name,
++                                    ensure_command_call_name(
++                                        &mut command_call_name,
++                                        command_name,
++                                        stats_subcommand_name,
++                                    ),
+                                     &mut responses,
+                                     &error,
+                                     AclLogContext::Multi,
+@@ -1745,7 +1770,11 @@
+                                         append_acl_denial_response(
+                                             &processor,
+                                             client_id,
+-                                            &command_call_name,
++                                            ensure_command_call_name(
++                                                &mut command_call_name,
++                                                command_name,
++                                                stats_subcommand_name,
++                                            ),
+                                             &mut responses,
+                                             &error,
+                                             AclLogContext::Multi,
+@@ -2239,17 +2268,21 @@
+                                         .iter()
+                                         .map(arg_slice_bytes)
+                                         .collect::<Vec<_>>();
+-                                processor.record_slowlog_command(
+-                                    &slowlog_args,
+-                                    command,
+-                                    blocking_slowlog_started_at.elapsed(),
+-                                    Some(client_id),
+-                                );
++                                    processor.record_slowlog_command(
++                                        &slowlog_args,
++                                        command,
++                                        blocking_slowlog_started_at.elapsed(),
++                                        Some(client_id),
++                                    );
++                                }
++                                processor.record_command_failure(ensure_command_call_name(
++                                    &mut command_call_name,
++                                    command_name,
++                                    stats_subcommand_name,
++                                ));
++                                processor.record_error_reply(error.info_error_name());
++                                error.append_resp_error(&mut responses);
+                             }
+-                            processor.record_command_failure(&command_call_name);
+-                            processor.record_error_reply(error.info_error_name());
+-                            error.append_resp_error(&mut responses);
+-                        }
+                             Err(OwnerThreadExecutionError::Protocol) => {
+                                 responses.extend_from_slice(b"-ERR protocol error\r\n");
+                             }
+--- /tmp/garnet-bench-11.542-base/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs	2026-03-19 22:24:37
++++ /Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs	2026-03-19 22:14:21
+@@ -14083,6 +14083,29 @@
+ }
+ 
+ #[test]
++fn commandstats_normalize_subcommand_names_when_recorded_from_parts() {
++    let processor = RequestProcessor::new().unwrap();
++    processor.record_command_call_with_subcommand(b"CLIENT", Some(b"LIST"));
++    processor.record_command_call_with_subcommand(b"CLIENT", Some(b"LIST"));
++    processor.record_command_call_with_subcommand(b"SET", None);
++
++    let commandstats = parse_bulk_payload(&execute_frame(
++        &processor,
++        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
++    ))
++    .expect("INFO COMMANDSTATS should return bulk payload");
++    let commandstats_text = String::from_utf8_lossy(&commandstats);
++    assert!(
++        commandstats_text.contains("cmdstat_client|list:calls=2"),
++        "unexpected INFO COMMANDSTATS payload: {commandstats_text}"
++    );
++    assert!(
++        commandstats_text.contains("cmdstat_set:calls=1"),
++        "unexpected INFO COMMANDSTATS payload: {commandstats_text}"
++    );
++}
++
++#[test]
+ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
+     let processor = RequestProcessor::new().unwrap();
+     let mut args = [ArgSlice::EMPTY; 16];

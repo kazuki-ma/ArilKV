@@ -1,0 +1,4 @@
+13.89%  garnet-node-127  [kernel.kallsyms]  [k] __wake_up_sync_key
+  12.50% tcp_data_ready
+  12.50% tcp_rcv_established
+  12.50% tcp_v4_do_rcv

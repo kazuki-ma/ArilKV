@@ -1,0 +1,62 @@
+--- /tmp/garnet-11.552-baseline.S8MDw6/garnet-rs/crates/garnet-server/src/request_lifecycle.rs	2026-03-23 00:00:37
++++ /Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/crates/garnet-server/src/request_lifecycle.rs	2026-03-22 23:57:23
+@@ -2454,6 +2454,8 @@
+     connected_clients: AtomicU64,
+     watching_clients: AtomicU64,
+     tracking_clients: AtomicU64,
++    access_clock_start: Instant,
++    access_clock_start_unix_millis: u64,
+     executed_command_count: AtomicU64,
+     rdb_key_save_delay_micros: AtomicU64,
+     rdb_bgsave_deadline_unix_millis: AtomicU64,
+@@ -2968,6 +2970,8 @@
+             connected_clients: AtomicU64::new(0),
+             watching_clients: AtomicU64::new(0),
+             tracking_clients: AtomicU64::new(0),
++            access_clock_start: current_instant(),
++            access_clock_start_unix_millis: current_unix_time_millis().unwrap_or(0),
+             executed_command_count: AtomicU64::new(0),
+             rdb_key_save_delay_micros: AtomicU64::new(0),
+             rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
+@@ -6100,7 +6104,7 @@
+         if !force_touch && current_client_no_touch_mode() {
+             return;
+         }
+-        let now_millis = current_unix_time_millis().unwrap_or(0);
++        let now_millis = self.current_access_metadata_millis();
+         let shard_index = self.string_store_shard_index_for_key(key.key());
+         if let Ok(mut lru_state) =
+             self.db_catalog.side_state.key_lru_access_millis[shard_index].lock()
+@@ -6136,7 +6140,7 @@
+ 
+     pub(super) fn key_idle_seconds(&self, key: DbKeyRef<'_>) -> Option<i64> {
+         let last_access_millis = self.key_lru_millis(key)?;
+-        let now_millis = current_unix_time_millis().unwrap_or(last_access_millis);
++        let now_millis = self.current_access_metadata_millis();
+         let idle_millis = now_millis.saturating_sub(last_access_millis);
+         i64::try_from(idle_millis / 1000).ok()
+     }
+@@ -6145,7 +6149,7 @@
+         if key.key().is_empty() {
+             return;
+         }
+-        let now_millis = current_unix_time_millis().unwrap_or(0);
++        let now_millis = self.current_access_metadata_millis();
+         let idle_millis = idle_seconds.saturating_mul(1000);
+         let lru_millis = now_millis.saturating_sub(idle_millis);
+         let shard_index = self.string_store_shard_index_for_key(key.key());
+@@ -6165,6 +6169,14 @@
+         {
+             lfu_state.insert(key, frequency);
+         }
++    }
++
++    fn current_access_metadata_millis(&self) -> u64 {
++        let now = current_instant();
++        let elapsed = now.saturating_duration_since(self.access_clock_start);
++        let elapsed_millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
++        self.access_clock_start_unix_millis
++            .saturating_add(elapsed_millis)
+     }
+ 
+     pub(super) fn key_frequency(&self, key: DbKeyRef<'_>) -> Option<u8> {

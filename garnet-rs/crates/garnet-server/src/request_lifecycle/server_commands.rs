@@ -4,7 +4,11 @@
 
 use super::object_store::list_listpack_compatible;
 use super::resp::append_bulk_double;
+use super::scripting::parse_function_dump_payload;
+use super::value_codec::deserialize_hash_object_payload_entries;
 use super::*;
+use crate::AclKeyPatternRule;
+use crate::AclKeyPermissions;
 use crate::AclSelectorProfile;
 use crate::AclUserProfile;
 use crate::acl_password_hash_hex;
@@ -19,8 +23,11 @@ use crate::command_spec::command_arity_policy;
 use crate::command_spec::command_id_from_name;
 use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_key_access_pattern;
+use crate::command_spec::command_name_upper;
 use crate::command_spec::command_names_for_command_response;
+use crate::config_paths;
 use crate::connection_protocol::parse_u16_ascii;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 static NEXT_RANDOMKEY_INDEX: AtomicU64 = AtomicU64::new(0);
@@ -57,6 +64,7 @@ const LATENCY_HELP_LINES: [&[u8]; 15] = [
 ];
 const LATENCY_DOCTOR_DISABLED_MESSAGE: &[u8] =
     b"I'm sorry, Dave, I can't do that. Latency monitoring is disabled in this garnet-rs instance.";
+const INTERNAL_BGREWRITEAOF_WRITE_PAUSE_MILLIS: u64 = 60_000;
 const SLOWLOG_HELP_LINES: [&[u8]; 12] = [
     b"SLOWLOG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"GET [<count>]",
@@ -127,12 +135,21 @@ const ACL_CATEGORIES: [&[u8]; 21] = [
 fn append_wrongpass_error(response_out: &mut Vec<u8>) {
     append_error(
         response_out,
-        b"WRONGPASS invalid username-password pair or user is disabled",
+        b"WRONGPASS invalid username-password pair or user is disabled.",
     );
 }
 
-fn acl_username_is_valid(username: &[u8]) -> bool {
-    !username.is_empty() && !username.iter().any(|byte| *byte == b' ' || *byte == b'\0')
+pub(crate) fn acl_username_is_valid(username: &[u8]) -> bool {
+    !username.is_empty()
+        && !username.iter().any(|byte| *byte == b' ' || *byte == b'\0')
+        && !super::acl_username_is_oidc_sentinel(username)
+}
+
+fn append_acl_username_invalid_error(response_out: &mut Vec<u8>) {
+    append_error(
+        response_out,
+        b"ERR Usernames can't contain spaces or null characters, and '__OIDC__' is reserved",
+    );
 }
 
 fn normalize_acl_rule_token(token: &[u8]) -> Vec<u8> {
@@ -153,11 +170,118 @@ fn acl_setuser_unknown_rule_error(token: &[u8]) -> String {
     )
 }
 
+fn acl_setuser_channels_start_from_empty_error(token: &[u8]) -> String {
+    format!(
+        "ERR Error in ACL SETUSER modifier '{}': Adding a pattern after the * pattern (or the 'allchannels' flag) is not valid and does not have any effect. Try 'resetchannels' to start with an empty list of channels",
+        String::from_utf8_lossy(token)
+    )
+}
+
 fn acl_setuser_unsupported_nested_subcommand_error(token: &[u8]) -> String {
     format!(
         "ERR Error in ACL SETUSER modifier '{}': Allowing first-arg of a subcommand is not supported",
         String::from_utf8_lossy(token)
     )
+}
+
+fn acl_wrap_selector_modifier_error(selector_token: &[u8], error: &str) -> String {
+    const PREFIX: &str = "ERR Error in ACL SETUSER modifier '";
+    if let Some(rest) = error.strip_prefix(PREFIX)
+        && let Some((_, tail)) = rest.split_once("': ")
+    {
+        return format!(
+            "{PREFIX}{}': {tail}",
+            String::from_utf8_lossy(selector_token)
+        );
+    }
+    error.to_owned()
+}
+
+fn upsert_acl_key_pattern(
+    profile: &mut AclSelectorProfile,
+    pattern: &[u8],
+    permissions: AclKeyPermissions,
+) {
+    if let Some(existing) = profile
+        .key_patterns
+        .iter_mut()
+        .find(|existing| existing.pattern.as_slice() == pattern)
+    {
+        existing.permissions.insert(permissions);
+        return;
+    }
+    profile
+        .key_patterns
+        .push(AclKeyPatternRule::new(pattern.to_vec(), permissions));
+}
+
+fn parse_acl_key_pattern_rule(token: &[u8]) -> Result<(AclKeyPermissions, &[u8]), String> {
+    if let Some(pattern) = token.strip_prefix(b"~") {
+        return Ok((AclKeyPermissions::ALL, pattern));
+    }
+    let Some(rest) = token.strip_prefix(b"%") else {
+        return Err(acl_setuser_syntax_error(token));
+    };
+
+    let mut permissions = AclKeyPermissions::empty();
+    let mut pattern = None::<&[u8]>;
+    let mut index = 0usize;
+    while index < rest.len() {
+        match rest[index].to_ascii_uppercase() {
+            b'R' => permissions.insert(AclKeyPermissions::READ),
+            b'W' => permissions.insert(AclKeyPermissions::WRITE),
+            b'~' => {
+                pattern = Some(&rest[index + 1..]);
+                break;
+            }
+            _ => return Err(acl_setuser_syntax_error(token)),
+        }
+        index += 1;
+    }
+
+    if permissions.is_empty() {
+        return Err(acl_setuser_syntax_error(token));
+    }
+
+    Ok((permissions, pattern.unwrap_or_default()))
+}
+
+fn render_acl_key_pattern(rule: &AclKeyPatternRule) -> Vec<u8> {
+    let mut out = Vec::new();
+    if rule.permissions.is_all() {
+        if rule.pattern.is_empty() {
+            out.extend_from_slice(b"%RW~");
+        } else {
+            out.push(b'~');
+        }
+    } else if rule.permissions.contains_all(AclKeyPermissions::READ) {
+        out.extend_from_slice(b"%R~");
+    } else if rule.permissions.contains_all(AclKeyPermissions::WRITE) {
+        out.extend_from_slice(b"%W~");
+    } else {
+        out.extend_from_slice(b"%~");
+    }
+    out.extend_from_slice(&rule.pattern);
+    out
+}
+
+fn acl_dryrun_wrong_arity(command: CommandId, argc: usize) -> Option<RequestExecutionError> {
+    let command_name = std::str::from_utf8(command_name_upper(command)).ok()?;
+    match command_arity_policy(command) {
+        Some(ArityPolicy::Exact(expected)) if argc != expected => {
+            Some(RequestExecutionError::WrongArity {
+                command: command_name,
+                expected: "",
+            })
+        }
+        Some(ArityPolicy::Min(expected)) if argc < expected => {
+            Some(RequestExecutionError::WrongArity {
+                command: command_name,
+                expected: "",
+            })
+        }
+        _ => None,
+    }
 }
 
 fn acl_command_first_arg_rule_is_valid(command: CommandId, first_arg: &[u8]) -> bool {
@@ -179,6 +303,44 @@ fn clear_acl_specific_rules_for_command(rules: &mut HashSet<Vec<u8>>, command: &
     prefix.extend_from_slice(command);
     prefix.push(b'|');
     rules.retain(|rule| !rule.starts_with(prefix.as_slice()));
+}
+
+fn acl_command_rule_matches_exact(existing_rule: &[u8], normalized_rule: &[u8]) -> bool {
+    existing_rule
+        .get(1..)
+        .is_some_and(|existing_rule| existing_rule == normalized_rule)
+}
+
+fn acl_command_rule_matches_specific(existing_rule: &[u8], normalized_rule: &[u8]) -> bool {
+    existing_rule.get(1..).is_some_and(|existing_rule| {
+        existing_rule.starts_with(normalized_rule)
+            && existing_rule.get(normalized_rule.len()) == Some(&b'|')
+    })
+}
+
+fn update_acl_command_rule_rendering(
+    profile: &mut AclSelectorProfile,
+    normalized_rule: &[u8],
+    allow: bool,
+) {
+    let removes_specific_rules =
+        !normalized_rule.starts_with(b"@") && !normalized_rule.contains(&b'|');
+    profile.command_rules.retain(|existing_rule| {
+        if acl_command_rule_matches_exact(existing_rule, normalized_rule) {
+            return false;
+        }
+        if removes_specific_rules
+            && acl_command_rule_matches_specific(existing_rule, normalized_rule)
+        {
+            return false;
+        }
+        true
+    });
+
+    let mut signed_rule = Vec::with_capacity(normalized_rule.len() + 1);
+    signed_rule.push(if allow { b'+' } else { b'-' });
+    signed_rule.extend_from_slice(normalized_rule);
+    profile.command_rules.push(signed_rule);
 }
 
 fn apply_acl_command_rule(
@@ -209,6 +371,7 @@ fn apply_acl_command_rule(
                 .remove(normalized_category.as_slice());
             profile.denied_categories.insert(normalized_category);
         }
+        update_acl_command_rule_rendering(profile, &normalize_acl_rule_token(rule_body), allow);
         return Ok(());
     }
 
@@ -251,6 +414,7 @@ fn apply_acl_command_rule(
             profile.allowed_commands.remove(normalized_rule.as_slice());
             profile.denied_commands.insert(normalized_rule);
         }
+        update_acl_command_rule_rendering(profile, &normalize_acl_rule_token(rule_body), allow);
         return Ok(());
     }
 
@@ -265,6 +429,7 @@ fn apply_acl_command_rule(
         clear_acl_specific_rules_for_command(&mut profile.denied_commands, &normalized_rule);
         profile.denied_commands.insert(normalized_rule);
     }
+    update_acl_command_rule_rendering(profile, &normalize_acl_rule_token(rule_body), allow);
 
     Ok(())
 }
@@ -331,7 +496,10 @@ fn apply_acl_selector_modifier(
     }
     if ascii_eq_ignore_case(token, b"ALLKEYS") {
         profile.key_patterns.clear();
-        profile.key_patterns.push(b"*".to_vec());
+        profile.key_patterns.push(AclKeyPatternRule::new(
+            b"*".to_vec(),
+            AclKeyPermissions::ALL,
+        ));
         return Ok(());
     }
     if ascii_eq_ignore_case(token, b"ALLCHANNELS") {
@@ -350,6 +518,7 @@ fn apply_acl_selector_modifier(
         profile.denied_categories.clear();
         profile.allowed_commands.clear();
         profile.denied_commands.clear();
+        profile.command_rules.clear();
         return Ok(());
     }
     if ascii_eq_ignore_case(token, b"NOCOMMANDS") || ascii_eq_ignore_case(token, b"-@ALL") {
@@ -358,13 +527,23 @@ fn apply_acl_selector_modifier(
         profile.denied_categories.clear();
         profile.allowed_commands.clear();
         profile.denied_commands.clear();
+        profile.command_rules.clear();
         return Ok(());
     }
-    if let Some(pattern) = token.strip_prefix(b"~") {
-        profile.key_patterns.push(pattern.to_vec());
+    if token.starts_with(b"~") || token.starts_with(b"%") {
+        let (permissions, pattern) = parse_acl_key_pattern_rule(token)?;
+        upsert_acl_key_pattern(profile, pattern, permissions);
         return Ok(());
     }
     if let Some(pattern) = token.strip_prefix(b"&") {
+        if pattern == b"*" {
+            profile.allow_all_channels = true;
+            profile.channel_patterns.clear();
+            return Ok(());
+        }
+        if profile.allow_all_channels {
+            return Err(acl_setuser_channels_start_from_empty_error(token));
+        }
         profile.allow_all_channels = false;
         profile.channel_patterns.push(pattern.to_vec());
         return Ok(());
@@ -390,23 +569,28 @@ fn apply_acl_selector_modifier(
     Err(acl_setuser_syntax_error(token))
 }
 
-fn parse_acl_selector_profile(modifiers: &[&[u8]]) -> Result<AclSelectorProfile, String> {
-    let mut profile = AclSelectorProfile::restricted();
+fn parse_acl_selector_profile(
+    modifiers: &[&[u8]],
+    default_all_channels: bool,
+) -> Result<AclSelectorProfile, String> {
+    let mut profile = AclSelectorProfile::restricted_with_pubsub_default(default_all_channels);
     for &token in modifiers {
         apply_acl_selector_modifier(&mut profile, token)?;
     }
     Ok(profile)
 }
 
-fn parse_acl_setuser_profile(
+pub(super) fn parse_acl_setuser_profile(
     existing: Option<AclUserProfile>,
     modifiers: &[&[u8]],
+    default_all_channels: bool,
 ) -> Result<AclUserProfile, String> {
-    let mut profile = existing.unwrap_or_else(AclUserProfile::restricted);
+    let mut profile = existing
+        .unwrap_or_else(|| AclUserProfile::restricted_with_pubsub_default(default_all_channels));
     let merged_modifiers = merge_acl_selector_arguments(modifiers)?;
     for token in merged_modifiers.iter().map(Vec::as_slice) {
         if ascii_eq_ignore_case(token, b"RESET") {
-            profile = AclUserProfile::restricted();
+            profile = AclUserProfile::restricted_with_pubsub_default(default_all_channels);
             continue;
         }
         if ascii_eq_ignore_case(token, b"ON") {
@@ -474,7 +658,8 @@ fn parse_acl_setuser_profile(
                 .split(|byte| byte.is_ascii_whitespace())
                 .filter(|part| !part.is_empty())
                 .collect::<Vec<_>>();
-            let selector = parse_acl_selector_profile(&selector_modifiers)?;
+            let selector = parse_acl_selector_profile(&selector_modifiers, default_all_channels)
+                .map_err(|error| acl_wrap_selector_modifier_error(token, &error))?;
             profile.selectors.push(selector);
             continue;
         }
@@ -490,52 +675,23 @@ fn sorted_bytes(entries: impl IntoIterator<Item = Vec<u8>>) -> Vec<Vec<u8>> {
     entries
 }
 
-fn render_acl_commands(profile: &AclSelectorProfile) -> Vec<u8> {
+fn render_acl_commands(profile: &AclSelectorProfile, include_default_restriction: bool) -> Vec<u8> {
     let mut parts = Vec::<Vec<u8>>::new();
     if profile.allow_all_commands {
         parts.push(b"+@all".to_vec());
-    } else if profile.allowed_categories.is_empty()
-        && profile.denied_categories.is_empty()
-        && profile.allowed_commands.is_empty()
-        && profile.denied_commands.is_empty()
-    {
+    } else if include_default_restriction {
         parts.push(b"-@all".to_vec());
     }
-
-    for category in sorted_bytes(profile.allowed_categories.iter().cloned()) {
-        let mut token = Vec::with_capacity(category.len() + 2);
-        token.extend_from_slice(b"+@");
-        token.extend_from_slice(&category);
-        parts.push(token);
-    }
-    for category in sorted_bytes(profile.denied_categories.iter().cloned()) {
-        let mut token = Vec::with_capacity(category.len() + 2);
-        token.extend_from_slice(b"-@");
-        token.extend_from_slice(&category);
-        parts.push(token);
-    }
-    for command in sorted_bytes(profile.denied_commands.iter().cloned()) {
-        let mut token = Vec::with_capacity(command.len() + 1);
-        token.push(b'-');
-        token.extend_from_slice(&command);
-        parts.push(token);
-    }
-    for command in sorted_bytes(profile.allowed_commands.iter().cloned()) {
-        let mut token = Vec::with_capacity(command.len() + 1);
-        token.push(b'+');
-        token.extend_from_slice(&command);
-        parts.push(token);
+    for rule in &profile.command_rules {
+        parts.push(rule.clone());
     }
     join_acl_tokens(parts)
 }
 
 fn render_acl_keys(profile: &AclSelectorProfile) -> Vec<u8> {
     let mut parts = Vec::<Vec<u8>>::new();
-    for pattern in sorted_bytes(profile.key_patterns.iter().cloned()) {
-        let mut token = Vec::with_capacity(pattern.len() + 1);
-        token.push(b'~');
-        token.extend_from_slice(&pattern);
-        parts.push(token);
+    for rule in &profile.key_patterns {
+        parts.push(render_acl_key_pattern(rule));
     }
     join_acl_tokens(parts)
 }
@@ -603,7 +759,11 @@ fn join_acl_tokens(parts: Vec<Vec<u8>>) -> Vec<u8> {
     out
 }
 
-fn render_acl_selector(profile: &AclSelectorProfile) -> Vec<u8> {
+fn render_acl_selector(
+    profile: &AclSelectorProfile,
+    include_default_command_restriction: bool,
+    include_all_databases_token: bool,
+) -> Vec<u8> {
     let mut parts = Vec::<Vec<u8>>::new();
 
     let rendered_keys = render_acl_keys(profile);
@@ -632,14 +792,16 @@ fn render_acl_selector(profile: &AclSelectorProfile) -> Vec<u8> {
     }
 
     if profile.allow_all_databases {
-        parts.push(b"alldbs".to_vec());
+        if include_all_databases_token {
+            parts.push(b"alldbs".to_vec());
+        }
     } else if profile.allowed_databases.is_empty() {
         parts.push(b"resetdbs".to_vec());
     } else {
         parts.push(render_acl_databases(profile));
     }
 
-    let rendered_commands = render_acl_commands(profile);
+    let rendered_commands = render_acl_commands(profile, include_default_command_restriction);
     if !rendered_commands.is_empty() {
         parts.extend(
             rendered_commands
@@ -668,7 +830,7 @@ fn append_acl_getuser_selector_description(
     }
 
     append_bulk_string(response_out, b"commands");
-    append_bulk_string(response_out, &render_acl_commands(profile));
+    append_bulk_string(response_out, &render_acl_commands(profile, true));
 
     append_bulk_string(response_out, b"keys");
     append_bulk_string(response_out, &render_acl_keys(profile));
@@ -680,7 +842,11 @@ fn append_acl_getuser_selector_description(
     append_bulk_string(response_out, &render_acl_databases(profile));
 }
 
-fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
+fn render_acl_user_line(
+    username: &[u8],
+    profile: &AclUserProfile,
+    include_sanitize_payload: bool,
+) -> Vec<u8> {
     let mut parts = vec![
         b"user".to_vec(),
         username.to_vec(),
@@ -693,7 +859,9 @@ fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
     if profile.nopass {
         parts.push(b"nopass".to_vec());
     }
-    parts.push(b"sanitize-payload".to_vec());
+    if include_sanitize_payload {
+        parts.push(b"sanitize-payload".to_vec());
+    }
     for password_hash in sorted_bytes(profile.password_hashes.iter().cloned()) {
         let mut token = Vec::with_capacity(password_hash.len() + 1);
         token.push(b'#');
@@ -701,7 +869,7 @@ fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
         parts.push(token);
     }
 
-    let rendered_root_selector = render_acl_selector(&profile.root_selector);
+    let rendered_root_selector = render_acl_selector(&profile.root_selector, true, false);
     if !rendered_root_selector.is_empty() {
         parts.extend(
             rendered_root_selector
@@ -712,7 +880,7 @@ fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
     }
 
     for selector in &profile.selectors {
-        let rendered_selector = render_acl_selector(selector);
+        let rendered_selector = render_acl_selector(selector, true, true);
         let mut wrapped_selector = Vec::with_capacity(rendered_selector.len() + 2);
         wrapped_selector.push(b'(');
         wrapped_selector.extend_from_slice(&rendered_selector);
@@ -720,6 +888,14 @@ fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
         parts.push(wrapped_selector);
     }
     join_acl_tokens(parts)
+}
+
+pub(super) fn render_acl_file_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
+    render_acl_user_line(username, profile, false)
+}
+
+fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
+    render_acl_user_line(username, profile, true)
 }
 
 fn acl_category_members(category: &[u8]) -> Vec<Vec<u8>> {
@@ -1232,7 +1408,9 @@ impl RequestProcessor {
 
         if let Some((username, password)) = auth_credentials {
             match self.authenticate_acl_user(username, password, false) {
-                AclAuthenticationResult::Authenticated => {}
+                AclAuthenticationResult::Authenticated(authenticated_user) => {
+                    self.mark_current_client_authenticated_as(&authenticated_user);
+                }
                 AclAuthenticationResult::DefaultPasswordNotConfigured => {
                     return Err(RequestExecutionError::AuthNotEnabled);
                 }
@@ -1369,10 +1547,20 @@ impl RequestProcessor {
                     );
                 }
                 InfoSection::Stats => {
+                    let acl_access_denied_auth =
+                        self.acl_access_denied_auth.load(Ordering::Relaxed);
+                    let acl_access_denied_cmd = self.acl_access_denied_cmd.load(Ordering::Relaxed);
+                    let acl_access_denied_key = self.acl_access_denied_key.load(Ordering::Relaxed);
+                    let acl_access_denied_channel =
+                        self.acl_access_denied_channel.load(Ordering::Relaxed);
                     payload.push_str(
                         format!(
-                            "# Stats\r\ntotal_connections_received:0\r\ntotal_commands_processed:0\r\ninstantaneous_ops_per_sec:0\r\ntotal_net_input_bytes:0\r\ntotal_net_output_bytes:0\r\ninstantaneous_input_kbps:0.00\r\ninstantaneous_output_kbps:0.00\r\nrejected_connections:0\r\nkeyspace_hits:0\r\nkeyspace_misses:0\r\ntotal_error_replies:{}\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfree_pending_objects:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
+                            "# Stats\r\ntotal_connections_received:0\r\ntotal_commands_processed:0\r\ninstantaneous_ops_per_sec:0\r\ntotal_net_input_bytes:0\r\ntotal_net_output_bytes:0\r\ninstantaneous_input_kbps:0.00\r\ninstantaneous_output_kbps:0.00\r\nrejected_connections:0\r\nkeyspace_hits:0\r\nkeyspace_misses:0\r\ntotal_error_replies:{}\r\nacl_access_denied_auth:{}\r\nacl_access_denied_cmd:{}\r\nacl_access_denied_key:{}\r\nacl_access_denied_channel:{}\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfree_pending_objects:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
                             total_error_replies,
+                            acl_access_denied_auth,
+                            acl_access_denied_cmd,
+                            acl_access_denied_key,
+                            acl_access_denied_channel,
                             dbsize,
                             rdb_bgsave_in_progress,
                             rdb_changes_since_last_save,
@@ -1476,7 +1664,8 @@ impl RequestProcessor {
             (args[1], args[2], false)
         };
         match self.authenticate_acl_user(user, password, single_arg_default_auth) {
-            AclAuthenticationResult::Authenticated => {
+            AclAuthenticationResult::Authenticated(authenticated_user) => {
+                self.mark_current_client_authenticated_as(&authenticated_user);
                 append_simple_string(response_out, b"OK");
                 Ok(())
             }
@@ -1591,11 +1780,15 @@ impl RequestProcessor {
         if let Ok(mut states) = self.db_catalog.side_state.set_debug_ht_state.lock() {
             states.swap_databases(db1, db2);
         }
-        if let Ok(mut lru) = self.db_catalog.side_state.key_lru_access_millis.lock() {
-            lru.swap_databases(db1, db2);
+        for lru in &self.db_catalog.side_state.key_lru_access_millis {
+            if let Ok(mut state) = lru.lock() {
+                state.swap_databases(db1, db2);
+            }
         }
-        if let Ok(mut lfu) = self.db_catalog.side_state.key_lfu_frequency.lock() {
-            lfu.swap_databases(db1, db2);
+        for lfu in &self.db_catalog.side_state.key_lfu_frequency {
+            if let Ok(mut state) = lfu.lock() {
+                state.swap_databases(db1, db2);
+            }
         }
 
         Ok(())
@@ -1712,7 +1905,10 @@ impl RequestProcessor {
             items.push(RemoteMigrateItem {
                 key: entry.key,
                 ttl_millis,
-                payload: encode_migration_dump_blob(&entry.value),
+                payload: self.build_redis_dump_blob_for_migration_value(
+                    DbKeyRef::new(selected_db, key.as_slice()),
+                    &entry.value,
+                )?,
             });
         }
 
@@ -2216,8 +2412,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "SAVE", "SAVE")?;
-        let snapshot = self.build_full_debug_reload_snapshot(false)?;
-        self.set_saved_rdb_snapshot(snapshot);
+        let _ = self.persist_configured_dump_snapshot("save")?;
+        self.record_successful_rdb_save();
         self.reset_rdb_changes_since_last_save();
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -2236,9 +2432,9 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::SyntaxError);
             }
         }
-        let snapshot = self.build_full_debug_reload_snapshot(false)?;
-        self.set_saved_rdb_snapshot(snapshot);
+        let _ = self.persist_configured_dump_snapshot("bgsave")?;
         self.start_bgsave();
+        self.record_successful_rdb_save();
         self.reset_rdb_changes_since_last_save();
         append_simple_string(response_out, b"Background saving started");
         Ok(())
@@ -2250,6 +2446,11 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "BGREWRITEAOF", "BGREWRITEAOF")?;
+        if self.appendonly_enabled() && self.live_aof_runtime_active() {
+            self.rewrite_live_configured_aof_file()?;
+        } else {
+            self.rewrite_configured_aof_file()?;
+        }
         append_simple_string(
             response_out,
             b"Background append only file rewriting started",
@@ -2449,9 +2650,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"LOADAOF") {
             require_exact_arity(args, 2, "DEBUG", "DEBUG LOADAOF")?;
-            // Compatibility path: in-memory test mode has no persisted AOF replay boundary.
-            // Redis tests use DEBUG LOADAOF as a synchronization hook; returning OK keeps
-            // semantics for current appendonly-disabled/runtime-local execution.
+            let _ = self.reload_configured_aof_source()?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -3793,30 +3992,22 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "DUMP", "DUMP key")?;
         let key = RedisKey::from(args[1]);
-        let db_key = DbKeyRef::new(selected_db, &key);
-        self.expire_key_if_needed(db_key)?;
-        if let Some(value) = self.read_string_value(db_key)? {
-            append_bulk_string(
-                response_out,
-                &encode_migration_dump_blob(&MigrationValue::String(value.into())),
-            );
+        let Some(entry) = self.export_migration_entry(selected_db, &key)? else {
+            if self.resp_protocol_version().is_resp3() {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
-        }
-        if let Some(object) = self.object_read(db_key)? {
-            append_bulk_string(
-                response_out,
-                &encode_migration_dump_blob(&MigrationValue::Object {
-                    object_type: object.object_type,
-                    payload: object.payload,
-                }),
-            );
-            return Ok(());
-        }
-        if self.resp_protocol_version().is_resp3() {
-            append_null(response_out);
-        } else {
-            append_null_bulk_string(response_out);
-        }
+        };
+
+        append_bulk_string(
+            response_out,
+            &self.build_redis_dump_blob_for_migration_value(
+                DbKeyRef::new(selected_db, &key),
+                &entry.value,
+            )?,
+        );
         Ok(())
     }
 
@@ -4108,7 +4299,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "ACL", "ACL <subcommand> [arguments...]")?;
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
-            require_exact_arity(args, 2, "ACL", "ACL HELP")?;
+            require_exact_arity(args, 2, "ACL|HELP", "ACL HELP")?;
             append_bulk_array(response_out, &ACL_HELP_LINES);
             return Ok(());
         }
@@ -4149,20 +4340,20 @@ impl RequestProcessor {
             ensure_min_arity(args, 3, "ACL", "ACL SETUSER username [rule ...]")?;
             let username = args[2];
             if !acl_username_is_valid(username) {
-                append_error(
-                    response_out,
-                    b"ERR Usernames can't contain spaces or null characters",
-                );
+                append_acl_username_invalid_error(response_out);
                 return Ok(());
             }
-            let profile =
-                match parse_acl_setuser_profile(self.acl_user_profile(username), &args[3..]) {
-                    Ok(profile) => profile,
-                    Err(message) => {
-                        append_error(response_out, message.as_bytes());
-                        return Ok(());
-                    }
-                };
+            let profile = match parse_acl_setuser_profile(
+                self.acl_user_profile(username),
+                &args[3..],
+                self.acl_pubsub_default_allchannels(),
+            ) {
+                Ok(profile) => profile,
+                Err(message) => {
+                    append_error(response_out, message.as_bytes());
+                    return Ok(());
+                }
+            };
             self.set_acl_user_profile(username, profile)?;
             append_simple_string(response_out, b"OK");
             return Ok(());
@@ -4172,7 +4363,13 @@ impl RequestProcessor {
                 append_bulk_array(response_out, &ACL_CATEGORIES);
                 return Ok(());
             }
-            require_exact_arity(args, 3, "ACL", "ACL CAT [category]")?;
+            if args.len() != 3 {
+                append_error(
+                    response_out,
+                    b"ERR unknown subcommand or wrong number of arguments for 'CAT'. Try ACL HELP.",
+                );
+                return Ok(());
+            }
             if !super::acl_category_is_known(args[2]) {
                 append_error(
                     response_out,
@@ -4207,8 +4404,8 @@ impl RequestProcessor {
             ensure_ranged_arity(args, 2, 3, "ACL", "ACL GENPASS [bits]")?;
             let hex_chars = if args.len() == 3 {
                 let bits =
-                    parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-                if bits == 0 || bits > 4096 {
+                    parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+                if bits <= 0 || bits > 4096 {
                     append_error(
                         response_out,
                         b"ERR ACL GENPASS argument must be the number of bits for the output password, a positive number up to 4096",
@@ -4256,26 +4453,53 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"SAVE") {
             require_exact_arity(args, 2, "ACL", "ACL SAVE")?;
-            append_simple_string(response_out, b"OK");
+            match self.save_acl_users_to_configured_file() {
+                Ok(()) => append_simple_string(response_out, b"OK"),
+                Err(message) => append_error(response_out, message.as_bytes()),
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"LOAD") {
             require_exact_arity(args, 2, "ACL", "ACL LOAD")?;
-            append_simple_string(response_out, b"OK");
+            match self.load_acl_users_from_configured_file() {
+                Ok(()) => append_simple_string(response_out, b"OK"),
+                Err(message) => append_error(response_out, message.as_bytes()),
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"DRYRUN") {
             ensure_min_arity(args, 4, "ACL", "ACL DRYRUN username command [arg ...]")?;
             let dryrun_args = &args[3..];
+            if self.acl_user_profile(args[2]).is_none() {
+                append_error(
+                    response_out,
+                    format!("ERR User '{}' not found", String::from_utf8_lossy(args[2])).as_bytes(),
+                );
+                return Ok(());
+            }
             let Some(command) = command_id_from_name(dryrun_args[0]) else {
-                append_error(response_out, b"ERR Invalid command specified");
+                append_error(
+                    response_out,
+                    format!(
+                        "ERR Command '{}' not found",
+                        String::from_utf8_lossy(dryrun_args[0])
+                    )
+                    .as_bytes(),
+                );
                 return Ok(());
             };
-            match self.acl_authorize_user_command(args[2], selected_db, command, dryrun_args) {
-                Ok(()) => append_simple_string(response_out, b"OK"),
+            match self.acl_authorize_user_dryrun_command(args[2], selected_db, command, dryrun_args)
+            {
+                Ok(()) => {
+                    if let Some(error) = acl_dryrun_wrong_arity(command, dryrun_args.len()) {
+                        error.append_resp_error(response_out);
+                    } else {
+                        append_simple_string(response_out, b"OK");
+                    }
+                }
                 Err(error) => {
-                    let payload = super::acl_denial_message_for_user(args[2], &error);
-                    append_error(response_out, &payload);
+                    let payload = super::acl_dryrun_denial_message_for_user(args[2], &error);
+                    append_bulk_string(response_out, &payload);
                 }
             }
             return Ok(());
@@ -4326,7 +4550,7 @@ impl RequestProcessor {
             }
 
             append_bulk_string(response_out, b"commands");
-            let commands = render_acl_commands(&profile.root_selector);
+            let commands = render_acl_commands(&profile.root_selector, true);
             append_bulk_string(response_out, &commands);
 
             append_bulk_string(response_out, b"keys");
@@ -4657,6 +4881,11 @@ impl RequestProcessor {
             "SSUBSCRIBE shardchannel [shardchannel ...]",
         )?;
         let resp3 = self.resp_protocol_version().is_resp3();
+        if let Some(client_id) = super::current_request_client_id() {
+            let acks = self.pubsub_subscribe_shard_channels(client_id, &args[1..]);
+            append_subscription_ack_entries(response_out, b"ssubscribe", &acks, resp3);
+            return Ok(());
+        }
         append_subscription_acks(response_out, &args[1..], b"ssubscribe", resp3);
         Ok(())
     }
@@ -4715,6 +4944,11 @@ impl RequestProcessor {
             "SUNSUBSCRIBE [shardchannel [shardchannel ...]]",
         )?;
         let resp3 = self.resp_protocol_version().is_resp3();
+        if let Some(client_id) = super::current_request_client_id() {
+            let acks = self.pubsub_unsubscribe_shard_channels(client_id, &args[1..]);
+            append_unsubscribe_ack_entries(response_out, b"sunsubscribe", &acks, resp3);
+            return Ok(());
+        }
         append_unsubscribe_acks(response_out, &args[1..], b"sunsubscribe", resp3);
         Ok(())
     }
@@ -4757,7 +4991,7 @@ impl RequestProcessor {
         {
             ensure_ranged_arity(args, 2, 3, "PUBSUB", "PUBSUB CHANNELS [pattern]")?;
             let channels = if ascii_eq_ignore_case(subcommand, b"SHARDCHANNELS") {
-                Vec::new()
+                self.pubsub_shardchannels(args.get(2).copied())
             } else {
                 self.pubsub_channels(args.get(2).copied())
             };
@@ -4777,10 +5011,7 @@ impl RequestProcessor {
         {
             ensure_min_arity(args, 2, "PUBSUB", "PUBSUB NUMSUB [channel [channel ...]]")?;
             let subscribers = if ascii_eq_ignore_case(subcommand, b"SHARDNUMSUB") {
-                args[2..]
-                    .iter()
-                    .map(|channel| ((*channel).to_vec(), 0usize))
-                    .collect::<Vec<_>>()
+                self.pubsub_shardnumsub(&args[2..])
             } else {
                 self.pubsub_numsub(&args[2..])
             };
@@ -4859,6 +5090,7 @@ impl RequestProcessor {
             self.reset_lazyfreed_objects();
             self.reset_commandstats();
             self.reset_error_reply_stats();
+            self.reset_acl_access_denied_stats();
             self.record_command_call(b"config|resetstat");
             append_simple_string(response_out, b"OK");
             return Ok(());
@@ -4904,10 +5136,14 @@ impl RequestProcessor {
                     );
                     return Ok(());
                 }
-                if parameter == b"daemonize" {
+                if parameter == b"daemonize" || parameter == b"appendfilename" {
                     append_error(
                         response_out,
-                        b"ERR CONFIG SET failed (possibly related to argument 'daemonize') - immutable config",
+                        format!(
+                            "ERR CONFIG SET failed (possibly related to argument '{}') - immutable config",
+                            String::from_utf8_lossy(&parameter)
+                        )
+                        .as_bytes(),
                     );
                     return Ok(());
                 }
@@ -4948,6 +5184,16 @@ impl RequestProcessor {
                     let canonical = super::keyspace_events_flags_to_string(flags);
                     self.set_config_value(b"notify-keyspace-events", canonical);
                     // Continue to process remaining parameters in this CONFIG SET.
+                }
+                if parameter == b"acl-pubsub-default"
+                    && !value.eq_ignore_ascii_case(b"allchannels")
+                    && !value.eq_ignore_ascii_case(b"resetchannels")
+                {
+                    append_error(
+                        response_out,
+                        b"ERR CONFIG SET failed (possibly related to argument 'acl-pubsub-default') - argument must be 'allchannels' or 'resetchannels'",
+                    );
+                    return Ok(());
                 }
                 if parameter == b"port" {
                     let parsed_port =
@@ -5163,17 +5409,173 @@ impl RequestProcessor {
                         return Ok(());
                     }
                 }
+                if (parameter == b"auth-oidc-issuer"
+                    || parameter == b"auth-oidc-audience"
+                    || parameter == b"auth-oidc-principal-claim")
+                    && std::str::from_utf8(&value).is_err()
+                {
+                    append_error(
+                        response_out,
+                        format!(
+                            "ERR CONFIG SET failed (possibly related to argument '{}') - argument must be valid UTF-8",
+                            String::from_utf8_lossy(&parameter)
+                        )
+                        .as_bytes(),
+                    );
+                    return Ok(());
+                }
+                if parameter == b"auth-oidc-principal-claim" && value.is_empty() {
+                    append_error(
+                        response_out,
+                        b"ERR CONFIG SET failed (possibly related to argument 'auth-oidc-principal-claim') - argument must be a non-empty UTF-8 string",
+                    );
+                    return Ok(());
+                }
                 if parameter == b"dir" {
-                    pending.push((parameter, normalize_config_dir_value(&value)));
+                    pending.push((parameter, config_paths::normalize_config_dir_value(&value)));
                     index += 2;
                     continue;
+                }
+                if parameter == b"auth-oidc-algorithms" {
+                    let algorithms = match Self::parse_oidc_algorithms(&value) {
+                        Ok(algorithms) => algorithms,
+                        Err(message) => {
+                            append_error(response_out, message.as_bytes());
+                            return Ok(());
+                        }
+                    };
+                    pending.push((
+                        parameter,
+                        Self::canonical_oidc_algorithms_config_value(&algorithms),
+                    ));
+                    index += 2;
+                    continue;
+                }
+                if parameter == b"user" {
+                    let user_tokens = value
+                        .split(|byte| byte.is_ascii_whitespace())
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>();
+                    let Some(username) = user_tokens.first().copied() else {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'user') - invalid ACL user definition",
+                        );
+                        return Ok(());
+                    };
+                    if !acl_username_is_valid(username)
+                        || parse_acl_setuser_profile(
+                            None,
+                            &user_tokens[1..],
+                            self.acl_pubsub_default_allchannels(),
+                        )
+                        .is_err()
+                    {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'user') - invalid ACL user definition",
+                        );
+                        return Ok(());
+                    }
                 }
                 pending.push((parameter, value));
                 index += 2;
             }
 
+            if pending.iter().any(|(parameter, _)| {
+                parameter == b"dir"
+                    || parameter == b"auth-oidc-jwks-file"
+                    || parameter == b"auth-oidc-issuer"
+                    || parameter == b"auth-oidc-audience"
+                    || parameter == b"auth-oidc-principal-claim"
+                    || parameter == b"auth-oidc-algorithms"
+            }) {
+                let mut merged_config = std::collections::HashMap::<Vec<u8>, Vec<u8>>::new();
+                for (key, value) in self.config_items_snapshot() {
+                    merged_config.insert(key, value);
+                }
+                for (parameter, value) in &pending {
+                    merged_config.insert(parameter.clone(), value.clone());
+                }
+                if let Err(message) = self.validate_oidc_auth_config_items(&merged_config) {
+                    append_error(response_out, message.as_bytes());
+                    return Ok(());
+                }
+            }
+
+            let mut current_config = std::collections::HashMap::<Vec<u8>, Vec<u8>>::new();
+            for (key, value) in self.config_items_snapshot() {
+                current_config.insert(key, value);
+            }
+            let final_appendonly_enabled = pending
+                .iter()
+                .rev()
+                .find_map(|(parameter, value)| {
+                    if parameter == b"appendonly" {
+                        Some(value.eq_ignore_ascii_case(b"yes"))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| {
+                    current_config
+                        .get(b"appendonly".as_slice())
+                        .is_some_and(|value| value.eq_ignore_ascii_case(b"yes"))
+                });
+            if self.live_aof_runtime_active() && final_appendonly_enabled {
+                for (parameter, value) in &pending {
+                    if parameter != b"dir" && parameter != b"appendfilename" {
+                        continue;
+                    }
+                    let unchanged = current_config
+                        .get(parameter.as_slice())
+                        .is_some_and(|current| current.as_slice() == value.as_slice());
+                    if unchanged {
+                        continue;
+                    }
+                    append_error(
+                        response_out,
+                        format!(
+                            "ERR CONFIG SET failed (possibly related to argument '{}') - changing this appendonly setting while AOF is enabled is not supported",
+                            String::from_utf8_lossy(parameter)
+                        )
+                        .as_bytes(),
+                    );
+                    return Ok(());
+                }
+            }
+
+            let disable_live_aof = pending.iter().any(|(parameter, value)| {
+                parameter == b"appendonly" && value.eq_ignore_ascii_case(b"no")
+            });
+            if disable_live_aof {
+                self.set_config_value(b"appendonly", b"no".to_vec());
+                self.stop_live_aof_durability_runtime();
+                current_config.insert(b"appendonly".to_vec(), b"no".to_vec());
+            }
+
+            let mut start_live_aof_runtime = false;
+            let mut reconfigure_live_aof_runtime = false;
             for (parameter, value) in pending {
-                if parameter == b"zset-max-ziplist-entries"
+                if parameter == b"appendonly" {
+                    if value.eq_ignore_ascii_case(b"no") {
+                        continue;
+                    }
+                    self.set_config_value(&parameter, value.clone());
+                    start_live_aof_runtime = true;
+                    current_config.insert(parameter, value);
+                    continue;
+                } else if parameter == b"appendfsync" {
+                    let changed = current_config
+                        .get(parameter.as_slice())
+                        .is_none_or(|current| current.as_slice() != value.as_slice());
+                    self.set_config_value(&parameter, value.clone());
+                    if self.live_aof_runtime_active() && final_appendonly_enabled && changed {
+                        reconfigure_live_aof_runtime = true;
+                    }
+                    current_config.insert(parameter, value);
+                    continue;
+                } else if parameter == b"zset-max-ziplist-entries"
                     || parameter == b"zset-max-listpack-entries"
                 {
                     let parsed =
@@ -5250,6 +5652,35 @@ impl RequestProcessor {
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
                     self.set_tracking_table_max_keys(parsed);
                     self.enforce_tracking_table_max_keys();
+                } else if parameter == b"aclfile" {
+                    self.set_config_value(&parameter, value.clone());
+                    if !value.is_empty()
+                        && let Err(message) = self.load_acl_users_from_configured_file()
+                    {
+                        append_error(response_out, message.as_bytes());
+                        return Ok(());
+                    }
+                    continue;
+                } else if parameter == b"user" {
+                    let user_tokens = value
+                        .split(|byte| byte.is_ascii_whitespace())
+                        .filter(|part| !part.is_empty())
+                        .collect::<Vec<_>>();
+                    let username = user_tokens[0];
+                    let profile = match parse_acl_setuser_profile(
+                        None,
+                        &user_tokens[1..],
+                        self.acl_pubsub_default_allchannels(),
+                    ) {
+                        Ok(profile) => profile,
+                        Err(message) => {
+                            append_error(response_out, message.as_bytes());
+                            return Ok(());
+                        }
+                    };
+                    self.set_acl_user_profile(username, profile)?;
+                    self.set_config_value(&parameter, value);
+                    continue;
                 } else if parameter == b"notify-keyspace-events" {
                     // Already handled in the validation pass above.
                     continue;
@@ -5257,7 +5688,34 @@ impl RequestProcessor {
                     self.set_config_value(&parameter, value);
                     continue;
                 }
-                self.set_config_value(&parameter, value);
+            }
+
+            if reconfigure_live_aof_runtime {
+                if let Err(_error) = self.reconfigure_live_aof_durability_runtime() {
+                    append_error(
+                        response_out,
+                        b"ERR CONFIG SET failed (possibly related to argument 'appendfsync') - failed to reconfigure appendonly runtime",
+                    );
+                    return Ok(());
+                }
+            } else if start_live_aof_runtime && !self.live_aof_runtime_active() {
+                if let Err(_error) = self.rewrite_configured_aof_file() {
+                    self.set_config_value(b"appendonly", b"no".to_vec());
+                    append_error(
+                        response_out,
+                        b"ERR CONFIG SET failed (possibly related to argument 'appendonly') - failed to prepare appendonly file",
+                    );
+                    return Ok(());
+                }
+                if let Err(_error) = self.ensure_live_aof_durability_runtime() {
+                    self.set_config_value(b"appendonly", b"no".to_vec());
+                    self.stop_live_aof_durability_runtime();
+                    append_error(
+                        response_out,
+                        b"ERR CONFIG SET failed (possibly related to argument 'appendonly') - failed to start appendonly runtime",
+                    );
+                    return Ok(());
+                }
             }
             append_simple_string(response_out, b"OK");
             return Ok(());
@@ -5351,6 +5809,26 @@ impl RequestProcessor {
             config_map.insert(
                 b"set-max-intset-entries".to_vec(),
                 set_max_intset_entries_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"acl-pubsub-default".to_vec(),
+                self.config_items_snapshot()
+                    .into_iter()
+                    .find_map(|(key, value)| {
+                        if key == b"acl-pubsub-default" {
+                            Some(value)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| b"resetchannels".to_vec()),
+            );
+            config_map.insert(
+                b"aclfile".to_vec(),
+                self.config_items_snapshot()
+                    .into_iter()
+                    .find_map(|(key, value)| if key == b"aclfile" { Some(value) } else { None })
+                    .unwrap_or_default(),
             );
 
             let mut matched_items = Vec::<(Vec<u8>, Vec<u8>)>::new();
@@ -5626,7 +6104,8 @@ impl RequestProcessor {
 
         for key in keys {
             let db_key = DbKeyRef::new(selected_db, key.as_slice());
-            if let Some(value) = self.read_string_value(db_key)? {
+            // INFO-derived memory estimation should not lazily expire keys while scanning.
+            if let Some(value) = self.read_string_value_without_expiring(db_key)? {
                 total_bytes = total_bytes.saturating_add(
                     u64::try_from(estimate_string_memory_usage_bytes(key.len(), value.len()))
                         .unwrap_or(u64::MAX),
@@ -5948,6 +6427,115 @@ struct RestoreOptions {
     frequency: Option<u8>,
 }
 
+#[derive(Debug)]
+enum DecodedRestorePayload {
+    Migration(MigrationValue),
+    RedisHashPayload {
+        payload: Vec<u8>,
+        field_expirations: Vec<RedisRdbHashFieldExpiration>,
+    },
+    RedisSnapshot(RedisRdbSnapshotValue),
+}
+
+fn decode_restore_payload(encoded: &[u8]) -> Option<DecodedRestorePayload> {
+    if encoded.starts_with(DUMP_BLOB_MAGIC) {
+        return decode_dump_blob(encoded).map(DecodedRestorePayload::Migration);
+    }
+    if let Some((payload, field_expirations)) = decode_redis_hash_dump_payload(encoded) {
+        return Some(DecodedRestorePayload::RedisHashPayload {
+            payload,
+            field_expirations,
+        });
+    }
+    decode_redis_dump_blob_value(encoded).map(DecodedRestorePayload::RedisSnapshot)
+}
+
+fn restored_object_type(payload: &DecodedRestorePayload) -> Option<ObjectTypeTag> {
+    match payload {
+        DecodedRestorePayload::Migration(MigrationValue::String(_)) => None,
+        DecodedRestorePayload::Migration(MigrationValue::Object { object_type, .. }) => {
+            Some(*object_type)
+        }
+        DecodedRestorePayload::RedisHashPayload { .. } => Some(HASH_OBJECT_TYPE_TAG),
+        DecodedRestorePayload::RedisSnapshot(snapshot_value) => match snapshot_value {
+            RedisRdbSnapshotValue::String(_) => None,
+            RedisRdbSnapshotValue::List(_) => Some(LIST_OBJECT_TYPE_TAG),
+            RedisRdbSnapshotValue::Hash(_) => Some(HASH_OBJECT_TYPE_TAG),
+            RedisRdbSnapshotValue::Set(_) => Some(SET_OBJECT_TYPE_TAG),
+            RedisRdbSnapshotValue::Zset(_) => Some(ZSET_OBJECT_TYPE_TAG),
+            RedisRdbSnapshotValue::Stream(_) => Some(STREAM_OBJECT_TYPE_TAG),
+        },
+    }
+}
+
+fn restore_decoded_dump_payload(
+    processor: &RequestProcessor,
+    db: DbName,
+    key: &[u8],
+    payload: DecodedRestorePayload,
+    expiration_unix_millis: Option<u64>,
+) -> Result<bool, RequestExecutionError> {
+    match payload {
+        DecodedRestorePayload::Migration(value) => {
+            restore_migration_value(processor, db, key, value, expiration_unix_millis)
+        }
+        DecodedRestorePayload::RedisHashPayload {
+            payload,
+            field_expirations,
+        } => restore_redis_hash_dump_payload(
+            processor,
+            db,
+            key,
+            payload,
+            field_expirations,
+            expiration_unix_millis,
+        ),
+        DecodedRestorePayload::RedisSnapshot(value) => restore_redis_rdb_snapshot_entry(
+            processor,
+            RedisRdbSnapshotEntry {
+                db,
+                key: key.to_vec(),
+                value,
+                expiration_unix_millis,
+            },
+        ),
+    }
+}
+
+fn restore_redis_hash_dump_payload(
+    processor: &RequestProcessor,
+    db: DbName,
+    key: &[u8],
+    payload: Vec<u8>,
+    field_expirations: Vec<RedisRdbHashFieldExpiration>,
+    expiration_unix_millis: Option<u64>,
+) -> Result<bool, RequestExecutionError> {
+    if should_materialize_restored_value(expiration_unix_millis)? == false {
+        return Ok(false);
+    }
+
+    let db_key = DbKeyRef::new(db, key);
+    processor.delete_string_key_for_migration(db_key)?;
+    processor.object_upsert(db_key, HASH_OBJECT_TYPE_TAG, &payload)?;
+    processor.set_string_expiration_deadline(
+        db_key,
+        expiration_unix_millis.and_then(instant_from_unix_millis),
+    );
+    if !field_expirations.is_empty() {
+        let expirations = field_expirations
+            .iter()
+            .map(|expiration| {
+                (
+                    HashField::from(expiration.field.as_slice()),
+                    expiration.expiration_unix_millis,
+                )
+            })
+            .collect::<Vec<_>>();
+        processor.restore_hash_field_expirations_for_key(db_key, &expirations);
+    }
+    Ok(true)
+}
+
 fn restore_from_dump_blob(
     processor: &RequestProcessor,
     selected_db: DbName,
@@ -5975,11 +6563,9 @@ fn restore_from_dump_blob(
     if !options.replace && processor.key_exists_any(db_key)? {
         return Err(RequestExecutionError::BusyKey);
     }
-    let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
-    let restored_type = match &value {
-        MigrationValue::String(_) => None,
-        MigrationValue::Object { object_type, .. } => Some(*object_type),
-    };
+    let value =
+        decode_restore_payload(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
+    let restored_type = restored_object_type(&value);
     let previous_string_exists = processor.key_exists(db_key)?;
     let previous_type = if previous_string_exists {
         None
@@ -6009,7 +6595,7 @@ fn restore_from_dump_blob(
     };
 
     let restored =
-        restore_migration_value(processor, selected_db, &key, value, expiration_unix_millis)?;
+        restore_decoded_dump_payload(processor, selected_db, &key, value, expiration_unix_millis)?;
 
     if restored {
         if let Some(idle_time_seconds) = options.idle_time_seconds {
@@ -6100,6 +6686,103 @@ struct DebugReloadHashFieldExpiration {
     expiration_unix_millis: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RedisRdbHashFieldExpiration {
+    field: Vec<u8>,
+    expiration_unix_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RedisRdbHashValue {
+    fields: BTreeMap<Vec<u8>, Vec<u8>>,
+    field_expirations: Vec<RedisRdbHashFieldExpiration>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum RedisRdbSnapshotValue {
+    String(Vec<u8>),
+    List(Vec<Vec<u8>>),
+    Hash(RedisRdbHashValue),
+    Set(BTreeSet<Vec<u8>>),
+    Zset(BTreeMap<Vec<u8>, f64>),
+    Stream(StreamObject),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct RedisRdbSnapshotEntry {
+    db: DbName,
+    key: Vec<u8>,
+    value: RedisRdbSnapshotValue,
+    expiration_unix_millis: Option<u64>,
+}
+
+fn restore_redis_rdb_snapshot_entry(
+    processor: &RequestProcessor,
+    entry: RedisRdbSnapshotEntry,
+) -> Result<bool, RequestExecutionError> {
+    let RedisRdbSnapshotEntry {
+        db,
+        key,
+        value,
+        expiration_unix_millis,
+    } = entry;
+    if should_materialize_restored_value(expiration_unix_millis)? == false {
+        return Ok(false);
+    }
+
+    let db_key = DbKeyRef::new(db, key.as_slice());
+    let expiration_deadline = expiration_unix_millis.and_then(instant_from_unix_millis);
+    match value {
+        RedisRdbSnapshotValue::String(raw) => {
+            processor.upsert_string_value_for_migration(
+                db_key,
+                raw.as_slice(),
+                expiration_unix_millis,
+            )?;
+            let _ = processor.object_delete(db_key)?;
+        }
+        RedisRdbSnapshotValue::List(list) => {
+            processor.delete_string_key_for_migration(db_key)?;
+            processor.save_list_object(db_key, &list)?;
+            processor.set_string_expiration_deadline(db_key, expiration_deadline);
+        }
+        RedisRdbSnapshotValue::Hash(hash) => {
+            processor.delete_string_key_for_migration(db_key)?;
+            processor.save_hash_object(db_key, &hash.fields)?;
+            processor.set_string_expiration_deadline(db_key, expiration_deadline);
+            if !hash.field_expirations.is_empty() {
+                let expirations = hash
+                    .field_expirations
+                    .iter()
+                    .map(|expiration| {
+                        (
+                            HashField::from(expiration.field.as_slice()),
+                            expiration.expiration_unix_millis,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                processor.restore_hash_field_expirations_for_key(db_key, &expirations);
+            }
+        }
+        RedisRdbSnapshotValue::Set(set) => {
+            processor.delete_string_key_for_migration(db_key)?;
+            processor.save_set_object_replacing_existing(db_key, &set)?;
+            processor.set_string_expiration_deadline(db_key, expiration_deadline);
+        }
+        RedisRdbSnapshotValue::Zset(zset) => {
+            processor.delete_string_key_for_migration(db_key)?;
+            processor.save_zset_object(db_key, &zset)?;
+            processor.set_string_expiration_deadline(db_key, expiration_deadline);
+        }
+        RedisRdbSnapshotValue::Stream(stream) => {
+            processor.delete_string_key_for_migration(db_key)?;
+            processor.save_stream_object(db_key, &stream)?;
+            processor.set_string_expiration_deadline(db_key, expiration_deadline);
+        }
+    }
+    Ok(true)
+}
+
 impl RequestProcessor {
     pub(crate) fn build_debug_reload_snapshot(
         &self,
@@ -6128,6 +6811,282 @@ impl RequestProcessor {
         Ok(encode_debug_reload_snapshot(&entries, &function_payload))
     }
 
+    pub(crate) fn build_full_redis_rdb_snapshot(
+        &self,
+        functions_only: bool,
+    ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+        let entries = self.collect_full_redis_rdb_snapshot_entries(functions_only)?;
+        let Some(entries) = entries else {
+            return Ok(None);
+        };
+        Ok(Some(encode_full_redis_rdb_snapshot(&entries)))
+    }
+
+    pub(crate) fn build_redis_dump_blob_for_migration_value(
+        &self,
+        db_key: DbKeyRef<'_>,
+        value: &MigrationValue,
+    ) -> Result<Vec<u8>, RequestExecutionError> {
+        if let MigrationValue::Object {
+            object_type: HASH_OBJECT_TYPE_TAG,
+            payload,
+        } = value
+        {
+            let ordered_entries = deserialize_hash_object_payload_entries(payload)
+                .ok_or(RequestExecutionError::InvalidObject)?;
+            let field_expirations = self
+                .snapshot_hash_field_expirations_for_key(db_key)
+                .into_iter()
+                .map(
+                    |(field, expiration_unix_millis)| RedisRdbHashFieldExpiration {
+                        field: field.as_ref().to_vec(),
+                        expiration_unix_millis,
+                    },
+                )
+                .collect::<Vec<_>>();
+            for expiration in &field_expirations {
+                if !ordered_entries
+                    .iter()
+                    .any(|(field, _)| field.as_slice() == expiration.field.as_slice())
+                {
+                    return Err(storage_failure(
+                        "build_redis_dump_blob_for_migration_value",
+                        "hash field expiration references missing field",
+                    ));
+                }
+            }
+            return Ok(encode_redis_dump_blob_from_ordered_hash_entries(
+                &ordered_entries,
+                &field_expirations,
+            ));
+        }
+
+        let snapshot_value =
+            self.collect_redis_rdb_snapshot_value_for_migration_value(db_key, value)?;
+        Ok(encode_redis_dump_blob(&snapshot_value))
+    }
+
+    fn collect_redis_rdb_snapshot_value_for_migration_value(
+        &self,
+        db_key: DbKeyRef<'_>,
+        value: &MigrationValue,
+    ) -> Result<RedisRdbSnapshotValue, RequestExecutionError> {
+        match value {
+            MigrationValue::String(raw) => {
+                Ok(RedisRdbSnapshotValue::String(raw.as_slice().to_vec()))
+            }
+            MigrationValue::Object {
+                object_type,
+                payload,
+            } => match *object_type {
+                LIST_OBJECT_TYPE_TAG => {
+                    let list = deserialize_list_object_payload(payload)
+                        .ok_or(RequestExecutionError::InvalidObject)?;
+                    Ok(RedisRdbSnapshotValue::List(list))
+                }
+                HASH_OBJECT_TYPE_TAG => {
+                    let fields = deserialize_hash_object_payload(payload)
+                        .ok_or(RequestExecutionError::InvalidObject)?;
+                    let field_expirations = self
+                        .snapshot_hash_field_expirations_for_key(db_key)
+                        .into_iter()
+                        .map(
+                            |(field, expiration_unix_millis)| RedisRdbHashFieldExpiration {
+                                field: field.as_ref().to_vec(),
+                                expiration_unix_millis,
+                            },
+                        )
+                        .collect::<Vec<_>>();
+                    for expiration in &field_expirations {
+                        if !fields.contains_key(expiration.field.as_slice()) {
+                            return Err(storage_failure(
+                                "build_redis_dump_blob_for_migration_value",
+                                "hash field expiration references missing field",
+                            ));
+                        }
+                    }
+                    Ok(RedisRdbSnapshotValue::Hash(RedisRdbHashValue {
+                        fields,
+                        field_expirations,
+                    }))
+                }
+                SET_OBJECT_TYPE_TAG => {
+                    let set = deserialize_set_object_payload(payload)
+                        .ok_or(RequestExecutionError::InvalidObject)?;
+                    Ok(RedisRdbSnapshotValue::Set(set))
+                }
+                ZSET_OBJECT_TYPE_TAG => {
+                    let zset = deserialize_zset_object_payload(payload)
+                        .ok_or(RequestExecutionError::InvalidObject)?;
+                    Ok(RedisRdbSnapshotValue::Zset(zset))
+                }
+                STREAM_OBJECT_TYPE_TAG => {
+                    let stream = deserialize_stream_object_payload(payload)
+                        .ok_or(RequestExecutionError::InvalidObject)?;
+                    if !stream_is_redis_rdb_exportable(&stream) {
+                        return Err(RequestExecutionError::InvalidObject);
+                    }
+                    Ok(RedisRdbSnapshotValue::Stream(stream))
+                }
+            },
+        }
+    }
+
+    pub(crate) fn reload_redis_rdb_snapshot_bytes(
+        &self,
+        snapshot_bytes: Vec<u8>,
+    ) -> Result<bool, RequestExecutionError> {
+        let Some(entries) = decode_full_redis_rdb_snapshot(&snapshot_bytes) else {
+            return Ok(false);
+        };
+
+        let _ = self.flush_all_logical_databases()?;
+        self.clear_function_registry(false);
+        self.clear_all_forced_list_quicklist_encodings();
+
+        for entry in entries {
+            restore_redis_rdb_snapshot_entry(self, entry)?;
+        }
+
+        self.set_saved_rdb_snapshot(snapshot_bytes);
+        Ok(true)
+    }
+
+    pub(crate) fn persist_configured_dump_snapshot(
+        &self,
+        command_name: &'static str,
+    ) -> Result<Vec<u8>, RequestExecutionError> {
+        let snapshot_bytes = self.build_configured_dump_snapshot_bytes()?;
+        let path = config_paths::configured_file_path_from_config_items(
+            &self.config_items_snapshot(),
+            b"dbfilename",
+            b"dump.rdb",
+        );
+        write_dump_snapshot_bytes(&path, &snapshot_bytes, command_name)?;
+        self.set_saved_rdb_snapshot(snapshot_bytes.clone());
+        Ok(snapshot_bytes)
+    }
+
+    fn build_configured_dump_snapshot_bytes(&self) -> Result<Vec<u8>, RequestExecutionError> {
+        if let Some(snapshot_bytes) = self.build_full_redis_rdb_snapshot(false)? {
+            return Ok(snapshot_bytes);
+        }
+        self.build_full_debug_reload_snapshot(false)
+    }
+
+    pub(crate) fn rewrite_configured_aof_file(&self) -> Result<(), RequestExecutionError> {
+        let path = config_paths::configured_file_path_from_config_items(
+            &self.config_items_snapshot(),
+            b"appendfilename",
+            b"appendonly.aof",
+        );
+        let temp_path = self.prepare_rewritten_aof_temp_file(&path)?;
+        install_rewritten_aof_file(&temp_path, &path)
+    }
+
+    pub(crate) fn rewrite_live_configured_aof_file(&self) -> Result<(), RequestExecutionError> {
+        let _quiesce_guard = RewriteAofQuiesceGuard::new(self);
+        if let Some(target_offset) = self.local_aof_append_target_offset()
+            && !self.wait_for_local_aof_append_blocking(target_offset, Duration::from_secs(2))
+        {
+            return Err(storage_failure(
+                "bgrewriteaof",
+                "timed out waiting for live AOF appends to drain",
+            ));
+        }
+
+        let path = config_paths::configured_file_path_from_config_items(
+            &self.config_items_snapshot(),
+            b"appendfilename",
+            b"appendonly.aof",
+        );
+        let temp_path = self.prepare_rewritten_aof_temp_file(&path)?;
+
+        self.stop_live_aof_durability_runtime();
+        let install_result = install_rewritten_aof_file(&temp_path, &path);
+        let restart_result = self
+            .ensure_live_aof_durability_runtime()
+            .map_err(|_| {
+                storage_failure(
+                    "bgrewriteaof",
+                    "failed to restart appendonly runtime after rewrite",
+                )
+            })
+            .map(|_| ());
+
+        match install_result {
+            Ok(()) => restart_result,
+            Err(error) => {
+                let _ = restart_result;
+                Err(error)
+            }
+        }
+    }
+
+    fn prepare_rewritten_aof_temp_file(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<std::path::PathBuf, RequestExecutionError> {
+        let function_payload = self.dump_function_registry()?;
+        let function_libraries = parse_function_dump_payload(&function_payload).map_err(|_| {
+            storage_failure(
+                "bgrewriteaof",
+                "failed to serialize loaded function libraries for appendonly rewrite",
+            )
+        })?;
+        let entries = self.collect_full_debug_reload_snapshot_entries()?;
+        let frames = build_rewritten_aof_frames(function_libraries.as_slice(), entries.as_slice())?;
+        write_rewritten_aof_frames_to_temp(path, frames.as_slice())
+    }
+
+    pub(crate) fn reload_configured_aof_source(&self) -> Result<usize, RequestExecutionError> {
+        if let Some(target_offset) = self.local_aof_append_target_offset()
+            && !self.wait_for_local_aof_append_blocking(target_offset, Duration::from_secs(2))
+        {
+            return Err(storage_failure(
+                "debug.loadaof",
+                "timed out waiting for live AOF appends to drain",
+            ));
+        }
+
+        let _ = self.flush_all_logical_databases()?;
+        self.clear_function_registry(false);
+        self.clear_all_forced_list_quicklist_encodings();
+
+        let path = config_paths::configured_file_path_from_config_items(
+            &self.config_items_snapshot(),
+            b"appendfilename",
+            b"appendonly.aof",
+        );
+        match crate::aof_replay::replay_aof_file(self, &path) {
+            Ok(applied) => Ok(applied),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(_) => Err(storage_failure(
+                "debug.loadaof",
+                "failed to replay configured appendonly file",
+            )),
+        }
+    }
+
+    pub(crate) fn configured_appendonly_source_exists(&self) -> bool {
+        config_paths::configured_file_path_from_config_items(
+            &self.config_items_snapshot(),
+            b"appendfilename",
+            b"appendonly.aof",
+        )
+        .exists()
+    }
+
+    pub(crate) fn reload_configured_dump_snapshot_file(
+        &self,
+    ) -> Result<bool, RequestExecutionError> {
+        let snapshot_bytes = match self.read_configured_dump_snapshot_file()? {
+            Some(snapshot_bytes) => snapshot_bytes,
+            None => return Ok(false),
+        };
+        self.reload_snapshot_bytes(DbName::new(0), snapshot_bytes)
+    }
+
     pub(crate) fn reload_debug_snapshot_source(
         &self,
         db: DbName,
@@ -6136,7 +7095,7 @@ impl RequestProcessor {
             Some(snapshot_bytes) => snapshot_bytes,
             None => return Ok(false),
         };
-        self.reload_debug_snapshot_bytes(db, snapshot_bytes)
+        self.reload_snapshot_bytes(db, snapshot_bytes)
     }
 
     pub(crate) fn reload_debug_snapshot_bytes(
@@ -6253,18 +7212,160 @@ impl RequestProcessor {
         Ok(entries)
     }
 
-    fn read_debug_reload_snapshot_source(&self) -> Result<Option<Vec<u8>>, RequestExecutionError> {
-        let snapshot_path = configured_dump_snapshot_path(&self.config_items_snapshot());
+    fn collect_full_redis_rdb_snapshot_entries(
+        &self,
+        functions_only: bool,
+    ) -> Result<Option<Vec<RedisRdbSnapshotEntry>>, RequestExecutionError> {
+        if functions_only {
+            return Ok(Some(Vec::new()));
+        }
+
+        let mut entries = Vec::new();
+        for db_index in 0..self.configured_databases() {
+            let db = DbName::new(db_index);
+            let mut keys = std::collections::BTreeSet::new();
+            keys.extend(self.string_keys_snapshot(db));
+            keys.extend(self.object_keys_snapshot(db));
+
+            for key in keys {
+                let db_key = DbKeyRef::new(db, key.as_slice());
+                self.expire_key_if_needed(db_key)?;
+
+                if let Some(stored_value) = self.read_string_value(db_key)? {
+                    entries.push(RedisRdbSnapshotEntry {
+                        db,
+                        key: key.to_vec(),
+                        value: RedisRdbSnapshotValue::String(stored_value.as_slice().to_vec()),
+                        expiration_unix_millis: self.expiration_unix_millis(db_key),
+                    });
+                    continue;
+                }
+
+                let Some(object) = self.object_read(db_key)? else {
+                    continue;
+                };
+
+                let value = match object.object_type {
+                    LIST_OBJECT_TYPE_TAG => {
+                        let list =
+                            deserialize_list_object_payload(&object.payload).ok_or_else(|| {
+                                storage_failure(
+                                    "build_full_redis_rdb_snapshot",
+                                    "failed to decode list object payload",
+                                )
+                            })?;
+                        RedisRdbSnapshotValue::List(list)
+                    }
+                    HASH_OBJECT_TYPE_TAG => {
+                        let hash =
+                            deserialize_hash_object_payload(&object.payload).ok_or_else(|| {
+                                storage_failure(
+                                    "build_full_redis_rdb_snapshot",
+                                    "failed to decode hash object payload",
+                                )
+                            })?;
+                        let field_expirations = self
+                            .snapshot_hash_field_expirations_for_key(db_key)
+                            .into_iter()
+                            .map(
+                                |(field, expiration_unix_millis)| RedisRdbHashFieldExpiration {
+                                    field: field.as_ref().to_vec(),
+                                    expiration_unix_millis,
+                                },
+                            )
+                            .collect::<Vec<_>>();
+                        for expiration in &field_expirations {
+                            if !hash.contains_key(expiration.field.as_slice()) {
+                                return Err(storage_failure(
+                                    "build_full_redis_rdb_snapshot",
+                                    "hash field expiration references missing field",
+                                ));
+                            }
+                        }
+                        RedisRdbSnapshotValue::Hash(RedisRdbHashValue {
+                            fields: hash,
+                            field_expirations,
+                        })
+                    }
+                    SET_OBJECT_TYPE_TAG => {
+                        let set =
+                            deserialize_set_object_payload(&object.payload).ok_or_else(|| {
+                                storage_failure(
+                                    "build_full_redis_rdb_snapshot",
+                                    "failed to decode set object payload",
+                                )
+                            })?;
+                        RedisRdbSnapshotValue::Set(set)
+                    }
+                    ZSET_OBJECT_TYPE_TAG => {
+                        let zset =
+                            deserialize_zset_object_payload(&object.payload).ok_or_else(|| {
+                                storage_failure(
+                                    "build_full_redis_rdb_snapshot",
+                                    "failed to decode zset object payload",
+                                )
+                            })?;
+                        RedisRdbSnapshotValue::Zset(zset)
+                    }
+                    STREAM_OBJECT_TYPE_TAG => {
+                        let stream = deserialize_stream_object_payload(&object.payload)
+                            .ok_or_else(|| {
+                                storage_failure(
+                                    "build_full_redis_rdb_snapshot",
+                                    "failed to decode stream object payload",
+                                )
+                            })?;
+                        if !stream_is_redis_rdb_exportable(&stream) {
+                            return Ok(None);
+                        }
+                        RedisRdbSnapshotValue::Stream(stream)
+                    }
+                };
+
+                entries.push(RedisRdbSnapshotEntry {
+                    db,
+                    key: key.to_vec(),
+                    value,
+                    expiration_unix_millis: self.expiration_unix_millis(db_key),
+                });
+            }
+        }
+
+        Ok(Some(entries))
+    }
+
+    fn reload_snapshot_bytes(
+        &self,
+        debug_snapshot_db: DbName,
+        snapshot_bytes: Vec<u8>,
+    ) -> Result<bool, RequestExecutionError> {
+        if self.reload_debug_snapshot_bytes(debug_snapshot_db, snapshot_bytes.clone())? {
+            return Ok(true);
+        }
+        self.reload_redis_rdb_snapshot_bytes(snapshot_bytes)
+    }
+
+    fn read_configured_dump_snapshot_file(&self) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+        let snapshot_path = config_paths::configured_file_path_from_config_items(
+            &self.config_items_snapshot(),
+            b"dbfilename",
+            b"dump.rdb",
+        );
         match std::fs::read(&snapshot_path) {
             Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(self.saved_rdb_snapshot())
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(_) => Err(storage_failure(
                 "debug.reload.snapshot",
                 "failed to read configured dump snapshot",
             )),
         }
+    }
+
+    fn read_debug_reload_snapshot_source(&self) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+        if let Some(snapshot_bytes) = self.read_configured_dump_snapshot_file()? {
+            return Ok(Some(snapshot_bytes));
+        }
+        Ok(self.saved_rdb_snapshot())
     }
 }
 
@@ -6669,32 +7770,214 @@ fn count_snapshot_zero_run(raw: &[u8], start: usize) -> usize {
         .count()
 }
 
-fn configured_dump_snapshot_path(config_items: &[(Vec<u8>, Vec<u8>)]) -> std::path::PathBuf {
-    let mut dir = b".".to_vec();
-    let mut dbfilename = b"dump.rdb".to_vec();
-    for (key, value) in config_items {
-        if key == b"dir" {
-            dir = value.clone();
-        } else if key == b"dbfilename" {
-            dbfilename = value.clone();
-        }
-    }
-
-    let mut path = std::path::PathBuf::from(String::from_utf8_lossy(&dir).into_owned());
-    path.push(String::from_utf8_lossy(&dbfilename).into_owned());
-    path
+fn dump_snapshot_temp_path(path: &std::path::Path) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("dump.rdb");
+    path.with_file_name(format!("{file_name}.save-{nanos}.tmp"))
 }
 
-fn normalize_config_dir_value(value: &[u8]) -> Vec<u8> {
-    let path = std::path::PathBuf::from(String::from_utf8_lossy(value).into_owned());
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join(path)
+fn write_dump_snapshot_bytes(
+    path: &std::path::Path,
+    snapshot_bytes: &[u8],
+    command_name: &'static str,
+) -> Result<(), RequestExecutionError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| {
+            storage_failure(
+                command_name,
+                "failed to create configured snapshot directory",
+            )
+        })?;
+    }
+    let temp_path = dump_snapshot_temp_path(path);
+    std::fs::write(&temp_path, snapshot_bytes)
+        .map_err(|_| storage_failure(command_name, "failed to write configured snapshot file"))?;
+    let temp_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&temp_path)
+        .map_err(|_| storage_failure(command_name, "failed to reopen configured snapshot file"))?;
+    temp_file
+        .sync_all()
+        .map_err(|_| storage_failure(command_name, "failed to sync configured snapshot file"))?;
+    std::fs::rename(&temp_path, path)
+        .map_err(|_| storage_failure(command_name, "failed to install configured snapshot file"))
+}
+
+fn encode_resp_command_frame(parts: &[&[u8]]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
+    for part in parts {
+        encoded.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+        encoded.extend_from_slice(part);
+        encoded.extend_from_slice(b"\r\n");
+    }
+    encoded
+}
+
+fn rewritten_aof_dump_blob_for_entry(
+    entry: &DebugReloadSnapshotEntry,
+) -> Result<Vec<u8>, RequestExecutionError> {
+    if entry.hash_field_expirations.is_empty() {
+        return Ok(entry.dump_blob.clone());
+    }
+
+    let Some(MigrationValue::Object {
+        object_type: HASH_OBJECT_TYPE_TAG,
+        payload,
+    }) = decode_dump_blob(&entry.dump_blob)
+    else {
+        return Err(storage_failure(
+            "bgrewriteaof",
+            "hash field expiration snapshot entry was not a hash object",
+        ));
     };
-    absolute.to_string_lossy().into_owned().into_bytes()
+    let ordered_entries = deserialize_hash_object_payload_entries(&payload).ok_or_else(|| {
+        storage_failure(
+            "bgrewriteaof",
+            "failed to decode hash payload while rewriting appendonly file",
+        )
+    })?;
+    let field_expirations = entry
+        .hash_field_expirations
+        .iter()
+        .map(|expiration| RedisRdbHashFieldExpiration {
+            field: expiration.field.clone(),
+            expiration_unix_millis: expiration.expiration_unix_millis,
+        })
+        .collect::<Vec<_>>();
+    Ok(encode_redis_dump_blob_from_ordered_hash_entries(
+        &ordered_entries,
+        &field_expirations,
+    ))
+}
+
+fn build_rewritten_aof_frames(
+    function_libraries: &[(String, Vec<u8>)],
+    entries: &[DebugReloadSnapshotEntry],
+) -> Result<Vec<Vec<u8>>, RequestExecutionError> {
+    let mut frames = Vec::with_capacity(
+        function_libraries
+            .len()
+            .saturating_add(entries.len().saturating_mul(2)),
+    );
+    for (_, library_source) in function_libraries {
+        frames.push(encode_resp_command_frame(&[
+            b"FUNCTION",
+            b"LOAD",
+            library_source.as_slice(),
+        ]));
+    }
+    let mut current_db = None;
+    for entry in entries {
+        if current_db != Some(entry.db) {
+            let db_index = usize::from(entry.db).to_string().into_bytes();
+            frames.push(encode_resp_command_frame(&[b"SELECT", db_index.as_slice()]));
+            current_db = Some(entry.db);
+        }
+
+        let ttl_bytes = entry
+            .expiration_unix_millis
+            .unwrap_or(0)
+            .to_string()
+            .into_bytes();
+        let dump_blob = rewritten_aof_dump_blob_for_entry(entry)?;
+        let mut restore_parts = Vec::with_capacity(6);
+        restore_parts.push(b"RESTORE".as_slice());
+        restore_parts.push(entry.key.as_slice());
+        restore_parts.push(ttl_bytes.as_slice());
+        restore_parts.push(dump_blob.as_slice());
+        restore_parts.push(b"REPLACE".as_slice());
+        if entry.expiration_unix_millis.is_some() {
+            restore_parts.push(b"ABSTTL".as_slice());
+        }
+        frames.push(encode_resp_command_frame(restore_parts.as_slice()));
+    }
+    Ok(frames)
+}
+
+fn rewritten_aof_temp_path(path: &std::path::Path) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("appendonly.aof");
+    path.with_file_name(format!("{file_name}.rewrite-{nanos}.tmp"))
+}
+
+fn write_rewritten_aof_frames_to_temp(
+    path: &std::path::Path,
+    frames: &[Vec<u8>],
+) -> Result<std::path::PathBuf, RequestExecutionError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| {
+            storage_failure("bgrewriteaof", "failed to create appendonly directory")
+        })?;
+    }
+    let temp_path = rewritten_aof_temp_path(path);
+    let mut writer = tsavorite::AofWriter::open(
+        &temp_path,
+        tsavorite::AofWriterConfig { flush_every_ops: 1 },
+    )
+    .map_err(|_| storage_failure("bgrewriteaof", "failed to open temporary appendonly file"))?;
+    for frame in frames {
+        writer
+            .append_operation(frame)
+            .map_err(|_| storage_failure("bgrewriteaof", "failed to write appendonly frame"))?;
+    }
+    writer
+        .sync_all()
+        .map_err(|_| storage_failure("bgrewriteaof", "failed to sync rewritten appendonly file"))?;
+    Ok(temp_path)
+}
+
+fn install_rewritten_aof_file(
+    temp_path: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<(), RequestExecutionError> {
+    std::fs::rename(temp_path, path).map_err(|_| {
+        storage_failure(
+            "bgrewriteaof",
+            "failed to install rewritten appendonly file",
+        )
+    })
+}
+
+struct RewriteAofQuiesceGuard<'a> {
+    processor: &'a RequestProcessor,
+    client_pause_snapshot: ClientPauseSnapshot,
+    debug_pause_cron: bool,
+}
+
+impl<'a> RewriteAofQuiesceGuard<'a> {
+    fn new(processor: &'a RequestProcessor) -> Self {
+        let client_pause_snapshot = processor.client_pause_snapshot();
+        let debug_pause_cron = processor.debug_pause_cron();
+        processor.set_debug_pause_cron(true);
+        processor.client_pause(INTERNAL_BGREWRITEAOF_WRITE_PAUSE_MILLIS, false);
+        Self {
+            processor,
+            client_pause_snapshot,
+            debug_pause_cron,
+        }
+    }
+}
+
+impl Drop for RewriteAofQuiesceGuard<'_> {
+    fn drop(&mut self) {
+        self.processor
+            .restore_client_pause(self.client_pause_snapshot);
+        self.processor.set_debug_pause_cron(self.debug_pause_cron);
+    }
 }
 
 fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
@@ -6729,13 +8012,39 @@ fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
 const REDIS_DUMP_FOOTER_LEN: usize = 10;
 const REDIS_DUMP_MAX_RDB_VERSION: u16 = 13;
 const REDIS_RDB_TYPE_STRING: u8 = 0;
+const REDIS_RDB_TYPE_LIST: u8 = 1;
+const REDIS_RDB_TYPE_SET: u8 = 2;
+const REDIS_RDB_TYPE_ZSET: u8 = 3;
+const REDIS_RDB_TYPE_HASH: u8 = 4;
+const REDIS_RDB_TYPE_ZSET_2: u8 = 5;
+const REDIS_RDB_TYPE_LIST_ZIPLIST: u8 = 10;
+const REDIS_RDB_TYPE_SET_INTSET: u8 = 11;
+const REDIS_RDB_TYPE_ZSET_ZIPLIST: u8 = 12;
+const REDIS_RDB_TYPE_HASH_ZIPLIST: u8 = 13;
+const REDIS_RDB_TYPE_LIST_QUICKLIST: u8 = 14;
+const REDIS_RDB_OPCODE_AUX: u8 = 250;
+const REDIS_RDB_OPCODE_RESIZEDB: u8 = 251;
+const REDIS_RDB_OPCODE_EXPIRETIME_MS: u8 = 252;
+const REDIS_RDB_OPCODE_EXPIRETIME: u8 = 253;
+const REDIS_RDB_OPCODE_SELECTDB: u8 = 254;
+const REDIS_RDB_OPCODE_EOF: u8 = 255;
 const REDIS_RDB_TYPE_STREAM_LISTPACKS: u8 = 15;
+const REDIS_RDB_TYPE_HASH_LISTPACK: u8 = 16;
+const REDIS_RDB_TYPE_ZSET_LISTPACK: u8 = 17;
+const REDIS_RDB_TYPE_LIST_QUICKLIST_2: u8 = 18;
 const REDIS_RDB_TYPE_STREAM_LISTPACKS_2: u8 = 19;
+const REDIS_RDB_TYPE_SET_LISTPACK: u8 = 20;
 const REDIS_RDB_TYPE_STREAM_LISTPACKS_3: u8 = 21;
+const REDIS_RDB_TYPE_HASH_METADATA_PRE_GA: u8 = 22;
+const REDIS_RDB_TYPE_HASH_LISTPACK_EX_PRE_GA: u8 = 23;
+const REDIS_RDB_TYPE_HASH_METADATA: u8 = 24;
+const REDIS_RDB_TYPE_HASH_LISTPACK_EX: u8 = 25;
 const REDIS_RDB_ENC_INT8: u64 = 0;
 const REDIS_RDB_ENC_INT16: u64 = 1;
 const REDIS_RDB_ENC_INT32: u64 = 2;
 const REDIS_RDB_ENC_LZF: u64 = 3;
+const REDIS_RDB_QUICKLIST_NODE_CONTAINER_PLAIN: u64 = 1;
+const REDIS_RDB_QUICKLIST_NODE_CONTAINER_PACKED: u64 = 2;
 const STREAM_ITEM_FLAG_DELETED: i64 = 1 << 0;
 const STREAM_ITEM_FLAG_SAMEFIELDS: i64 = 1 << 1;
 
@@ -6748,6 +8057,968 @@ enum RedisRdbLen {
 struct RedisDumpReader<'a> {
     bytes: &'a [u8],
     cursor: usize,
+}
+
+fn encode_full_redis_rdb_snapshot(entries: &[RedisRdbSnapshotEntry]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    let rdb_version = redis_rdb_version_for_values(entries.iter().map(|entry| &entry.value));
+    encoded.extend_from_slice(format!("REDIS{rdb_version:04}").as_bytes());
+    append_redis_rdb_aux_field(&mut encoded, b"redis-ver", b"7.2.13");
+    append_redis_rdb_aux_field(&mut encoded, b"redis-bits", b"64");
+    append_redis_rdb_aux_field(&mut encoded, b"aof-base", b"0");
+
+    let mut current_db: Option<DbName> = None;
+    let mut db_entries = entries.iter().peekable();
+    while let Some(entry) = db_entries.next() {
+        if current_db != Some(entry.db) {
+            current_db = Some(entry.db);
+            encoded.push(REDIS_RDB_OPCODE_SELECTDB);
+            append_redis_rdb_len(&mut encoded, usize::from(entry.db) as u64);
+
+            let mut remaining_entries_in_db = 1u64;
+            let mut remaining_expiring_entries_in_db =
+                u64::from(entry.expiration_unix_millis.is_some());
+            for candidate in db_entries.clone() {
+                if candidate.db != entry.db {
+                    break;
+                }
+                remaining_entries_in_db += 1;
+                if candidate.expiration_unix_millis.is_some() {
+                    remaining_expiring_entries_in_db += 1;
+                }
+            }
+            encoded.push(REDIS_RDB_OPCODE_RESIZEDB);
+            append_redis_rdb_len(&mut encoded, remaining_entries_in_db);
+            append_redis_rdb_len(&mut encoded, remaining_expiring_entries_in_db);
+        }
+
+        if let Some(expiration_unix_millis) = entry.expiration_unix_millis {
+            encoded.push(REDIS_RDB_OPCODE_EXPIRETIME_MS);
+            encoded.extend_from_slice(&expiration_unix_millis.to_le_bytes());
+        }
+        encoded.push(redis_rdb_type_for_value(&entry.value));
+        append_redis_rdb_string(&mut encoded, entry.key.as_slice());
+        append_redis_rdb_value_body(&mut encoded, &entry.value);
+    }
+
+    encoded.push(REDIS_RDB_OPCODE_EOF);
+    let checksum = redis_crc64(&encoded);
+    encoded.extend_from_slice(&checksum.to_le_bytes());
+    encoded
+}
+
+fn encode_redis_dump_blob(value: &RedisRdbSnapshotValue) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.push(redis_rdb_type_for_value(value));
+    append_redis_rdb_value_body(&mut encoded, value);
+    let version = redis_rdb_version_for_values(std::iter::once(value));
+    encoded.extend_from_slice(&version.to_le_bytes());
+    let checksum = redis_crc64(&encoded);
+    encoded.extend_from_slice(&checksum.to_le_bytes());
+    encoded
+}
+
+fn encode_redis_dump_blob_from_ordered_hash_entries(
+    entries: &[(Vec<u8>, Vec<u8>)],
+    field_expirations: &[RedisRdbHashFieldExpiration],
+) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    let has_field_expirations = !field_expirations.is_empty();
+    encoded.push(if has_field_expirations {
+        REDIS_RDB_TYPE_HASH_METADATA
+    } else {
+        REDIS_RDB_TYPE_HASH
+    });
+
+    let min_expiration_unix_millis = field_expirations
+        .iter()
+        .map(|expiration| expiration.expiration_unix_millis)
+        .min();
+    let expiration_by_field = field_expirations
+        .iter()
+        .map(|expiration| {
+            (
+                expiration.field.as_slice(),
+                expiration.expiration_unix_millis,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if let Some(min_expiration_unix_millis) = min_expiration_unix_millis {
+        encoded.extend_from_slice(&min_expiration_unix_millis.to_le_bytes());
+    }
+    append_redis_rdb_len(&mut encoded, entries.len() as u64);
+    for (field, value) in entries {
+        if let Some(expiration_unix_millis) = expiration_by_field.get(field.as_slice()) {
+            append_redis_rdb_len(
+                &mut encoded,
+                expiration_unix_millis
+                    .checked_sub(min_expiration_unix_millis.unwrap_or(*expiration_unix_millis))
+                    .and_then(|delta| delta.checked_add(1))
+                    .unwrap_or(0),
+            );
+        } else if min_expiration_unix_millis.is_some() {
+            append_redis_rdb_len(&mut encoded, 0);
+        }
+        append_redis_rdb_string(&mut encoded, field.as_slice());
+        append_redis_rdb_string(&mut encoded, value.as_slice());
+    }
+
+    let version = if has_field_expirations { 12u16 } else { 11u16 };
+    encoded.extend_from_slice(&version.to_le_bytes());
+    let checksum = redis_crc64(&encoded);
+    encoded.extend_from_slice(&checksum.to_le_bytes());
+    encoded
+}
+
+fn redis_rdb_version_for_values<'a>(
+    values: impl IntoIterator<Item = &'a RedisRdbSnapshotValue>,
+) -> u16 {
+    if values.into_iter().any(|value| {
+        matches!(
+            value,
+            RedisRdbSnapshotValue::Hash(hash) if !hash.field_expirations.is_empty()
+        )
+    }) {
+        12
+    } else {
+        11
+    }
+}
+
+fn redis_rdb_type_for_value(value: &RedisRdbSnapshotValue) -> u8 {
+    match value {
+        RedisRdbSnapshotValue::String(_) => REDIS_RDB_TYPE_STRING,
+        RedisRdbSnapshotValue::List(_) => REDIS_RDB_TYPE_LIST,
+        RedisRdbSnapshotValue::Hash(hash) if !hash.field_expirations.is_empty() => {
+            REDIS_RDB_TYPE_HASH_METADATA
+        }
+        RedisRdbSnapshotValue::Hash(_) => REDIS_RDB_TYPE_HASH,
+        RedisRdbSnapshotValue::Set(_) => REDIS_RDB_TYPE_SET,
+        RedisRdbSnapshotValue::Zset(_) => REDIS_RDB_TYPE_ZSET_2,
+        RedisRdbSnapshotValue::Stream(_) => REDIS_RDB_TYPE_STREAM_LISTPACKS_3,
+    }
+}
+
+fn append_redis_rdb_value_body(target: &mut Vec<u8>, value: &RedisRdbSnapshotValue) {
+    match value {
+        RedisRdbSnapshotValue::String(value) => {
+            append_redis_rdb_string(target, value.as_slice());
+        }
+        RedisRdbSnapshotValue::List(list) => {
+            append_redis_rdb_len(target, list.len() as u64);
+            for value in list {
+                append_redis_rdb_string(target, value.as_slice());
+            }
+        }
+        RedisRdbSnapshotValue::Hash(hash) => {
+            let min_expiration_unix_millis = hash
+                .field_expirations
+                .iter()
+                .map(|expiration| expiration.expiration_unix_millis)
+                .min();
+            let expiration_by_field = hash
+                .field_expirations
+                .iter()
+                .map(|expiration| {
+                    (
+                        expiration.field.as_slice(),
+                        expiration.expiration_unix_millis,
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            if let Some(min_expiration_unix_millis) = min_expiration_unix_millis {
+                target.extend_from_slice(&min_expiration_unix_millis.to_le_bytes());
+            }
+            append_redis_rdb_len(target, hash.fields.len() as u64);
+            for (field, value) in &hash.fields {
+                if let Some(expiration_unix_millis) = expiration_by_field.get(field.as_slice()) {
+                    append_redis_rdb_len(
+                        target,
+                        expiration_unix_millis
+                            .checked_sub(
+                                min_expiration_unix_millis.unwrap_or(*expiration_unix_millis),
+                            )
+                            .and_then(|delta| delta.checked_add(1))
+                            .unwrap_or(0),
+                    );
+                } else if min_expiration_unix_millis.is_some() {
+                    append_redis_rdb_len(target, 0);
+                }
+                append_redis_rdb_string(target, field.as_slice());
+                append_redis_rdb_string(target, value.as_slice());
+            }
+        }
+        RedisRdbSnapshotValue::Set(set) => {
+            append_redis_rdb_len(target, set.len() as u64);
+            for member in set {
+                append_redis_rdb_string(target, member.as_slice());
+            }
+        }
+        RedisRdbSnapshotValue::Zset(zset) => {
+            append_redis_rdb_len(target, zset.len() as u64);
+            for (member, score) in zset {
+                append_redis_rdb_string(target, member.as_slice());
+                append_redis_rdb_binary_double(target, *score);
+            }
+        }
+        RedisRdbSnapshotValue::Stream(stream) => {
+            append_redis_rdb_stream(target, stream);
+        }
+    }
+}
+
+fn append_redis_rdb_aux_field(target: &mut Vec<u8>, key: &[u8], value: &[u8]) {
+    target.push(REDIS_RDB_OPCODE_AUX);
+    append_redis_rdb_string(target, key);
+    append_redis_rdb_string(target, value);
+}
+
+fn append_redis_rdb_string(target: &mut Vec<u8>, bytes: &[u8]) {
+    append_redis_rdb_len(target, bytes.len() as u64);
+    target.extend_from_slice(bytes);
+}
+
+fn append_redis_rdb_binary_double(target: &mut Vec<u8>, value: f64) {
+    target.extend_from_slice(&value.to_le_bytes());
+}
+
+fn append_redis_rdb_len(target: &mut Vec<u8>, len: u64) {
+    if len <= 0x3f {
+        target.push(len as u8);
+        return;
+    }
+    if len <= 0x3fff {
+        target.push(0x40 | ((len >> 8) as u8 & 0x3f));
+        target.push((len & 0xff) as u8);
+        return;
+    }
+    if u32::try_from(len).is_ok() {
+        target.push(0x80);
+        target.extend_from_slice(&(len as u32).to_be_bytes());
+        return;
+    }
+    target.push(0x81);
+    target.extend_from_slice(&len.to_be_bytes());
+}
+
+fn stream_is_redis_rdb_exportable(stream: &StreamObject) -> bool {
+    if stream.idmp_duration_seconds != super::DEFAULT_STREAM_IDMP_DURATION_SECONDS
+        || stream.idmp_maxsize != super::DEFAULT_STREAM_IDMP_MAXSIZE
+        || !stream.idmp_producers.is_empty()
+        || stream.iids_added != 0
+        || stream.iids_duplicates != 0
+    {
+        return false;
+    }
+
+    for group_state in stream.groups.values() {
+        for (pending_id, pending_entry) in &group_state.pending {
+            let Some(consumer_state) = group_state.consumers.get(&pending_entry.consumer) else {
+                return false;
+            };
+            if !consumer_state.pending.contains(pending_id) {
+                return false;
+            }
+        }
+        for (consumer_name, consumer_state) in &group_state.consumers {
+            for pending_id in &consumer_state.pending {
+                let Some(pending_entry) = group_state.pending.get(pending_id) else {
+                    return false;
+                };
+                if pending_entry.consumer != *consumer_name {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
+fn append_redis_rdb_stream(target: &mut Vec<u8>, stream: &StreamObject) {
+    let ordered_entries = stream.entries.iter().collect::<Vec<_>>();
+    let chunk_lengths = redis_rdb_stream_chunk_lengths(stream);
+
+    append_redis_rdb_len(target, chunk_lengths.len() as u64);
+    let mut next_entry_index = 0usize;
+    for chunk_len in chunk_lengths {
+        let chunk_end = next_entry_index + chunk_len;
+        let node_entries = &ordered_entries[next_entry_index..chunk_end];
+        next_entry_index = chunk_end;
+
+        let master_id = *node_entries[0].0;
+        append_redis_rdb_string(target, &encode_redis_stream_raw_id(master_id));
+        append_redis_rdb_string(
+            target,
+            encode_redis_stream_listpack(node_entries).as_slice(),
+        );
+    }
+
+    append_redis_rdb_len(target, stream.entries.len() as u64);
+    append_redis_rdb_len(target, stream.last_generated_id.timestamp_millis());
+    append_redis_rdb_len(target, stream.last_generated_id.sequence());
+
+    let first_entry_id = stream
+        .entries
+        .keys()
+        .next()
+        .copied()
+        .unwrap_or(StreamId::zero());
+    append_redis_rdb_len(target, first_entry_id.timestamp_millis());
+    append_redis_rdb_len(target, first_entry_id.sequence());
+    append_redis_rdb_len(target, stream.max_deleted_entry_id.timestamp_millis());
+    append_redis_rdb_len(target, stream.max_deleted_entry_id.sequence());
+    append_redis_rdb_len(target, stream.entries_added);
+
+    append_redis_rdb_len(target, stream.groups.len() as u64);
+    for (group_name, group_state) in &stream.groups {
+        append_redis_rdb_string(target, group_name.as_slice());
+        append_redis_rdb_len(target, group_state.last_delivered_id.timestamp_millis());
+        append_redis_rdb_len(target, group_state.last_delivered_id.sequence());
+        append_redis_rdb_len(target, group_state.entries_read.unwrap_or(u64::MAX));
+
+        append_redis_rdb_len(target, group_state.pending.len() as u64);
+        for (pending_id, pending_entry) in &group_state.pending {
+            target.extend_from_slice(&encode_redis_stream_raw_id(*pending_id));
+            target.extend_from_slice(&pending_entry.last_delivery_time_millis.to_le_bytes());
+            append_redis_rdb_len(target, pending_entry.delivery_count);
+        }
+
+        append_redis_rdb_len(target, group_state.consumers.len() as u64);
+        for (consumer_name, consumer_state) in &group_state.consumers {
+            append_redis_rdb_string(target, consumer_name.as_slice());
+            target.extend_from_slice(&consumer_state.seen_time_millis.to_le_bytes());
+            let active_time_millis = consumer_state
+                .active_time_millis
+                .unwrap_or(consumer_state.seen_time_millis);
+            target.extend_from_slice(&active_time_millis.to_le_bytes());
+            append_redis_rdb_len(target, consumer_state.pending.len() as u64);
+            for pending_id in &consumer_state.pending {
+                target.extend_from_slice(&encode_redis_stream_raw_id(*pending_id));
+            }
+        }
+    }
+}
+
+fn redis_rdb_stream_chunk_lengths(stream: &StreamObject) -> Vec<usize> {
+    if stream.entries.is_empty() {
+        return Vec::new();
+    }
+
+    let node_total: usize = stream.node_sizes.iter().sum();
+    if node_total == stream.entries.len() && !stream.node_sizes.is_empty() {
+        return stream.node_sizes.iter().copied().collect();
+    }
+
+    vec![stream.entries.len()]
+}
+
+fn encode_redis_stream_raw_id(stream_id: StreamId) -> Vec<u8> {
+    let mut raw = Vec::with_capacity(16);
+    raw.extend_from_slice(&stream_id.timestamp_millis().to_be_bytes());
+    raw.extend_from_slice(&stream_id.sequence().to_be_bytes());
+    raw
+}
+
+fn encode_redis_stream_listpack(node_entries: &[(&StreamId, &Vec<(Vec<u8>, Vec<u8>)>)]) -> Vec<u8> {
+    let master_id = *node_entries[0].0;
+    let master_fields = node_entries[0]
+        .1
+        .iter()
+        .map(|(field, _)| field.clone())
+        .collect::<Vec<_>>();
+
+    let mut listpack_entries = Vec::new();
+    listpack_entries.push(node_entries.len().to_string().into_bytes());
+    listpack_entries.push(b"0".to_vec());
+    listpack_entries.push(master_fields.len().to_string().into_bytes());
+    for field in &master_fields {
+        listpack_entries.push(field.clone());
+    }
+    listpack_entries.push(b"0".to_vec());
+
+    for (entry_id, fields) in node_entries {
+        let same_fields = fields.len() == master_fields.len()
+            && fields
+                .iter()
+                .zip(&master_fields)
+                .all(|((field, _), master_field)| field == master_field);
+        let flags = if same_fields {
+            STREAM_ITEM_FLAG_SAMEFIELDS
+        } else {
+            0
+        };
+        listpack_entries.push(flags.to_string().into_bytes());
+        listpack_entries.push(
+            entry_id
+                .timestamp_millis()
+                .checked_sub(master_id.timestamp_millis())
+                .unwrap_or(0)
+                .to_string()
+                .into_bytes(),
+        );
+        listpack_entries.push(
+            entry_id
+                .sequence()
+                .checked_sub(master_id.sequence())
+                .unwrap_or(0)
+                .to_string()
+                .into_bytes(),
+        );
+        if !same_fields {
+            listpack_entries.push(fields.len().to_string().into_bytes());
+        }
+        for (field, value) in *fields {
+            if !same_fields {
+                listpack_entries.push(field.clone());
+            }
+            listpack_entries.push(value.clone());
+        }
+        let mut piece_count = fields.len() + 3;
+        if !same_fields {
+            piece_count += fields.len() + 1;
+        }
+        listpack_entries.push(piece_count.to_string().into_bytes());
+    }
+
+    encode_redis_listpack(&listpack_entries)
+}
+
+fn decode_full_redis_rdb_snapshot(encoded: &[u8]) -> Option<Vec<RedisRdbSnapshotEntry>> {
+    if encoded.len() < 17 || !encoded.starts_with(b"REDIS") {
+        return None;
+    }
+
+    let version_text = std::str::from_utf8(&encoded[5..9]).ok()?;
+    let version = version_text.parse::<u16>().ok()?;
+    if version > REDIS_DUMP_MAX_RDB_VERSION {
+        return None;
+    }
+
+    let payload_end = encoded.len().checked_sub(8)?;
+    let mut checksum_bytes = [0u8; 8];
+    checksum_bytes.copy_from_slice(&encoded[payload_end..]);
+    let expected_checksum = u64::from_le_bytes(checksum_bytes);
+    if expected_checksum != 0 {
+        let actual_checksum = redis_crc64(&encoded[..payload_end]);
+        if actual_checksum != expected_checksum {
+            return None;
+        }
+    }
+
+    let mut reader = RedisDumpReader::new(&encoded[9..payload_end]);
+    let mut current_db = DbName::db0();
+    let mut pending_expiration_unix_millis = None;
+    let mut entries = Vec::new();
+
+    while !reader.is_exhausted() {
+        let opcode = reader.read_u8()?;
+        match opcode {
+            REDIS_RDB_OPCODE_AUX => {
+                let _ = reader.read_string()?;
+                let _ = reader.read_string()?;
+            }
+            REDIS_RDB_OPCODE_RESIZEDB => {
+                let _ = reader.read_normal_len()?;
+                let _ = reader.read_normal_len()?;
+            }
+            REDIS_RDB_OPCODE_EXPIRETIME_MS => {
+                pending_expiration_unix_millis = Some(reader.read_millis()?);
+            }
+            REDIS_RDB_OPCODE_EXPIRETIME => {
+                let seconds = u64::from(reader.read_u32_le()?);
+                pending_expiration_unix_millis = Some(seconds.saturating_mul(1000));
+            }
+            REDIS_RDB_OPCODE_SELECTDB => {
+                let db_index = usize::try_from(reader.read_normal_len()?).ok()?;
+                current_db = DbName::new(db_index);
+                pending_expiration_unix_millis = None;
+            }
+            REDIS_RDB_OPCODE_EOF => {
+                if !reader.is_exhausted() {
+                    return None;
+                }
+                return Some(entries);
+            }
+            REDIS_RDB_TYPE_STRING => {
+                let key = reader.read_string()?;
+                let value = reader.read_string()?;
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::String(value),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_LIST => {
+                let key = reader.read_string()?;
+                let value_count = usize::try_from(reader.read_normal_len()?).ok()?;
+                let mut list = Vec::with_capacity(value_count);
+                for _ in 0..value_count {
+                    list.push(reader.read_string()?);
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::List(list),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_SET => {
+                let key = reader.read_string()?;
+                let member_count = usize::try_from(reader.read_normal_len()?).ok()?;
+                let mut set = BTreeSet::new();
+                for _ in 0..member_count {
+                    let member = reader.read_string()?;
+                    if !set.insert(member) {
+                        return None;
+                    }
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Set(set),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_SET_INTSET => {
+                let key = reader.read_string()?;
+                let encoded_intset = reader.read_string()?;
+                let set = decode_redis_intset_members(&encoded_intset)?;
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Set(set),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_SET_LISTPACK => {
+                let key = reader.read_string()?;
+                let encoded_listpack = reader.read_string()?;
+                let members = decode_redis_listpack_entries(&encoded_listpack)?;
+                if members.is_empty() {
+                    return None;
+                }
+                let mut set = BTreeSet::new();
+                for member in members {
+                    if !set.insert(member) {
+                        return None;
+                    }
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Set(set),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_ZSET | REDIS_RDB_TYPE_ZSET_2 => {
+                let key = reader.read_string()?;
+                let member_count = usize::try_from(reader.read_normal_len()?).ok()?;
+                let mut zset = BTreeMap::new();
+                for _ in 0..member_count {
+                    let member = reader.read_string()?;
+                    let score = if opcode == REDIS_RDB_TYPE_ZSET_2 {
+                        reader.read_binary_double()?
+                    } else {
+                        reader.read_double()?
+                    };
+                    if zset.insert(member, score).is_some() {
+                        return None;
+                    }
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Zset(zset),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_ZSET_LISTPACK => {
+                let key = reader.read_string()?;
+                let encoded_listpack = reader.read_string()?;
+                let pairs = decode_redis_listpack_entries(&encoded_listpack)?;
+                if pairs.is_empty() || pairs.len() % 2 != 0 {
+                    return None;
+                }
+                let mut zset = BTreeMap::new();
+                for pair in pairs.chunks_exact(2) {
+                    let score = parse_f64_ascii_allow_non_finite(pair[1].as_slice())?;
+                    if score.is_nan() {
+                        return None;
+                    }
+                    if zset.insert(pair[0].clone(), score).is_some() {
+                        return None;
+                    }
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Zset(zset),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_ZSET_ZIPLIST => {
+                let key = reader.read_string()?;
+                let encoded_ziplist = reader.read_string()?;
+                let pairs = decode_redis_ziplist_entries(&encoded_ziplist)?;
+                if pairs.is_empty() || pairs.len() % 2 != 0 {
+                    return None;
+                }
+                let mut zset = BTreeMap::new();
+                for pair in pairs.chunks_exact(2) {
+                    let score = parse_f64_ascii_allow_non_finite(pair[1].as_slice())?;
+                    if score.is_nan() {
+                        return None;
+                    }
+                    if zset.insert(pair[0].clone(), score).is_some() {
+                        return None;
+                    }
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Zset(zset),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_HASH => {
+                let key = reader.read_string()?;
+                let pair_count = usize::try_from(reader.read_normal_len()?).ok()?;
+                let mut hash = BTreeMap::new();
+                for _ in 0..pair_count {
+                    let field = reader.read_string()?;
+                    let value = reader.read_string()?;
+                    if hash.insert(field, value).is_some() {
+                        return None;
+                    }
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Hash(RedisRdbHashValue {
+                        fields: hash,
+                        field_expirations: Vec::new(),
+                    }),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_HASH_METADATA_PRE_GA | REDIS_RDB_TYPE_HASH_METADATA => {
+                let key = reader.read_string()?;
+                let hash = decode_redis_hash_with_field_expirations(&mut reader, opcode)?;
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Hash(hash),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_HASH_LISTPACK => {
+                let key = reader.read_string()?;
+                let encoded_listpack = reader.read_string()?;
+                let pairs = decode_redis_listpack_entries(&encoded_listpack)?;
+                if pairs.is_empty() || pairs.len() % 2 != 0 {
+                    return None;
+                }
+                let mut hash = BTreeMap::new();
+                for pair in pairs.chunks_exact(2) {
+                    if hash.insert(pair[0].clone(), pair[1].clone()).is_some() {
+                        return None;
+                    }
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Hash(RedisRdbHashValue {
+                        fields: hash,
+                        field_expirations: Vec::new(),
+                    }),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_HASH_LISTPACK_EX_PRE_GA | REDIS_RDB_TYPE_HASH_LISTPACK_EX => {
+                let key = reader.read_string()?;
+                let hash = decode_redis_hash_listpack_ex(&mut reader, opcode)?;
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Hash(hash),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_HASH_ZIPLIST => {
+                let key = reader.read_string()?;
+                let encoded_ziplist = reader.read_string()?;
+                let pairs = decode_redis_ziplist_entries(&encoded_ziplist)?;
+                if pairs.is_empty() || pairs.len() % 2 != 0 {
+                    return None;
+                }
+                let mut hash = BTreeMap::new();
+                for pair in pairs.chunks_exact(2) {
+                    if hash.insert(pair[0].clone(), pair[1].clone()).is_some() {
+                        return None;
+                    }
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Hash(RedisRdbHashValue {
+                        fields: hash,
+                        field_expirations: Vec::new(),
+                    }),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_LIST_ZIPLIST => {
+                let key = reader.read_string()?;
+                let encoded_ziplist = reader.read_string()?;
+                let list = decode_redis_ziplist_entries(&encoded_ziplist)?;
+                if list.is_empty() {
+                    return None;
+                }
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::List(list),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_LIST_QUICKLIST_2 => {
+                let key = reader.read_string()?;
+                let list = decode_redis_quicklist2_list(&mut reader)?;
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::List(list),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_LIST_QUICKLIST => {
+                let key = reader.read_string()?;
+                let list = decode_redis_quicklist_list(&mut reader)?;
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::List(list),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            REDIS_RDB_TYPE_STREAM_LISTPACKS
+            | REDIS_RDB_TYPE_STREAM_LISTPACKS_2
+            | REDIS_RDB_TYPE_STREAM_LISTPACKS_3 => {
+                let key = reader.read_string()?;
+                let mut stream = decode_redis_stream_dump_payload(&mut reader, opcode)?;
+                stream.ensure_node_sizes(100);
+                entries.push(RedisRdbSnapshotEntry {
+                    db: current_db,
+                    key,
+                    value: RedisRdbSnapshotValue::Stream(stream),
+                    expiration_unix_millis: pending_expiration_unix_millis.take(),
+                });
+            }
+            _ => return None,
+        }
+    }
+
+    None
+}
+
+fn decode_redis_intset_members(encoded: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
+    if encoded.len() < 8 {
+        return None;
+    }
+
+    let mut raw = [0u8; 4];
+    raw.copy_from_slice(encoded.get(0..4)?);
+    let entry_width = usize::try_from(u32::from_le_bytes(raw)).ok()?;
+    if !matches!(entry_width, 2 | 4 | 8) {
+        return None;
+    }
+
+    raw.copy_from_slice(encoded.get(4..8)?);
+    let entry_count = usize::try_from(u32::from_le_bytes(raw)).ok()?;
+    let payload_len = entry_width.checked_mul(entry_count)?;
+    if encoded.len() != 8usize.checked_add(payload_len)? {
+        return None;
+    }
+
+    let mut set = BTreeSet::new();
+    let mut previous = None;
+    let mut cursor = 8usize;
+    for _ in 0..entry_count {
+        let value = match entry_width {
+            2 => {
+                let mut raw = [0u8; 2];
+                raw.copy_from_slice(encoded.get(cursor..cursor + 2)?);
+                cursor += 2;
+                i64::from(i16::from_le_bytes(raw))
+            }
+            4 => {
+                let mut raw = [0u8; 4];
+                raw.copy_from_slice(encoded.get(cursor..cursor + 4)?);
+                cursor += 4;
+                i64::from(i32::from_le_bytes(raw))
+            }
+            8 => {
+                let mut raw = [0u8; 8];
+                raw.copy_from_slice(encoded.get(cursor..cursor + 8)?);
+                cursor += 8;
+                i64::from_le_bytes(raw)
+            }
+            _ => return None,
+        };
+        if previous.is_some_and(|prev| value <= prev) {
+            return None;
+        }
+        previous = Some(value);
+        if !set.insert(value.to_string().into_bytes()) {
+            return None;
+        }
+    }
+    Some(set)
+}
+
+fn decode_redis_quicklist2_list(reader: &mut RedisDumpReader<'_>) -> Option<Vec<Vec<u8>>> {
+    let node_count = usize::try_from(reader.read_normal_len()?).ok()?;
+    if node_count == 0 {
+        return None;
+    }
+
+    let mut list = Vec::new();
+    for _ in 0..node_count {
+        let container = reader.read_normal_len()?;
+        let payload = reader.read_string()?;
+        if payload.is_empty() {
+            return None;
+        }
+
+        match container {
+            REDIS_RDB_QUICKLIST_NODE_CONTAINER_PLAIN => {
+                list.push(payload);
+            }
+            REDIS_RDB_QUICKLIST_NODE_CONTAINER_PACKED => {
+                let node_entries = decode_redis_listpack_entries(&payload)?;
+                if node_entries.is_empty() {
+                    continue;
+                }
+                list.extend(node_entries);
+            }
+            _ => return None,
+        }
+    }
+
+    if list.is_empty() {
+        return None;
+    }
+    Some(list)
+}
+
+fn decode_redis_quicklist_list(reader: &mut RedisDumpReader<'_>) -> Option<Vec<Vec<u8>>> {
+    let node_count = usize::try_from(reader.read_normal_len()?).ok()?;
+    if node_count == 0 {
+        return None;
+    }
+
+    let mut list = Vec::new();
+    for _ in 0..node_count {
+        let encoded_ziplist = reader.read_string()?;
+        let node_entries = decode_redis_ziplist_entries(&encoded_ziplist)?;
+        if node_entries.is_empty() {
+            continue;
+        }
+        list.extend(node_entries);
+    }
+
+    if list.is_empty() {
+        return None;
+    }
+    Some(list)
+}
+
+fn decode_redis_hash_with_field_expirations(
+    reader: &mut RedisDumpReader<'_>,
+    rdb_type: u8,
+) -> Option<RedisRdbHashValue> {
+    let min_expiration_unix_millis = if rdb_type == REDIS_RDB_TYPE_HASH_METADATA {
+        Some(reader.read_millis()?)
+    } else {
+        None
+    };
+
+    let pair_count = usize::try_from(reader.read_normal_len()?).ok()?;
+    let mut fields = BTreeMap::new();
+    let mut field_expirations = Vec::new();
+    for _ in 0..pair_count {
+        let raw_ttl = reader.read_normal_len()?;
+        let expiration_unix_millis =
+            if let Some(min_expiration_unix_millis) = min_expiration_unix_millis {
+                if raw_ttl == 0 {
+                    None
+                } else {
+                    Some(
+                        min_expiration_unix_millis
+                            .checked_add(raw_ttl)?
+                            .checked_sub(1)?,
+                    )
+                }
+            } else if raw_ttl == 0 {
+                None
+            } else {
+                Some(raw_ttl)
+            };
+
+        let field = reader.read_string()?;
+        let value = reader.read_string()?;
+        if fields.insert(field.clone(), value).is_some() {
+            return None;
+        }
+        if let Some(expiration_unix_millis) = expiration_unix_millis {
+            field_expirations.push(RedisRdbHashFieldExpiration {
+                field,
+                expiration_unix_millis,
+            });
+        }
+    }
+
+    Some(RedisRdbHashValue {
+        fields,
+        field_expirations,
+    })
+}
+
+fn decode_redis_hash_listpack_ex(
+    reader: &mut RedisDumpReader<'_>,
+    rdb_type: u8,
+) -> Option<RedisRdbHashValue> {
+    if rdb_type == REDIS_RDB_TYPE_HASH_LISTPACK_EX {
+        let _min_expiration_unix_millis = reader.read_millis()?;
+    }
+
+    let encoded_listpack = reader.read_string()?;
+    let tuples = decode_redis_listpack_entries(&encoded_listpack)?;
+    if tuples.is_empty() || tuples.len() % 3 != 0 {
+        return None;
+    }
+
+    let mut fields = BTreeMap::new();
+    let mut field_expirations = Vec::new();
+    for tuple in tuples.chunks_exact(3) {
+        let expiration_unix_millis = parse_u64_ascii(tuple[2].as_slice())?;
+        if fields.insert(tuple[0].clone(), tuple[1].clone()).is_some() {
+            return None;
+        }
+        if expiration_unix_millis != 0 {
+            field_expirations.push(RedisRdbHashFieldExpiration {
+                field: tuple[0].clone(),
+                expiration_unix_millis,
+            });
+        }
+    }
+
+    Some(RedisRdbHashValue {
+        fields,
+        field_expirations,
+    })
 }
 
 impl<'a> RedisDumpReader<'a> {
@@ -6836,6 +9107,40 @@ impl<'a> RedisDumpReader<'a> {
         Some(u64::from_le_bytes(raw))
     }
 
+    fn read_binary_double(&mut self) -> Option<f64> {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(self.read_exact(8)?);
+        let value = f64::from_le_bytes(raw);
+        if value.is_nan() {
+            return None;
+        }
+        Some(value)
+    }
+
+    fn read_double(&mut self) -> Option<f64> {
+        let len = self.read_u8()?;
+        let value = match len {
+            255 => f64::NEG_INFINITY,
+            254 => f64::INFINITY,
+            253 => return None,
+            _ => {
+                let bytes = self.read_exact(usize::from(len))?;
+                let text = std::str::from_utf8(bytes).ok()?;
+                parse_f64_ascii_allow_non_finite(text.as_bytes())?
+            }
+        };
+        if value.is_nan() {
+            return None;
+        }
+        Some(value)
+    }
+
+    fn read_u32_le(&mut self) -> Option<u32> {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(self.read_exact(4)?);
+        Some(u32::from_le_bytes(raw))
+    }
+
     fn read_stream_id_raw(&mut self) -> Option<StreamId> {
         let raw = self.read_exact(16)?;
         decode_redis_stream_raw_id(raw)
@@ -6843,35 +9148,129 @@ impl<'a> RedisDumpReader<'a> {
 }
 
 fn decode_redis_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
-    let payload = verify_and_strip_redis_dump_footer(encoded)?;
-    let mut reader = RedisDumpReader::new(payload);
-    let rdb_type = reader.read_u8()?;
-    match rdb_type {
-        REDIS_RDB_TYPE_STRING => {
-            let value = reader.read_string()?;
-            if !reader.is_exhausted() {
-                return None;
-            }
-            Some(MigrationValue::String(value.into()))
-        }
-        REDIS_RDB_TYPE_STREAM_LISTPACKS
-        | REDIS_RDB_TYPE_STREAM_LISTPACKS_2
-        | REDIS_RDB_TYPE_STREAM_LISTPACKS_3 => {
-            let mut stream = decode_redis_stream_dump_payload(&mut reader, rdb_type)?;
-            stream.ensure_node_sizes(100);
-            if !reader.is_exhausted() {
-                return None;
-            }
+    let value = decode_redis_dump_blob_value(encoded)?;
+    match value {
+        RedisRdbSnapshotValue::String(raw) => Some(MigrationValue::String(raw.into())),
+        RedisRdbSnapshotValue::List(list) => Some(MigrationValue::Object {
+            object_type: LIST_OBJECT_TYPE_TAG,
+            payload: serialize_list_object_payload(&list),
+        }),
+        RedisRdbSnapshotValue::Hash(hash) if hash.field_expirations.is_empty() => {
             Some(MigrationValue::Object {
-                object_type: STREAM_OBJECT_TYPE_TAG,
-                payload: serialize_stream_object_payload(&stream),
+                object_type: HASH_OBJECT_TYPE_TAG,
+                payload: serialize_hash_object_payload(&hash.fields),
             })
         }
-        _ => None,
+        RedisRdbSnapshotValue::Set(set) => Some(MigrationValue::Object {
+            object_type: SET_OBJECT_TYPE_TAG,
+            payload: serialize_set_object_payload(&set),
+        }),
+        RedisRdbSnapshotValue::Zset(zset) => Some(MigrationValue::Object {
+            object_type: ZSET_OBJECT_TYPE_TAG,
+            payload: serialize_zset_object_payload(&zset),
+        }),
+        RedisRdbSnapshotValue::Stream(stream) => Some(MigrationValue::Object {
+            object_type: STREAM_OBJECT_TYPE_TAG,
+            payload: serialize_stream_object_payload(&stream),
+        }),
+        RedisRdbSnapshotValue::Hash(_) => None,
     }
 }
 
-fn verify_and_strip_redis_dump_footer(encoded: &[u8]) -> Option<&[u8]> {
+fn decode_redis_hash_dump_payload(
+    encoded: &[u8],
+) -> Option<(Vec<u8>, Vec<RedisRdbHashFieldExpiration>)> {
+    let (payload, _) = split_redis_dump_footer(encoded)?;
+    let mut reader = RedisDumpReader::new(payload);
+    let rdb_type = reader.read_u8()?;
+
+    let min_expiration_unix_millis = if rdb_type == REDIS_RDB_TYPE_HASH_METADATA {
+        Some(reader.read_millis()?)
+    } else if rdb_type == REDIS_RDB_TYPE_HASH {
+        None
+    } else {
+        return None;
+    };
+
+    let pair_count = usize::try_from(reader.read_normal_len()?).ok()?;
+    let mut entries = Vec::with_capacity(pair_count);
+    let mut field_expirations = Vec::new();
+    for _ in 0..pair_count {
+        let expiration_unix_millis =
+            if let Some(min_expiration_unix_millis) = min_expiration_unix_millis {
+                let raw_ttl = reader.read_normal_len()?;
+                if raw_ttl == 0 {
+                    None
+                } else {
+                    Some(
+                        min_expiration_unix_millis
+                            .checked_add(raw_ttl)?
+                            .checked_sub(1)?,
+                    )
+                }
+            } else {
+                None
+            };
+
+        let field = reader.read_string()?;
+        let value = reader.read_string()?;
+        if let Some(expiration_unix_millis) = expiration_unix_millis {
+            field_expirations.push(RedisRdbHashFieldExpiration {
+                field: field.clone(),
+                expiration_unix_millis,
+            });
+        }
+        entries.push((field, value));
+    }
+
+    if !reader.is_exhausted() {
+        return None;
+    }
+
+    Some((
+        serialize_hash_payload_entries_in_order(&entries),
+        field_expirations,
+    ))
+}
+
+fn serialize_hash_payload_entries_in_order(entries: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (field, value) in entries {
+        encoded.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(field);
+        encoded.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(value);
+    }
+    encoded
+}
+
+fn decode_redis_dump_blob_value(encoded: &[u8]) -> Option<RedisRdbSnapshotValue> {
+    let (payload, version) = split_redis_dump_footer(encoded)?;
+    let (rdb_type, object_payload) = payload.split_first()?;
+
+    let mut snapshot = Vec::new();
+    snapshot.extend_from_slice(format!("REDIS{version:04}").as_bytes());
+    snapshot.push(REDIS_RDB_OPCODE_SELECTDB);
+    append_redis_rdb_len(&mut snapshot, 0);
+    snapshot.push(REDIS_RDB_OPCODE_RESIZEDB);
+    append_redis_rdb_len(&mut snapshot, 1);
+    append_redis_rdb_len(&mut snapshot, 0);
+    snapshot.push(*rdb_type);
+    append_redis_rdb_string(&mut snapshot, b"");
+    snapshot.extend_from_slice(object_payload);
+    snapshot.push(REDIS_RDB_OPCODE_EOF);
+    let checksum = redis_crc64(&snapshot);
+    snapshot.extend_from_slice(&checksum.to_le_bytes());
+
+    let mut entries = decode_full_redis_rdb_snapshot(&snapshot)?;
+    if entries.len() != 1 || !entries[0].key.is_empty() {
+        return None;
+    }
+    Some(entries.pop()?.value)
+}
+
+fn split_redis_dump_footer(encoded: &[u8]) -> Option<(&[u8], u16)> {
     if encoded.len() < REDIS_DUMP_FOOTER_LEN {
         return None;
     }
@@ -6891,7 +9290,11 @@ fn verify_and_strip_redis_dump_footer(encoded: &[u8]) -> Option<&[u8]> {
         }
     }
 
-    Some(&encoded[..footer_start])
+    Some((&encoded[..footer_start], version))
+}
+
+fn verify_and_strip_redis_dump_footer(encoded: &[u8]) -> Option<&[u8]> {
+    split_redis_dump_footer(encoded).map(|(payload, _)| payload)
 }
 
 fn redis_crc64(payload: &[u8]) -> u64 {
@@ -6995,7 +9398,12 @@ fn decode_redis_stream_dump_payload(
         let group_name = reader.read_string()?;
         let last_delivered_id = StreamId::new(reader.read_normal_len()?, reader.read_normal_len()?);
         let entries_read = if rdb_type >= REDIS_RDB_TYPE_STREAM_LISTPACKS_2 {
-            Some(reader.read_normal_len()?.min(entries_added))
+            let raw_entries_read = reader.read_normal_len()?;
+            if raw_entries_read == u64::MAX {
+                None
+            } else {
+                Some(raw_entries_read.min(entries_added))
+            }
         } else {
             estimate_legacy_stream_entries_read(
                 &entries,
@@ -7212,8 +9620,168 @@ fn decode_redis_stream_listpack_entries(
     Some(())
 }
 
+fn decode_redis_ziplist_entries(ziplist: &[u8]) -> Option<Vec<Vec<u8>>> {
+    const REDIS_ZIPLIST_HEADER_LEN: usize = 10;
+    const REDIS_ZIPLIST_END: u8 = 0xff;
+    const REDIS_ZIPLIST_STRING_14BIT: u8 = 0x40;
+    const REDIS_ZIPLIST_STRING_32BIT: u8 = 0x80;
+    const REDIS_ZIPLIST_INT_16BIT: u8 = 0xc0;
+    const REDIS_ZIPLIST_INT_32BIT: u8 = 0xd0;
+    const REDIS_ZIPLIST_INT_64BIT: u8 = 0xe0;
+    const REDIS_ZIPLIST_INT_24BIT: u8 = 0xf0;
+    const REDIS_ZIPLIST_INT_8BIT: u8 = 0xfe;
+    const REDIS_ZIPLIST_INT_IMMEDIATE_MIN: u8 = 0xf1;
+    const REDIS_ZIPLIST_INT_IMMEDIATE_MAX: u8 = 0xfd;
+
+    if ziplist.len() < REDIS_ZIPLIST_HEADER_LEN + 1 {
+        return None;
+    }
+
+    let total_bytes = u32::from_le_bytes(ziplist.get(0..4)?.try_into().ok()?) as usize;
+    if total_bytes != ziplist.len() || *ziplist.last()? != REDIS_ZIPLIST_END {
+        return None;
+    }
+
+    let tail_offset = u32::from_le_bytes(ziplist.get(4..8)?.try_into().ok()?) as usize;
+    let declared_count = u16::from_le_bytes(ziplist.get(8..10)?.try_into().ok()?);
+
+    let mut offset = REDIS_ZIPLIST_HEADER_LEN;
+    let mut previous_entry_len = 0usize;
+    let mut last_entry_offset = None;
+    let mut entries = Vec::new();
+    while offset < ziplist.len() - 1 {
+        last_entry_offset = Some(offset);
+
+        let (stored_previous_entry_len, previous_len_size) =
+            redis_ziplist_parse_previous_entry_len(ziplist, offset)?;
+        if entries.is_empty() {
+            if stored_previous_entry_len != 0 {
+                return None;
+            }
+        } else if stored_previous_entry_len != previous_entry_len {
+            return None;
+        }
+        offset = offset.checked_add(previous_len_size)?;
+
+        let encoding = *ziplist.get(offset)?;
+        let (payload, payload_encoding_len) = if encoding & 0xc0 == 0 {
+            let len = usize::from(encoding & 0x3f);
+            let payload_start = offset.checked_add(1)?;
+            let payload_end = payload_start.checked_add(len)?;
+            (ziplist.get(payload_start..payload_end)?.to_vec(), 1 + len)
+        } else if encoding & 0xc0 == REDIS_ZIPLIST_STRING_14BIT {
+            let second = *ziplist.get(offset + 1)?;
+            let len = usize::from((u16::from(encoding & 0x3f) << 8) | u16::from(second));
+            let payload_start = offset.checked_add(2)?;
+            let payload_end = payload_start.checked_add(len)?;
+            (ziplist.get(payload_start..payload_end)?.to_vec(), 2 + len)
+        } else if encoding == REDIS_ZIPLIST_STRING_32BIT {
+            let mut raw = [0u8; 4];
+            raw.copy_from_slice(ziplist.get(offset + 1..offset + 5)?);
+            let len = u32::from_be_bytes(raw) as usize;
+            let payload_start = offset.checked_add(5)?;
+            let payload_end = payload_start.checked_add(len)?;
+            (ziplist.get(payload_start..payload_end)?.to_vec(), 5 + len)
+        } else {
+            match encoding {
+                REDIS_ZIPLIST_INT_16BIT => {
+                    let mut raw = [0u8; 2];
+                    raw.copy_from_slice(ziplist.get(offset + 1..offset + 3)?);
+                    (i16::from_le_bytes(raw).to_string().into_bytes(), 3)
+                }
+                REDIS_ZIPLIST_INT_32BIT => {
+                    let mut raw = [0u8; 4];
+                    raw.copy_from_slice(ziplist.get(offset + 1..offset + 5)?);
+                    (i32::from_le_bytes(raw).to_string().into_bytes(), 5)
+                }
+                REDIS_ZIPLIST_INT_64BIT => {
+                    let mut raw = [0u8; 8];
+                    raw.copy_from_slice(ziplist.get(offset + 1..offset + 9)?);
+                    (i64::from_le_bytes(raw).to_string().into_bytes(), 9)
+                }
+                REDIS_ZIPLIST_INT_24BIT => {
+                    let bytes = ziplist.get(offset + 1..offset + 4)?;
+                    let mut value = i64::from(bytes[0])
+                        | (i64::from(bytes[1]) << 8)
+                        | (i64::from(bytes[2]) << 16);
+                    if value >= (1 << 23) {
+                        value -= 1 << 24;
+                    }
+                    (value.to_string().into_bytes(), 4)
+                }
+                REDIS_ZIPLIST_INT_8BIT => {
+                    let value = *ziplist.get(offset + 1)? as i8;
+                    (value.to_string().into_bytes(), 2)
+                }
+                REDIS_ZIPLIST_INT_IMMEDIATE_MIN..=REDIS_ZIPLIST_INT_IMMEDIATE_MAX => {
+                    (i64::from((encoding & 0x0f) - 1).to_string().into_bytes(), 1)
+                }
+                _ => return None,
+            }
+        };
+
+        let entry_len = previous_len_size.checked_add(payload_encoding_len)?;
+        previous_entry_len = entry_len;
+        offset = offset.checked_add(payload_encoding_len)?;
+        entries.push(payload);
+    }
+
+    if offset != ziplist.len() - 1 {
+        return None;
+    }
+    if let Some(last_entry_offset) = last_entry_offset {
+        if tail_offset != last_entry_offset {
+            return None;
+        }
+    } else if tail_offset >= ziplist.len() {
+        return None;
+    }
+    if declared_count != u16::MAX && usize::from(declared_count) != entries.len() {
+        return None;
+    }
+
+    Some(entries)
+}
+
+fn redis_ziplist_parse_previous_entry_len(ziplist: &[u8], offset: usize) -> Option<(usize, usize)> {
+    const REDIS_ZIPLIST_BIG_PREVLEN: u8 = 0xfe;
+
+    let first = *ziplist.get(offset)?;
+    if first != REDIS_ZIPLIST_BIG_PREVLEN {
+        return Some((usize::from(first), 1));
+    }
+
+    let mut raw = [0u8; 4];
+    raw.copy_from_slice(ziplist.get(offset + 1..offset + 5)?);
+    Some((u32::from_le_bytes(raw) as usize, 5))
+}
+
 fn redis_listpack_parse_i64(listpack: &[u8], offset: &mut usize) -> Option<i64> {
     parse_i64_ascii(&redis_listpack_parse_bytes(listpack, offset)?)
+}
+
+fn decode_redis_listpack_entries(listpack: &[u8]) -> Option<Vec<Vec<u8>>> {
+    if listpack.len() < 7 {
+        return None;
+    }
+    let total_bytes = u32::from_le_bytes(listpack.get(0..4)?.try_into().ok()?) as usize;
+    if total_bytes != listpack.len() || *listpack.last()? != 0xff {
+        return None;
+    }
+
+    let declared_count = u16::from_le_bytes(listpack.get(4..6)?.try_into().ok()?);
+    let mut offset = 6usize;
+    let mut entries = Vec::new();
+    while offset < listpack.len() - 1 {
+        entries.push(redis_listpack_parse_bytes(listpack, &mut offset)?);
+    }
+    if offset != listpack.len() - 1 {
+        return None;
+    }
+    if declared_count != u16::MAX && usize::from(declared_count) != entries.len() {
+        return None;
+    }
+    Some(entries)
 }
 
 fn redis_listpack_parse_bytes(listpack: &[u8], offset: &mut usize) -> Option<Vec<u8>> {
@@ -7299,6 +9867,42 @@ fn redis_listpack_encode_backlen(entry_len: usize) -> Vec<u8> {
     }
     bytes.reverse();
     bytes
+}
+
+fn encode_redis_listpack(entries: &[Vec<u8>]) -> Vec<u8> {
+    const REDIS_LISTPACK_UNKNOWN_NUM_ELEMENTS: u16 = u16::MAX;
+
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&0u32.to_le_bytes());
+    let declared_count =
+        u16::try_from(entries.len()).unwrap_or(REDIS_LISTPACK_UNKNOWN_NUM_ELEMENTS);
+    encoded.extend_from_slice(&declared_count.to_le_bytes());
+    for entry in entries {
+        append_redis_listpack_entry(&mut encoded, entry.as_slice());
+    }
+    encoded.push(0xff);
+
+    let total_bytes = u32::try_from(encoded.len()).unwrap_or(u32::MAX);
+    encoded[..4].copy_from_slice(&total_bytes.to_le_bytes());
+    encoded
+}
+
+fn append_redis_listpack_entry(target: &mut Vec<u8>, payload: &[u8]) {
+    let entry_start = target.len();
+    if payload.len() <= 63 {
+        target.push(0x80 | payload.len() as u8);
+    } else if payload.len() <= 4095 {
+        target.push(0xe0 | ((payload.len() >> 8) as u8 & 0x0f));
+        target.push((payload.len() & 0xff) as u8);
+    } else {
+        let payload_len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+        target.push(0xf0);
+        target.extend_from_slice(&payload_len.to_le_bytes());
+    }
+    target.extend_from_slice(payload);
+
+    let encoded_entry_len = target.len() - entry_start;
+    target.extend_from_slice(redis_listpack_encode_backlen(encoded_entry_len).as_slice());
 }
 
 fn append_subscription_acks(

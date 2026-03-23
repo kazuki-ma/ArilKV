@@ -1,0 +1,1008 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 58  of event 'task-clock:ppp'
+# Event count (approx.): 585858580
+#
+# Overhead  Command    Shared Object      Symbol                                                                                                                                                                                                                                                                                           
+# ........  .........  .................  .................................................................................................................................................................................................................................................................................................
+#
+    22.41%  Proactor0  [kernel.kallsyms]  [k] __wake_up_sync_key
+            |
+            ---__wake_up_sync_key
+               |          
+               |--15.52%--tcp_data_ready
+               |          tcp_rcv_established
+               |          tcp_v4_do_rcv
+               |          tcp_v4_rcv
+               |          ip_protocol_deliver_rcu
+               |          ip_local_deliver_finish
+               |          ip_local_deliver
+               |          ip_rcv_finish
+               |          ip_rcv
+               |          __netif_receive_skb_one_core
+               |          __netif_receive_skb
+               |          process_backlog
+               |          __napi_poll
+               |          net_rx_action
+               |          handle_softirqs
+               |          __do_softirq
+               |          ____do_softirq
+               |          call_on_irq_stack
+               |          do_softirq_own_stack
+               |          do_softirq
+               |          __local_bh_enable_ip
+               |          __dev_queue_xmit
+               |          ip_finish_output2
+               |          __ip_finish_output
+               |          ip_finish_output
+               |          ip_output
+               |          __ip_queue_xmit
+               |          ip_queue_xmit
+               |          __tcp_transmit_skb
+               |          tcp_write_xmit
+               |          __tcp_push_pending_frames
+               |          tcp_push
+               |          tcp_sendmsg_locked
+               |          tcp_sendmsg
+               |          inet_sendmsg
+               |          |          
+               |          |--10.34%--__sock_sendmsg
+               |          |          ____sys_sendmsg
+               |          |          __sys_sendmsg_sock
+               |          |          io_sendmsg
+               |          |          io_issue_sqe
+               |          |          io_submit_sqes
+               |          |          __arm64_sys_io_uring_enter
+               |          |          invoke_syscall.constprop.0
+               |          |          do_el0_svc
+               |          |          el0_svc
+               |          |          el0t_64_sync_handler
+               |          |          el0t_64_sync
+               |          |          io_uring_submit_and_get_events
+               |          |          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               |          |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |          |          finish
+               |          |          
+               |           --5.17%--sock_sendmsg
+               |                     io_send
+               |                     io_issue_sqe
+               |                     io_submit_sqes
+               |                     __arm64_sys_io_uring_enter
+               |                     invoke_syscall.constprop.0
+               |                     do_el0_svc
+               |                     el0_svc
+               |                     el0t_64_sync_handler
+               |                     el0t_64_sync
+               |                     io_uring_submit_and_get_events
+               |                     util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               |                     void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |                     finish
+               |          
+                --6.90%--sock_def_readable
+                          tcp_data_ready
+                          tcp_rcv_established
+                          tcp_v4_do_rcv
+                          tcp_v4_rcv
+                          ip_protocol_deliver_rcu
+                          ip_local_deliver_finish
+                          ip_local_deliver
+                          ip_rcv_finish
+                          ip_rcv
+                          __netif_receive_skb_one_core
+                          __netif_receive_skb
+                          process_backlog
+                          __napi_poll
+                          net_rx_action
+                          handle_softirqs
+                          __do_softirq
+                          ____do_softirq
+                          call_on_irq_stack
+                          do_softirq_own_stack
+                          do_softirq
+                          __local_bh_enable_ip
+                          __dev_queue_xmit
+                          ip_finish_output2
+                          __ip_finish_output
+                          ip_finish_output
+                          ip_output
+                          __ip_queue_xmit
+                          ip_queue_xmit
+                          __tcp_transmit_skb
+                          tcp_write_xmit
+                          __tcp_push_pending_frames
+                          tcp_push
+                          tcp_sendmsg_locked
+                          tcp_sendmsg
+                          inet_sendmsg
+                          |          
+                          |--5.17%--__sock_sendmsg
+                          |          ____sys_sendmsg
+                          |          __sys_sendmsg_sock
+                          |          io_sendmsg
+                          |          io_issue_sqe
+                          |          io_submit_sqes
+                          |          __arm64_sys_io_uring_enter
+                          |          invoke_syscall.constprop.0
+                          |          do_el0_svc
+                          |          el0_svc
+                          |          el0t_64_sync_handler
+                          |          el0t_64_sync
+                          |          io_uring_submit_and_get_events
+                          |          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+                          |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+                          |          finish
+                          |          
+                           --1.72%--sock_sendmsg
+                                     io_send
+                                     io_issue_sqe
+                                     io_submit_sqes
+                                     __arm64_sys_io_uring_enter
+                                     invoke_syscall.constprop.0
+                                     do_el0_svc
+                                     el0_svc
+                                     el0t_64_sync_handler
+                                     el0t_64_sync
+                                     io_uring_submit_and_get_events
+                                     util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+                                     void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+                                     finish
+
+     5.17%  Proactor0  [kernel.kallsyms]  [k] el0_svc
+            |
+            ---el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     5.17%  Proactor0  [vdso]             [.] __kernel_clock_gettime
+            |
+            ---__kernel_clock_gettime
+               clock_gettime
+               absl::lts_20250512::GetCurrentTimeNanos()
+               |          
+               |--1.72%--util::fb2::detail::Scheduler::Run(util::fb2::FiberPriority)
+               |          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |          finish
+               |          
+               |--1.72%--util::fb2::ProactorBase::RunOnIdleTasks()
+               |          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |          finish
+               |          
+                --1.72%--dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+                          dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+                          void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+                          facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+                          facade::Connection::ParseRedis(unsigned int)
+                          facade::Connection::IoLoop()
+                          facade::Connection::ConnectionFlow()
+                          facade::Connection::HandleRequests()
+                          util::ListenerInterface::RunSingleConnection(util::Connection*)
+                          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+                          finish
+
+     5.17%  Proactor0  dragonfly-aarch64  [.] util::fb2::ProactorBase::Pause(unsigned int)
+            |
+            ---util::fb2::ProactorBase::Pause(unsigned int)
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     3.45%  Proactor0  [kernel.kallsyms]  [k] __arch_copy_to_user
+            |
+            ---__arch_copy_to_user
+               simple_copy_to_iter
+               __skb_datagram_iter
+               skb_copy_datagram_iter
+               tcp_recvmsg_locked
+               tcp_recvmsg
+               inet_recvmsg
+               sock_recvmsg
+               io_recv
+               io_issue_sqe
+               io_req_task_submit
+               io_poll_task_func
+               __io_run_local_work
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     3.45%  Proactor0  [kernel.kallsyms]  [k] __mod_timer
+            |
+            ---__mod_timer
+               mod_timer
+               sk_reset_timer
+               tcp_send_delayed_ack
+               __tcp_ack_snd_check
+               tcp_rcv_established
+               tcp_v4_do_rcv
+               tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               |          
+               |--1.72%--sock_sendmsg
+               |          io_send
+               |          io_issue_sqe
+               |          io_submit_sqes
+               |          __arm64_sys_io_uring_enter
+               |          invoke_syscall.constprop.0
+               |          do_el0_svc
+               |          el0_svc
+               |          el0t_64_sync_handler
+               |          el0t_64_sync
+               |          io_uring_submit_and_get_events
+               |          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |          finish
+               |          
+                --1.72%--__sock_sendmsg
+                          ____sys_sendmsg
+                          __sys_sendmsg_sock
+                          io_sendmsg
+                          io_issue_sqe
+                          io_submit_sqes
+                          __arm64_sys_io_uring_enter
+                          invoke_syscall.constprop.0
+                          do_el0_svc
+                          el0_svc
+                          el0t_64_sync_handler
+                          el0t_64_sync
+                          io_uring_submit_and_get_events
+                          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+                          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+                          finish
+
+     3.45%  Proactor0  [kernel.kallsyms]  [k] arch_counter_get_cntvct
+            |
+            ---arch_counter_get_cntvct
+               ktime_get
+               tcp_mstamp_refresh
+               tcp_rcv_established
+               tcp_v4_do_rcv
+               tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               ____sys_sendmsg
+               __sys_sendmsg_sock
+               io_sendmsg
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     3.45%  Proactor0  [kernel.kallsyms]  [k] tcp_sendmsg_locked
+            |
+            ---tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               ____sys_sendmsg
+               __sys_sendmsg_sock
+               io_sendmsg
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     3.45%  Proactor0  dragonfly-aarch64  [.] _mi_stat_increase
+            |
+            ---_mi_stat_increase
+               mi_new
+               operator new(unsigned long)
+               std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_mutate(unsigned long, unsigned long, char const*, unsigned long)
+               std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_replace_aux(unsigned long, unsigned long, unsigned long, char)
+               dfly::CompactObj::GetString(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >*) const
+               dfly::(anonymous namespace)::ReadString(unsigned short, std::basic_string_view<char, std::char_traits<char> >, dfly::CompactValue const&, dfly::EngineShard*)
+               dfly::Transaction::RunnableResult absl::lts_20250512::functional_internal::InvokeObject<dfly::Transaction::ScheduleSingleHopT<dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&>(dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}, dfly::Transaction::RunnableResult, dfly::Transaction*, dfly::EngineShard*>(absl::lts_20250512::functional_internal::VoidPtr, absl::lts_20250512::functional_internal::ForwardT<dfly::Transaction*>::type, absl::lts_20250512::functional_internal::ForwardT<dfly::EngineShard*>::type)
+               dfly::Transaction::RunCallback(dfly::EngineShard*)
+               dfly::Transaction::ScheduleInShard(dfly::EngineShard*, bool)
+               dfly::Transaction::ScheduleInternal()
+               dfly::Transaction::Execute(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>, bool)
+               dfly::Transaction::ScheduleSingleHop(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>)
+               dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] __arm64_sys_io_uring_enter
+            |
+            ---__arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] __local_bh_enable_ip
+            |
+            ---__local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               ____sys_sendmsg
+               __sys_sendmsg_sock
+               io_sendmsg
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] __nf_conntrack_find_get
+            |
+            ---__nf_conntrack_find_get
+               nf_conntrack_in
+               ipv4_conntrack_local
+               nf_hook_slow
+               __ip_local_out
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               ____sys_sendmsg
+               __sys_sendmsg_sock
+               io_sendmsg
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] __tcp_transmit_skb
+            |
+            ---__tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               sock_sendmsg
+               io_send
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] fget
+            |
+            ---fget
+               io_file_get_normal
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] finish_task_switch.isra.0
+            |
+            ---finish_task_switch.isra.0
+               __schedule
+               schedule
+               schedule_hrtimeout_range_clock
+               schedule_hrtimeout
+               io_cqring_wait
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               _io_uring_get_cqe
+               io_uring_wait_cqes
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] io_msg_alloc_async
+            |
+            ---io_msg_alloc_async
+               io_sendmsg_prep_setup
+               io_sendmsg_prep
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] io_sendmsg_prep_setup
+            |
+            ---io_sendmsg_prep_setup
+               io_sendmsg_prep
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] io_submit_sqes
+            |
+            ---io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] net_rx_action
+            |
+            ---net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               ____sys_sendmsg
+               __sys_sendmsg_sock
+               io_sendmsg
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] nf_confirm
+            |
+            ---nf_confirm
+               nf_hook_slow
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               ____sys_sendmsg
+               __sys_sendmsg_sock
+               io_sendmsg
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] security_sock_rcv_skb
+            |
+            ---security_sock_rcv_skb
+               tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               ____sys_sendmsg
+               __sys_sendmsg_sock
+               io_sendmsg
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] tcp_recvmsg
+            |
+            ---tcp_recvmsg
+               sock_recvmsg
+               io_recv
+               io_issue_sqe
+               io_req_task_submit
+               io_poll_task_func
+               __io_run_local_work
+               io_cqring_wait
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               _io_uring_get_cqe
+               io_uring_wait_cqes
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  [kernel.kallsyms]  [k] tcp_wfree
+            |
+            ---tcp_wfree
+               loopback_xmit
+               dev_hard_start_xmit
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               sock_sendmsg
+               io_send
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] absl::lts_20250512::numbers_internal::safe_strto64_base(std::basic_string_view<char, std::char_traits<char> >, long*, int)
+            |
+            ---absl::lts_20250512::numbers_internal::safe_strto64_base(std::basic_string_view<char, std::char_traits<char> >, long*, int)
+               facade::RedisParser::ParseLen(absl::lts_20250512::Span<unsigned char const>, long*)
+               facade::RedisParser::ConsumeArrayLen(absl::lts_20250512::Span<unsigned char const>)
+               facade::RedisParser::Parse(absl::lts_20250512::Span<unsigned char const>, unsigned int*, std::vector<facade::RespExpr, std::allocator<facade::RespExpr> >*)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] dfly::Namespace::GetDbSlice(unsigned short)
+            |
+            ---dfly::Namespace::GetDbSlice(unsigned short)
+               dfly::Transaction::RunCallback(dfly::EngineShard*)
+               dfly::Transaction::RunCallback(dfly::EngineShard*)
+               dfly::Transaction::ScheduleInShard(dfly::EngineShard*, bool)
+               dfly::Transaction::ScheduleInternal()
+               dfly::Transaction::Execute(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>, bool)
+               dfly::Transaction::ScheduleSingleHop(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>)
+               dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+            |
+            ---dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] dfly::Transaction::StoreKeysInArgs(dfly::KeyIndex const&)
+            |
+            ---dfly::Transaction::StoreKeysInArgs(dfly::KeyIndex const&)
+               dfly::Transaction::InitByKeys(dfly::KeyIndex const&)
+               dfly::Transaction::InitByArgs(dfly::Namespace*, unsigned short, absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] dfly::detail::ascii_unpack(unsigned char const*, unsigned long, char*)
+            |
+            ---dfly::detail::ascii_unpack(unsigned char const*, unsigned long, char*)
+               dfly::CompactObj::StrEncoding::Decode(std::basic_string_view<char, std::char_traits<char> >, char*) const
+               dfly::CompactObj::GetString(char*) const
+               dfly::(anonymous namespace)::ReadString(unsigned short, std::basic_string_view<char, std::char_traits<char> >, dfly::CompactValue const&, dfly::EngineShard*)
+               dfly::Transaction::RunnableResult absl::lts_20250512::functional_internal::InvokeObject<dfly::Transaction::ScheduleSingleHopT<dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&>(dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}, dfly::Transaction::RunnableResult, dfly::Transaction*, dfly::EngineShard*>(absl::lts_20250512::functional_internal::VoidPtr, absl::lts_20250512::functional_internal::ForwardT<dfly::Transaction*>::type, absl::lts_20250512::functional_internal::ForwardT<dfly::EngineShard*>::type)
+               dfly::Transaction::RunCallback(dfly::EngineShard*)
+               dfly::Transaction::ScheduleInShard(dfly::EngineShard*, bool)
+               dfly::Transaction::ScheduleInternal()
+               dfly::Transaction::Execute(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>, bool)
+               dfly::Transaction::ScheduleSingleHop(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>)
+               dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] io_uring_submit_and_get_events
+            |
+            ---io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] mi_new
+            |
+            ---mi_new
+               operator new(unsigned long)
+               std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_mutate(unsigned long, unsigned long, char const*, unsigned long)
+               std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_replace_aux(unsigned long, unsigned long, unsigned long, char)
+               dfly::CompactObj::GetString(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >*) const
+               dfly::(anonymous namespace)::ReadString(unsigned short, std::basic_string_view<char, std::char_traits<char> >, dfly::CompactValue const&, dfly::EngineShard*)
+               dfly::Transaction::RunnableResult absl::lts_20250512::functional_internal::InvokeObject<dfly::Transaction::ScheduleSingleHopT<dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&>(dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}, dfly::Transaction::RunnableResult, dfly::Transaction*, dfly::EngineShard*>(absl::lts_20250512::functional_internal::VoidPtr, absl::lts_20250512::functional_internal::ForwardT<dfly::Transaction*>::type, absl::lts_20250512::functional_internal::ForwardT<dfly::EngineShard*>::type)
+               dfly::Transaction::RunCallback(dfly::EngineShard*)
+               dfly::Transaction::ScheduleInShard(dfly::EngineShard*, bool)
+               dfly::Transaction::ScheduleInternal()
+               dfly::Transaction::Execute(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>, bool)
+               dfly::Transaction::ScheduleSingleHop(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>)
+               dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] operator delete(void*, unsigned long, std::align_val_t)
+            |
+            ---operator delete(void*, unsigned long, std::align_val_t)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_create(unsigned long&, unsigned long)
+            |
+            ---std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_create(unsigned long&, unsigned long)
+               std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_mutate(unsigned long, unsigned long, char const*, unsigned long)
+               std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_replace_aux(unsigned long, unsigned long, unsigned long, char)
+               dfly::CompactObj::GetString(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >*) const
+               dfly::(anonymous namespace)::ReadString(unsigned short, std::basic_string_view<char, std::char_traits<char> >, dfly::CompactValue const&, dfly::EngineShard*)
+               dfly::Transaction::RunnableResult absl::lts_20250512::functional_internal::InvokeObject<dfly::Transaction::ScheduleSingleHopT<dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&>(dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}, dfly::Transaction::RunnableResult, dfly::Transaction*, dfly::EngineShard*>(absl::lts_20250512::functional_internal::VoidPtr, absl::lts_20250512::functional_internal::ForwardT<dfly::Transaction*>::type, absl::lts_20250512::functional_internal::ForwardT<dfly::EngineShard*>::type)
+               dfly::Transaction::RunCallback(dfly::EngineShard*)
+               dfly::Transaction::ScheduleInShard(dfly::EngineShard*, bool)
+               dfly::Transaction::ScheduleInternal()
+               dfly::Transaction::Execute(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>, bool)
+               dfly::Transaction::ScheduleSingleHop(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>)
+               dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_replace_aux(unsigned long, unsigned long, unsigned long, char)
+            |
+            ---std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_replace_aux(unsigned long, unsigned long, unsigned long, char)
+               dfly::CompactObj::GetString(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >*) const
+               dfly::(anonymous namespace)::ReadString(unsigned short, std::basic_string_view<char, std::char_traits<char> >, dfly::CompactValue const&, dfly::EngineShard*)
+               dfly::Transaction::RunnableResult absl::lts_20250512::functional_internal::InvokeObject<dfly::Transaction::ScheduleSingleHopT<dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&>(dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}&)::{lambda(dfly::Transaction*, dfly::EngineShard*)#1}, dfly::Transaction::RunnableResult, dfly::Transaction*, dfly::EngineShard*>(absl::lts_20250512::functional_internal::VoidPtr, absl::lts_20250512::functional_internal::ForwardT<dfly::Transaction*>::type, absl::lts_20250512::functional_internal::ForwardT<dfly::EngineShard*>::type)
+               dfly::Transaction::RunCallback(dfly::EngineShard*)
+               dfly::Transaction::ScheduleInShard(dfly::EngineShard*, bool)
+               dfly::Transaction::ScheduleInternal()
+               dfly::Transaction::Execute(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>, bool)
+               dfly::Transaction::ScheduleSingleHop(absl::lts_20250512::FunctionRef<dfly::Transaction::RunnableResult (dfly::Transaction*, dfly::EngineShard*)>)
+               dfly::(anonymous namespace)::CmdGet(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+               dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+               void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+               facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+               facade::Connection::ParseRedis(unsigned int)
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] util::LinuxSocketBase::IsOpen() const
+            |
+            ---util::LinuxSocketBase::IsOpen() const
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     1.72%  Proactor0  dragonfly-aarch64  [.] util::fb2::UringProactor::GetSubmitEntry(fu2::abi_400::detail::function<fu2::abi_400::detail::config<true, false, fu2::capacity_fixed<16ul, 8ul> >, fu2::abi_400::detail::property<false, false, void (util::fb2::detail::FiberInterface*, int, unsigned int, unsigned int)> >, unsigned int)
+            |
+            ---util::fb2::UringProactor::GetSubmitEntry(fu2::abi_400::detail::function<fu2::abi_400::detail::config<true, false, fu2::capacity_fixed<16ul, 8ul> >, fu2::abi_400::detail::property<false, false, void (util::fb2::detail::FiberInterface*, int, unsigned int, unsigned int)> >, unsigned int)
+               util::fb2::UringProactor::GetSubmitEntry(fu2::abi_400::detail::function<fu2::abi_400::detail::config<true, false, fu2::capacity_fixed<16ul, 8ul> >, fu2::abi_400::detail::property<false, false, void (util::fb2::detail::FiberInterface*, int, unsigned int, unsigned int)> >, unsigned int)
+               util::fb2::FiberCall::FiberCall(util::fb2::UringProactor*, unsigned int)
+               util::fb2::UringSocket::Recv(absl::lts_20250512::Span<unsigned char> const&, int)
+               facade::Connection::HandleRecvSocket()
+               facade::Connection::IoLoop()
+               facade::Connection::ConnectionFlow()
+               facade::Connection::HandleRequests()
+               util::ListenerInterface::RunSingleConnection(util::Connection*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+
+
+#
+# (Tip: Customize output of perf script with: perf script -F event,ip,sym)
+#

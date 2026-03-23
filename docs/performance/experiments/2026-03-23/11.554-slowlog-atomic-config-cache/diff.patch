@@ -1,0 +1,204 @@
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+@@ -145,6 +145,8 @@
+ const DEFAULT_PROTO_MAX_BULK_LEN: usize = 512 * 1024 * 1024;
+ const DEFAULT_CONFIGURED_DATABASES: usize = 16;
+ const DEFAULT_STRING_STORE_SHARDS: usize = 2;
++const DEFAULT_SLOWLOG_THRESHOLD_MICROS: i64 = 10_000;
++const DEFAULT_SLOWLOG_MAX_LEN: usize = 128;
+ const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
+ const DEFAULT_OIDC_PRINCIPAL_CLAIM: &[u8] = b"sub";
+ const DEFAULT_OIDC_ALLOWED_ALGORITHMS: &[u8] = b"RS256";
+@@ -616,9 +618,16 @@
+     values.insert(b"loglevel".to_vec(), b"notice".to_vec());
+     values.insert(b"logfile".to_vec(), b"".to_vec());
+     values.insert(b"databases".to_vec(), b"16".to_vec());
+-    values.insert(b"lua-time-limit".to_vec(), b"5000".to_vec());    values.insert(b"slowlog-log-slower-than".to_vec(), b"10000".to_vec());
+-    values.insert(b"slowlog-max-len".to_vec(), b"128".to_vec());
++    values.insert(b"lua-time-limit".to_vec(), b"5000".to_vec());
+     values.insert(
++        b"slowlog-log-slower-than".to_vec(),
++        DEFAULT_SLOWLOG_THRESHOLD_MICROS.to_string().into_bytes(),
++    );
++    values.insert(
++        b"slowlog-max-len".to_vec(),
++        DEFAULT_SLOWLOG_MAX_LEN.to_string().into_bytes(),
++    );
++    values.insert(
+         b"acllog-max-len".to_vec(),
+         DEFAULT_ACL_LOG_MAX_LEN.to_string().into_bytes(),
+     );
+@@ -2473,6 +2482,8 @@
+     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
+     slowlog_entries: Mutex<VecDeque<SlowlogEntry>>,
+     slowlog_next_id: AtomicU64,
++    slowlog_threshold_micros: AtomicI64,
++    slowlog_max_len: AtomicUsize,
+     pubsub_state: Mutex<PubSubState>,
+     tracking_state: Mutex<TrackingState>,
+     tracking_table_max_keys: AtomicU64,
+@@ -2658,6 +2669,20 @@
+ const ACL_LOG_GROUPING_MAX_TIME_DELTA_MILLIS: u64 = 60_000;
+ const ACL_LOG_GROUPING_SCAN_LIMIT: usize = 10;
+ const DEFAULT_ACL_LOG_MAX_LEN: usize = 128;
++
++fn parse_slowlog_threshold_config_value(value: &[u8]) -> i64 {
++    std::str::from_utf8(value)
++        .ok()
++        .and_then(|value| value.parse::<i64>().ok())
++        .unwrap_or(DEFAULT_SLOWLOG_THRESHOLD_MICROS)
++}
++
++fn parse_slowlog_max_len_config_value(value: &[u8]) -> usize {
++    std::str::from_utf8(value)
++        .ok()
++        .and_then(|value| value.parse::<usize>().ok())
++        .unwrap_or(DEFAULT_SLOWLOG_MAX_LEN)
++}
+ 
+ fn acl_log_reason_matches(error: &AclAuthorizationError) -> AclLogReason {
+     match error {
+@@ -2989,6 +3014,8 @@
+             latency_events: Mutex::new(HashMap::new()),
+             slowlog_entries: Mutex::new(VecDeque::new()),
+             slowlog_next_id: AtomicU64::new(0),
++            slowlog_threshold_micros: AtomicI64::new(DEFAULT_SLOWLOG_THRESHOLD_MICROS),
++            slowlog_max_len: AtomicUsize::new(DEFAULT_SLOWLOG_MAX_LEN),
+             pubsub_state: Mutex::new(PubSubState::default()),
+             tracking_state: Mutex::new(TrackingState::default()),
+             tracking_table_max_keys: AtomicU64::new(1_000_000),
+@@ -4407,6 +4434,14 @@
+             .iter()
+             .map(|byte| byte.to_ascii_lowercase())
+             .collect::<Vec<u8>>();
++        if normalized.as_slice() == b"slowlog-log-slower-than" {
++            let parsed = parse_slowlog_threshold_config_value(&value);
++            self.slowlog_threshold_micros
++                .store(parsed, Ordering::Release);
++        } else if normalized.as_slice() == b"slowlog-max-len" {
++            let parsed = parse_slowlog_max_len_config_value(&value);
++            self.slowlog_max_len.store(parsed, Ordering::Release);
++        }
+         if let Ok(mut values) = self.config_overrides.lock() {
+             values.insert(normalized, value);
+         }
+@@ -5585,9 +5620,18 @@
+         command: CommandId,
+         duration: Duration,
+         client_id: Option<ClientId>,
+-    ) {        if should_skip_slowlog_for_command(command, args) {
++    ) {
++        let threshold_micros = self.slowlog_threshold_micros();
++        if threshold_micros < 0 {
++            return;
++        }
++        let max_len = self.slowlog_max_len();
++        if max_len == 0 {
+             return;
+         }
++        if should_skip_slowlog_for_command(command, args) {
++            return;
++        }
+         let duration_micros = duration.as_micros().min(i64::MAX as u128) as i64;
+         if duration_micros < threshold_micros {
+             return;
+@@ -5617,25 +5661,11 @@
+     }
+ 
+     fn slowlog_threshold_micros(&self) -> i64 {
+-        let Ok(values) = self.config_overrides.lock() else {
+-            return 10_000;
+-        };
+-        values
+-            .get(b"slowlog-log-slower-than".as_slice())
+-            .and_then(|value| std::str::from_utf8(value).ok())
+-            .and_then(|value| value.parse::<i64>().ok())
+-            .unwrap_or(10_000)
++        self.slowlog_threshold_micros.load(Ordering::Acquire)
+     }
+ 
+     fn slowlog_max_len(&self) -> usize {
+-        let Ok(values) = self.config_overrides.lock() else {
+-            return 128;
+-        };
+-        values
+-            .get(b"slowlog-max-len".as_slice())
+-            .and_then(|value| std::str::from_utf8(value).ok())
+-            .and_then(|value| value.parse::<usize>().ok())
+-            .unwrap_or(128)
++        self.slowlog_max_len.load(Ordering::Acquire)
+     }
+ 
+     fn live_aof_durability_config(&self) -> Option<LiveAofDurabilityConfig> {
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+@@ -14014,7 +14014,69 @@
+         &processor,
+         "SLOWLOG GET -222",
+         b"-ERR count should be greater than or equal to -1\r\n",
++    );
++}
++
++#[test]
++fn slowlog_runtime_config_cache_tracks_config_set_updates() {
++    let processor = RequestProcessor::new().unwrap();
++
++    assert_eq!(processor.slowlog_threshold_micros(), 10_000);
++    assert_eq!(processor.slowlog_max_len(), 128);
++
++    assert_command_response(
++        &processor,
++        "CONFIG SET slowlog-log-slower-than 0",
++        b"+OK\r\n",
++    );
++    assert_command_response(&processor, "CONFIG SET slowlog-max-len 4", b"+OK\r\n");
++    assert_eq!(processor.slowlog_threshold_micros(), 0);
++    assert_eq!(processor.slowlog_max_len(), 4);
++    processor.reset_slowlog();
++    processor.record_slowlog_command(
++        &[b"set", b"cache", b"warm"],
++        CommandId::Set,
++        Duration::from_micros(1),
++        None,
++    );
++    let entries = processor.slowlog_entries(None);
++    assert_eq!(entries.len(), 1);
++    assert_eq!(
++        entries[0].args,
++        vec![b"set".to_vec(), b"cache".to_vec(), b"warm".to_vec()]
++    );
++
++    assert_command_response(
++        &processor,
++        "CONFIG SET slowlog-log-slower-than -1",
++        b"+OK\r\n",
++    );
++    assert_eq!(processor.slowlog_threshold_micros(), -1);
++    processor.reset_slowlog();
++    processor.record_slowlog_command(
++        &[b"set", b"cache", b"disabled-by-threshold"],
++        CommandId::Set,
++        Duration::from_secs(1),
++        None,
++    );
++    assert_eq!(processor.slowlog_len(), 0);
++
++    assert_command_response(
++        &processor,
++        "CONFIG SET slowlog-log-slower-than 0",
++        b"+OK\r\n",
++    );
++    assert_command_response(&processor, "CONFIG SET slowlog-max-len 0", b"+OK\r\n");
++    assert_eq!(processor.slowlog_threshold_micros(), 0);
++    assert_eq!(processor.slowlog_max_len(), 0);
++    processor.reset_slowlog();
++    processor.record_slowlog_command(
++        &[b"set", b"cache", b"disabled-by-len"],
++        CommandId::Set,
++        Duration::from_secs(1),
++        None,
+     );
++    assert_eq!(processor.slowlog_len(), 0);
+ }
+ 
+ #[test]

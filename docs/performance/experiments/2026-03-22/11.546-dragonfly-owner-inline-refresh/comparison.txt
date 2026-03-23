@@ -1,0 +1,25 @@
+Owner-inline single-thread Docker/Linux comparison
+
+Garnet SET:
+- ops/sec: 118509.27
+- p99 ms: 0.103
+
+Dragonfly SET:
+- ops/sec: 79285.22
+- p99 ms: 0.135
+
+SET delta:
+- ops/sec: +49.47% in favor of Garnet
+- p99: -23.70% in favor of Garnet
+
+Garnet GET:
+- ops/sec: 127112.99
+- p99 ms: 0.103
+
+Dragonfly GET:
+- ops/sec: 89565.74
+- p99 ms: 0.119
+
+GET delta:
+- ops/sec: +41.92% in favor of Garnet
+- p99: -13.45% in favor of Garnet

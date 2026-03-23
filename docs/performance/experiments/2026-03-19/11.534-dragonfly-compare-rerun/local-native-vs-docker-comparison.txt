@@ -1,0 +1,13 @@
+comparison
+garnet.median_set_ops=65823.000
+garnet.median_get_ops=70339.000
+garnet.median_set_p99_ms=0.25500
+garnet.median_get_p99_ms=0.23100
+dragonfly.median_set_ops=13454.43
+dragonfly.median_get_ops=13960.54
+dragonfly.median_set_p99_ms=3.96700
+dragonfly.median_get_p99_ms=3.26300
+garnet_vs_dragonfly.set_ops_pct=389.23
+garnet_vs_dragonfly.get_ops_pct=403.84
+garnet_vs_dragonfly.set_p99_ms_pct=-93.57
+garnet_vs_dragonfly.get_p99_ms_pct=-92.92

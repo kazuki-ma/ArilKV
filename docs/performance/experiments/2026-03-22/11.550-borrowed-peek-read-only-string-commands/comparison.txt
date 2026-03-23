@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=borrowed_peek_read_baseline
+new_label=borrowed_peek_read_path
+borrowed_peek_read_baseline.median_set_ops=97469.000
+borrowed_peek_read_baseline.median_get_ops=104751.000
+borrowed_peek_read_baseline.median_set_p99_ms=0.11900
+borrowed_peek_read_baseline.median_get_p99_ms=0.11100
+borrowed_peek_read_path.median_set_ops=107032.000
+borrowed_peek_read_path.median_get_ops=111228.000
+borrowed_peek_read_path.median_set_p99_ms=0.10300
+borrowed_peek_read_path.median_get_p99_ms=0.09500
+delta.set_ops_pct=9.81
+delta.get_ops_pct=6.18
+delta.set_p99_ms_pct=-13.45
+delta.get_p99_ms_pct=-14.41

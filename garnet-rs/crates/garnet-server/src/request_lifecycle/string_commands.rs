@@ -1,6 +1,7 @@
 // TLA+ model linkage:
 // - formal/tla/specs/PipelineStresserTimeout.tla
 use super::*;
+use tsavorite::PeekOperationStatus;
 use tsavorite::RmwInfo;
 use tsavorite::RmwOperationError;
 use tsavorite::UpsertOperationError;
@@ -190,19 +191,20 @@ impl RequestProcessor {
         let mut store = self.lock_string_store_for_shard(shard_index);
         crate::debug_sync_point!("request_processor.handle_get.after_store_lock");
         let mut session = store.session(&self.functions);
-        let mut output = Vec::new();
-        let status = session
-            .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
-            .map_err(map_read_error)?;
+        let status = with_visible_main_runtime_string(&mut session, &key, |value| {
+            append_bulk_string(response_out, value);
+        })?;
 
         match status {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+            PeekOperationStatus::FoundInMemory(Some(()))
+            | PeekOperationStatus::FoundOnDisk(Some(())) => {
                 self.track_read_key_for_current_client(&key);
                 self.record_key_access(db_key, false);
-                append_bulk_string(response_out, &output);
                 Ok(())
             }
-            ReadOperationStatus::NotFound => {
+            PeekOperationStatus::FoundInMemory(None)
+            | PeekOperationStatus::FoundOnDisk(None)
+            | PeekOperationStatus::NotFound => {
                 self.track_read_key_for_current_client(&key);
                 if self.object_key_exists(db_key)? {
                     return Err(RequestExecutionError::WrongType);
@@ -216,7 +218,7 @@ impl RequestProcessor {
                 }
                 Ok(())
             }
-            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+            PeekOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
@@ -250,27 +252,26 @@ impl RequestProcessor {
 
         let mut store = self.lock_string_store_for_shard(shard_index);
         let mut session = store.session(&self.functions);
-        let mut output = Vec::new();
-        let status = session
-            .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
-            .map_err(map_read_error)?;
+        let status = with_visible_main_runtime_string(&mut session, &key, |value| {
+            string_value_len_for_keysizes(self, value)
+        })?;
 
         match status {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                append_integer(
-                    response_out,
-                    string_value_len_for_keysizes(self, &output) as i64,
-                );
+            PeekOperationStatus::FoundInMemory(Some(length))
+            | PeekOperationStatus::FoundOnDisk(Some(length)) => {
+                append_integer(response_out, length as i64);
                 Ok(())
             }
-            ReadOperationStatus::NotFound => {
+            PeekOperationStatus::FoundInMemory(None)
+            | PeekOperationStatus::FoundOnDisk(None)
+            | PeekOperationStatus::NotFound => {
                 if self.object_key_exists(db_key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 append_integer(response_out, 0);
                 Ok(())
             }
-            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+            PeekOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
@@ -331,28 +332,27 @@ impl RequestProcessor {
 
         let mut store = self.lock_string_store_for_shard(shard_index);
         let mut session = store.session(&self.functions);
-        let mut output = Vec::new();
-        let status = session
-            .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
-            .map_err(map_read_error)?;
+        let status = with_visible_main_runtime_string(&mut session, &key, |value| {
+            if let Some(range) = normalize_string_range(value.len(), start, end) {
+                append_bulk_string(response_out, &value[range.start..=range.end_inclusive]);
+            } else {
+                append_bulk_string(response_out, b"");
+            }
+        })?;
 
         match status {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                if let Some(range) = normalize_string_range(output.len(), start, end) {
-                    append_bulk_string(response_out, &output[range.start..=range.end_inclusive]);
-                } else {
-                    append_bulk_string(response_out, b"");
-                }
-                Ok(())
-            }
-            ReadOperationStatus::NotFound => {
+            PeekOperationStatus::FoundInMemory(Some(()))
+            | PeekOperationStatus::FoundOnDisk(Some(())) => Ok(()),
+            PeekOperationStatus::FoundInMemory(None)
+            | PeekOperationStatus::FoundOnDisk(None)
+            | PeekOperationStatus::NotFound => {
                 if self.object_key_exists(db_key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 append_bulk_string(response_out, b"");
                 Ok(())
             }
-            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+            PeekOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
@@ -1153,6 +1153,31 @@ impl RequestProcessor {
         )?;
 
         let options = parse_sort_options(args, read_only)?;
+        let requires_unrestricted_lookup_access = options
+            .by_pattern
+            .as_deref()
+            .is_some_and(|pattern| pattern.contains(&b'*'))
+            || !options.get_patterns.is_empty();
+        if requires_unrestricted_lookup_access
+            && !self.acl_current_user_has_sort_pattern_lookup_access(
+                selected_db,
+                if read_only {
+                    CommandId::SortRo
+                } else {
+                    CommandId::Sort
+                },
+                args,
+            )
+        {
+            if options
+                .by_pattern
+                .as_deref()
+                .is_some_and(|pattern| pattern.contains(&b'*'))
+            {
+                return Err(RequestExecutionError::SortByDeniedByAcl);
+            }
+            return Err(RequestExecutionError::SortGetDeniedByAcl);
+        }
         let source_key = RedisKey::from(args[1]);
         let mut elements = load_sort_elements(self, DbKeyRef::new(selected_db, &source_key))?;
 
@@ -1516,6 +1541,7 @@ impl RequestProcessor {
         let options = parse_set_options(args)?;
         self.expire_key_if_needed_in_shard(selected_db, &key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
+        let requires_old_string_value = options.return_old_value;
 
         if !self.logical_db_uses_main_runtime(selected_db)? {
             let old_string_value = self.read_string_value(db_key)?.unwrap_or_default();
@@ -1621,23 +1647,26 @@ impl RequestProcessor {
         let mut store = self.lock_string_store_for_shard(shard_index);
         crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
         let mut session = store.session(&self.functions);
+        let object_exists = self.tracked_object_key_exists_in_shard(&key, shard_index);
 
         let mut old_string_value = Vec::new();
-        let string_exists = match session
-            .read(
-                &key,
-                &Vec::new(),
-                &mut old_string_value,
-                &ReadInfo::default(),
-            )
-            .map_err(map_read_error)?
-        {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
-            ReadOperationStatus::NotFound => false,
-            ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
+        let string_exists = if requires_old_string_value {
+            match session
+                .read(
+                    &key,
+                    &Vec::new(),
+                    &mut old_string_value,
+                    &ReadInfo::default(),
+                )
+                .map_err(map_read_error)?
+            {
+                ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
+                ReadOperationStatus::NotFound => false,
+                ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
+            }
+        } else {
+            self.tracked_string_key_exists_in_shard(&key, shard_index)
         };
-
-        let object_exists = self.object_read(db_key)?.is_some();
 
         // SET GET on a non-string key returns WRONGTYPE and aborts.
         if options.return_old_value && object_exists {
@@ -1655,10 +1684,14 @@ impl RequestProcessor {
                     if object_exists {
                         return Err(RequestExecutionError::WrongType);
                     }
-                    string_write_condition_matches(
-                        string_exists.then_some(old_string_value.as_slice()),
-                        condition,
-                    )?
+                    if requires_old_string_value {
+                        string_write_condition_matches(
+                            string_exists.then_some(old_string_value.as_slice()),
+                            condition,
+                        )?
+                    } else {
+                        string_write_condition_matches_with_peek(&mut session, &key, condition)?
+                    }
                 }
             };
             if !write_allowed {
@@ -1686,7 +1719,10 @@ impl RequestProcessor {
         };
         let effective_expiration = options.expiration.or(preserved_expiration);
 
-        let mut output = Vec::new();
+        drop(session);
+
+        let mut session = store.session(&self.write_only_functions);
+        let mut output = ();
         let mut info = UpsertInfo::default();
         let normalized_value = canonicalize_oversized_hyll_value(value);
         self.ensure_string_length_within_limit(
@@ -1704,7 +1740,6 @@ impl RequestProcessor {
             if let Some(fallback_user_value) =
                 hll_record_too_large_fallback_value(normalized_value, &error)
             {
-                output.clear();
                 let fallback_stored_value = encode_stored_value(
                     fallback_user_value,
                     effective_expiration.map(|expiration| expiration.unix_millis.as_u64()),
@@ -1732,7 +1767,9 @@ impl RequestProcessor {
         }
         self.clear_forced_raw_string_encoding(db_key);
         self.set_string_expiration_metadata_in_shard(db_key, shard_index, effective_expiration);
-        self.track_string_key_in_shard(&key, shard_index);
+        if !string_exists {
+            self.track_string_key_in_shard(&key, shard_index);
+        }
         self.bump_watch_version(db_key);
         self.record_key_access(db_key, true);
 
@@ -4421,6 +4458,70 @@ fn string_write_condition_matches(
                 Ok(!digest_matches)
             }
         }
+    }
+}
+
+fn visible_string_user_value(stored_value: &[u8]) -> Option<&[u8]> {
+    let decoded = decode_stored_value(stored_value);
+    if !allow_expired_data_access()
+        && let Some(expiration) = decoded.expiration_unix_millis
+        && let Some(now) = current_unix_time_millis()
+        && now > expiration
+    {
+        return None;
+    }
+    Some(decoded.user_value)
+}
+
+fn with_visible_main_runtime_string<D: tsavorite::PageDevice, T>(
+    session: &mut tsavorite::TsavoriteSession<'_, Vec<u8>, Vec<u8>, D, KvSessionFunctions>,
+    key: &RedisKey,
+    on_visible: impl FnOnce(&[u8]) -> T,
+) -> Result<PeekOperationStatus<Option<T>>, RequestExecutionError> {
+    session
+        .peek(
+            key,
+            &ReadInfo::default(),
+            |stored_value, _record_info, _read_info| {
+                visible_string_user_value(stored_value).map(on_visible)
+            },
+        )
+        .map_err(map_read_error)
+}
+
+fn string_write_condition_matches_visible_stored_value(
+    stored_value: &[u8],
+    condition: &StringWriteCondition,
+) -> Result<Option<bool>, RequestExecutionError> {
+    let Some(current_value) = visible_string_user_value(stored_value) else {
+        return Ok(None);
+    };
+    string_write_condition_matches(Some(current_value), condition).map(Some)
+}
+
+#[cold]
+#[inline(never)]
+fn string_write_condition_matches_with_peek<D: tsavorite::PageDevice>(
+    session: &mut tsavorite::TsavoriteSession<'_, Vec<u8>, Vec<u8>, D, KvSessionFunctions>,
+    key: &RedisKey,
+    condition: &StringWriteCondition,
+) -> Result<bool, RequestExecutionError> {
+    let absent_condition_match = string_write_condition_matches(None, condition)?;
+    match session
+        .peek(
+            key,
+            &ReadInfo::default(),
+            |stored_value, _record_info, _read_info| {
+                string_write_condition_matches_visible_stored_value(stored_value, condition)
+            },
+        )
+        .map_err(map_read_error)?
+    {
+        PeekOperationStatus::FoundInMemory(result) | PeekOperationStatus::FoundOnDisk(result) => {
+            Ok(result?.unwrap_or(absent_condition_match))
+        }
+        PeekOperationStatus::NotFound => Ok(absent_condition_match),
+        PeekOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
     }
 }
 

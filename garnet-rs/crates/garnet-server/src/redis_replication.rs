@@ -12,9 +12,9 @@ use crate::command_spec::command_is_effectively_mutating;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
 use crate::connection_owner_routing::execute_frame_on_owner_thread;
 use crate::dispatch_from_arg_slices;
-use crate::redis_replication::protocol::discard_bulk_payload;
 use crate::redis_replication::protocol::generate_repl_id;
 use crate::redis_replication::protocol::parse_bulk_length;
+use crate::redis_replication::protocol::read_bulk_payload;
 use crate::redis_replication::protocol::read_line;
 use crate::redis_replication::protocol::starts_with_ascii_no_case;
 use crate::redis_replication::protocol::write_resp_command;
@@ -52,6 +52,8 @@ const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const REPLCONF_GETACK_FRAME: &[u8] = b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
+const REDIS_EMPTY_RDB_V11_PAYLOAD: &[u8] =
+    b"REDIS0011\xfa\tredis-ver\x067.2.13\xfa\nredis-bits\xc0@\xfa\x05ctime\xc2\xed\xf3\xb6i\xfa\x08used-mem\xc2\xe8L\x0e\x00\xfa\x08aof-base\xc0\x00\xff\x07y\xc1\xde\x0b`d:";
 
 #[inline]
 fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
@@ -103,7 +105,8 @@ impl Default for ManualFailoverState {
 struct ReplicationInner {
     processor: Arc<RequestProcessor>,
     owner_thread_pool: Arc<ShardOwnerThreadPool>,
-    downstream_tx: broadcast::Sender<Arc<[u8]>>,
+    downstream_tx: broadcast::Sender<Arc<ReplicatedWriteFrame>>,
+    downstream_backlog: std::sync::Mutex<VecDeque<Arc<ReplicatedWriteFrame>>>,
     upstream_task: Mutex<Option<JoinHandle<()>>>,
     upstream_endpoint: RwLock<Option<MasterEndpoint>>,
     is_replica_mode: AtomicBool,
@@ -174,6 +177,79 @@ pub(crate) struct PublishedWriteFrontiers {
     pub(crate) local_aof_append_offset: Option<AofOffset>,
 }
 
+#[derive(Debug)]
+struct ReplicatedWriteFrame {
+    start_offset: Option<u64>,
+    end_offset: Option<u64>,
+    bytes: Arc<[u8]>,
+}
+
+impl ReplicatedWriteFrame {
+    fn replicated(start_offset: u64, end_offset: u64, bytes: Arc<[u8]>) -> Self {
+        Self {
+            start_offset: Some(start_offset),
+            end_offset: Some(end_offset),
+            bytes,
+        }
+    }
+
+    fn control(bytes: Arc<[u8]>) -> Self {
+        Self {
+            start_offset: None,
+            end_offset: None,
+            bytes,
+        }
+    }
+}
+
+pub(crate) struct DownstreamFullSyncSession {
+    #[cfg_attr(not(test), allow(dead_code))]
+    cutover_offset: u64,
+    replayed_offset: u64,
+    subscriber: broadcast::Receiver<Arc<ReplicatedWriteFrame>>,
+}
+
+impl DownstreamFullSyncSession {
+    fn new(
+        cutover_offset: u64,
+        subscriber: broadcast::Receiver<Arc<ReplicatedWriteFrame>>,
+    ) -> Self {
+        Self {
+            cutover_offset,
+            replayed_offset: cutover_offset,
+            subscriber,
+        }
+    }
+
+    fn note_replayed_frame(&mut self, frame: &ReplicatedWriteFrame) {
+        if let Some(end_offset) = frame.end_offset {
+            self.replayed_offset = self.replayed_offset.max(end_offset);
+        }
+    }
+
+    fn should_forward_live_frame(&mut self, frame: &ReplicatedWriteFrame) -> bool {
+        let Some(end_offset) = frame.end_offset else {
+            return true;
+        };
+        if end_offset <= self.replayed_offset {
+            return false;
+        }
+        self.replayed_offset = end_offset;
+        true
+    }
+}
+
+pub(crate) struct PreparedDownstreamFullSync {
+    pub(crate) response: Vec<u8>,
+    pub(crate) session: DownstreamFullSyncSession,
+}
+
+#[derive(Debug)]
+struct DownstreamBacklogReplayError {
+    requested_offset: u64,
+    current_offset: u64,
+}
+
 impl RedisReplicationCoordinator {
     pub(crate) fn new(
         processor: Arc<RequestProcessor>,
@@ -184,6 +260,7 @@ impl RedisReplicationCoordinator {
             processor,
             owner_thread_pool,
             downstream_tx,
+            downstream_backlog: std::sync::Mutex::new(VecDeque::new()),
             upstream_task: Mutex::new(None),
             upstream_endpoint: RwLock::new(None),
             is_replica_mode: AtomicBool::new(false),
@@ -291,13 +368,25 @@ impl RedisReplicationCoordinator {
     }
 
     pub(crate) fn publish_write_frame(&self, frame: &[u8]) -> PublishedWriteFrontiers {
-        let replication_offset = self
+        let previous_offset = self
             .inner
             .master_repl_offset
-            .fetch_add(frame.len() as u64, Ordering::Relaxed)
-            .saturating_add(frame.len() as u64);
+            .fetch_add(frame.len() as u64, Ordering::Relaxed);
+        let replication_offset = previous_offset.saturating_add(frame.len() as u64);
+        let published_frame = Arc::new(ReplicatedWriteFrame::replicated(
+            previous_offset.saturating_add(1),
+            replication_offset,
+            Arc::from(frame.to_vec()),
+        ));
+        {
+            let mut backlog = self.inner.downstream_backlog.lock().unwrap();
+            backlog.push_back(Arc::clone(&published_frame));
+            while backlog.len() > DOWNSTREAM_BROADCAST_CAPACITY {
+                backlog.pop_front();
+            }
+        }
         let local_aof_append_offset = self.inner.processor.publish_local_aof_frame(frame);
-        let _ = self.inner.downstream_tx.send(Arc::from(frame.to_vec()));
+        let _ = self.inner.downstream_tx.send(published_frame);
         PublishedWriteFrontiers {
             replication_offset,
             local_aof_append_offset,
@@ -526,7 +615,9 @@ impl RedisReplicationCoordinator {
         let _ = self
             .inner
             .downstream_tx
-            .send(Arc::from(REPLCONF_GETACK_FRAME));
+            .send(Arc::new(ReplicatedWriteFrame::control(Arc::from(
+                REPLCONF_GETACK_FRAME,
+            ))));
     }
 
     async fn register_downstream_replica(
@@ -573,7 +664,7 @@ impl RedisReplicationCoordinator {
         self.inner.downstream_ack_notify.notify_waiters();
     }
 
-    pub(crate) fn subscribe_downstream(&self) -> broadcast::Receiver<Arc<[u8]>> {
+    fn subscribe_downstream(&self) -> broadcast::Receiver<Arc<ReplicatedWriteFrame>> {
         // Re-arm SELECT before subscribing so post-SYNC frames observed by this subscriber
         // include an initial SELECT even if writes arrive before stream handoff.
         self.inner
@@ -582,15 +673,16 @@ impl RedisReplicationCoordinator {
         self.inner.downstream_tx.subscribe()
     }
 
-    pub(crate) fn build_fullresync_payload(
+    fn build_fullresync_payload_for_offset(
         &self,
+        cutover_offset: u64,
         functions_only: bool,
+        rdb_only: bool,
     ) -> Result<Vec<u8>, RequestExecutionError> {
-        let repl_offset = self.inner.master_repl_offset.load(Ordering::Relaxed);
-        let sync_payload = self.build_sync_payload(functions_only)?;
+        let sync_payload = self.build_sync_payload(functions_only, rdb_only)?;
         let mut response = Vec::with_capacity(256 + sync_payload.len());
         response.extend_from_slice(
-            format!("+FULLRESYNC {} {}\r\n", self.inner.repl_id, repl_offset).as_bytes(),
+            format!("+FULLRESYNC {} {}\r\n", self.inner.repl_id, cutover_offset).as_bytes(),
         );
         response.extend_from_slice(sync_payload.as_slice());
         Ok(response)
@@ -599,47 +691,137 @@ impl RedisReplicationCoordinator {
     pub(crate) fn build_sync_payload(
         &self,
         functions_only: bool,
+        rdb_only: bool,
     ) -> Result<Vec<u8>, RequestExecutionError> {
-        let snapshot = self
+        let payload = if rdb_only {
+            // `redis-cli --rdb` / `--functions-rdb` identifies itself with
+            // `REPLCONF rdb-only 1`. Keep the existing debug-reload snapshot there
+            // until full Redis-RDB snapshot parity is implemented separately.
+            self.inner
+                .processor
+                .build_full_debug_reload_snapshot(functions_only)?
+        } else if let Some(redis_rdb_snapshot) = self
             .inner
             .processor
-            .build_full_debug_reload_snapshot(functions_only)?;
-        let mut response = Vec::with_capacity(64 + snapshot.len());
-        response.extend_from_slice(format!("${}\r\n", snapshot.len()).as_bytes());
-        response.extend_from_slice(&snapshot);
+            .build_full_redis_rdb_snapshot(functions_only)?
+        {
+            redis_rdb_snapshot
+        } else {
+            // Fallback for unsupported dataset types while real Redis-RDB export
+            // still covers only the currently supported snapshot surface.
+            REDIS_EMPTY_RDB_V11_PAYLOAD.to_vec()
+        };
+        let mut response = Vec::with_capacity(64 + payload.len());
+        response.extend_from_slice(format!("${}\r\n", payload.len()).as_bytes());
+        response.extend_from_slice(&payload);
         Ok(response)
     }
 
-    pub(crate) async fn serve_downstream_replica(&self, stream: TcpStream) -> io::Result<()> {
+    pub(crate) fn prepare_downstream_fullresync(
+        &self,
+        functions_only: bool,
+        rdb_only: bool,
+    ) -> Result<PreparedDownstreamFullSync, RequestExecutionError> {
+        let cutover_offset = self.inner.master_repl_offset.load(Ordering::Acquire);
         let subscriber = self.subscribe_downstream();
-        self.serve_downstream_replica_with_subscriber(stream, subscriber)
-            .await
+        let response =
+            self.build_fullresync_payload_for_offset(cutover_offset, functions_only, rdb_only)?;
+        Ok(PreparedDownstreamFullSync {
+            response,
+            session: DownstreamFullSyncSession::new(cutover_offset, subscriber),
+        })
+    }
+
+    pub(crate) fn prepare_downstream_sync(
+        &self,
+        functions_only: bool,
+        rdb_only: bool,
+    ) -> Result<PreparedDownstreamFullSync, RequestExecutionError> {
+        let cutover_offset = self.inner.master_repl_offset.load(Ordering::Acquire);
+        let subscriber = self.subscribe_downstream();
+        let response = self.build_sync_payload(functions_only, rdb_only)?;
+        Ok(PreparedDownstreamFullSync {
+            response,
+            session: DownstreamFullSyncSession::new(cutover_offset, subscriber),
+        })
+    }
+
+    fn buffered_frames_for_session(
+        &self,
+        session: &DownstreamFullSyncSession,
+    ) -> Result<Vec<Arc<ReplicatedWriteFrame>>, DownstreamBacklogReplayError> {
+        let current_offset = self.inner.master_repl_offset.load(Ordering::Acquire);
+        if current_offset <= session.replayed_offset {
+            return Ok(Vec::new());
+        }
+
+        let mut next_expected_offset = session.replayed_offset.saturating_add(1);
+        let mut buffered_frames = Vec::new();
+        let backlog = self.inner.downstream_backlog.lock().unwrap();
+        for frame in backlog.iter() {
+            let (start_offset, end_offset) = match (frame.start_offset, frame.end_offset) {
+                (Some(start_offset), Some(end_offset)) => (start_offset, end_offset),
+                _ => continue,
+            };
+            if end_offset <= session.replayed_offset {
+                continue;
+            }
+            if start_offset > next_expected_offset {
+                return Err(DownstreamBacklogReplayError {
+                    requested_offset: session.replayed_offset,
+                    current_offset,
+                });
+            }
+            buffered_frames.push(Arc::clone(frame));
+            next_expected_offset = end_offset.saturating_add(1);
+            if next_expected_offset > current_offset {
+                break;
+            }
+        }
+
+        if next_expected_offset <= current_offset {
+            return Err(DownstreamBacklogReplayError {
+                requested_offset: session.replayed_offset,
+                current_offset,
+            });
+        }
+
+        Ok(buffered_frames)
+    }
+
+    async fn replay_buffered_frames_for_session(
+        &self,
+        stream: &mut TcpStream,
+        session: &mut DownstreamFullSyncSession,
+    ) -> io::Result<()> {
+        let buffered_frames = self.buffered_frames_for_session(session).map_err(|error| {
+            io::Error::other(format!(
+                "downstream full-sync backlog no longer covers requested offset {} (current={})",
+                error.requested_offset, error.current_offset
+            ))
+        })?;
+        for frame in buffered_frames {
+            stream.write_all(frame.bytes.as_ref()).await?;
+            session.note_replayed_frame(frame.as_ref());
+        }
+        Ok(())
     }
 
     pub(crate) async fn serve_downstream_replica_with_metrics(
         &self,
         stream: TcpStream,
-        subscriber: broadcast::Receiver<Arc<[u8]>>,
+        session: DownstreamFullSyncSession,
         metrics: Arc<ServerMetrics>,
         client_id: crate::ClientId,
     ) -> io::Result<()> {
-        self.serve_downstream_replica_inner(stream, subscriber, Some((metrics, client_id)))
-            .await
-    }
-
-    pub(crate) async fn serve_downstream_replica_with_subscriber(
-        &self,
-        stream: TcpStream,
-        subscriber: broadcast::Receiver<Arc<[u8]>>,
-    ) -> io::Result<()> {
-        self.serve_downstream_replica_inner(stream, subscriber, None)
+        self.serve_downstream_replica_inner(stream, session, Some((metrics, client_id)))
             .await
     }
 
     async fn serve_downstream_replica_inner(
         &self,
         mut stream: TcpStream,
-        mut subscriber: broadcast::Receiver<Arc<[u8]>>,
+        mut session: DownstreamFullSyncSession,
         kill_watch: Option<(Arc<ServerMetrics>, crate::ClientId)>,
     ) -> io::Result<()> {
         let announced_listen_port = kill_watch
@@ -654,6 +836,8 @@ impl RedisReplicationCoordinator {
         let mut inbound_receive_buffer = Vec::with_capacity(1024);
         let mut inbound_args =
             vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
+        self.replay_buffered_frames_for_session(&mut stream, &mut session)
+            .await?;
 
         loop {
             tokio::select! {
@@ -666,10 +850,13 @@ impl RedisReplicationCoordinator {
                         return Ok(());
                     }
                 }
-                result = subscriber.recv() => {
+                result = session.subscriber.recv() => {
                     match result {
                         Ok(frame) => {
-                            if let Err(error) = stream.write_all(&frame).await {
+                            if !session.should_forward_live_frame(frame.as_ref()) {
+                                continue;
+                            }
+                            if let Err(error) = stream.write_all(frame.bytes.as_ref()).await {
                                 self.unregister_downstream_replica(replica_id).await;
                                 return Err(error);
                             }
@@ -889,7 +1076,11 @@ async fn wait_for_manual_failover_target_sync(
             return true;
         }
 
-        let _ = inner.downstream_tx.send(Arc::from(REPLCONF_GETACK_FRAME));
+        let _ = inner
+            .downstream_tx
+            .send(Arc::new(ReplicatedWriteFrame::control(Arc::from(
+                REPLCONF_GETACK_FRAME,
+            ))));
 
         if let Some(deadline) = deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1050,7 +1241,21 @@ async fn sync_once_from_upstream(
         }
 
         let rdb_len = parse_bulk_length(&rdb_header[1..])?;
-        discard_bulk_payload(&mut stream, &mut receive_buffer, &mut read_scratch, rdb_len).await?;
+        let rdb_payload =
+            read_bulk_payload(&mut stream, &mut receive_buffer, &mut read_scratch, rdb_len).await?;
+        let loaded = inner
+            .processor
+            .reload_redis_rdb_snapshot_bytes(rdb_payload)
+            .map_err(|error| {
+                io::Error::other(format!(
+                    "failed to apply upstream FULLRESYNC RDB: {error:?}"
+                ))
+            })?;
+        if !loaded {
+            return Err(io::Error::other(
+                "upstream FULLRESYNC RDB payload is not yet supported by this replica",
+            ));
+        }
     } else if !starts_with_ascii_no_case(&psync_reply, b"+CONTINUE") {
         return Err(io::Error::other(format!(
             "upstream PSYNC reply is not FULLRESYNC/CONTINUE (reply={})",
@@ -1366,6 +1571,7 @@ fn parse_positive_env_usize(key: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn parse_downstream_aof_ack_offset_reads_fack_pair() {
@@ -1387,5 +1593,109 @@ mod tests {
             ArgSlice::from_slice(b"123").unwrap(),
         ];
         assert_eq!(parse_downstream_aof_ack_offset(&args), None);
+    }
+
+    fn make_replication_coordinator() -> RedisReplicationCoordinator {
+        let processor = Arc::new(
+            RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap(),
+        );
+        let owner_thread_pool = Arc::new(
+            ShardOwnerThreadPool::new_inline(processor.string_store_shard_count()).unwrap(),
+        );
+        RedisReplicationCoordinator::new(processor, owner_thread_pool)
+    }
+
+    #[test]
+    fn prepare_downstream_fullresync_replays_only_post_cutover_frames() {
+        let replication = make_replication_coordinator();
+        let pre_cutover = replication.publish_write_frame(b"*1\r\n$4\r\nPING\r\n");
+        let prepared = replication
+            .prepare_downstream_fullresync(false, false)
+            .unwrap();
+
+        let first_post_cutover = replication.publish_write_frame(b"*1\r\n$4\r\nINCR\r\n");
+        let second_post_cutover = replication.publish_write_frame(b"*1\r\n$4\r\nDECR\r\n");
+
+        let mut session = prepared.session;
+        assert_eq!(session.cutover_offset, pre_cutover.replication_offset);
+
+        let buffered_frames = replication.buffered_frames_for_session(&session).unwrap();
+        assert_eq!(buffered_frames.len(), 2);
+        assert_eq!(
+            buffered_frames[0].start_offset,
+            Some(pre_cutover.replication_offset + 1)
+        );
+        assert_eq!(
+            buffered_frames[0].end_offset,
+            Some(first_post_cutover.replication_offset)
+        );
+        assert_eq!(buffered_frames[0].bytes.as_ref(), b"*1\r\n$4\r\nINCR\r\n");
+        assert_eq!(
+            buffered_frames[1].start_offset,
+            Some(first_post_cutover.replication_offset + 1)
+        );
+        assert_eq!(
+            buffered_frames[1].end_offset,
+            Some(second_post_cutover.replication_offset)
+        );
+        assert_eq!(buffered_frames[1].bytes.as_ref(), b"*1\r\n$4\r\nDECR\r\n");
+
+        for frame in buffered_frames {
+            session.note_replayed_frame(frame.as_ref());
+        }
+        assert_eq!(
+            session.replayed_offset,
+            second_post_cutover.replication_offset
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_downstream_fullresync_skips_duplicate_live_frames_after_replay() {
+        let replication = make_replication_coordinator();
+        let pre_cutover = replication.publish_write_frame(b"*1\r\n$4\r\nPING\r\n");
+        let prepared = replication
+            .prepare_downstream_fullresync(false, false)
+            .unwrap();
+
+        let first_post_cutover = replication.publish_write_frame(b"*1\r\n$4\r\nINCR\r\n");
+        let second_post_cutover = replication.publish_write_frame(b"*1\r\n$4\r\nDECR\r\n");
+
+        let mut session = prepared.session;
+        assert_eq!(session.cutover_offset, pre_cutover.replication_offset);
+
+        let replayed_frames = replication.buffered_frames_for_session(&session).unwrap();
+        for frame in &replayed_frames {
+            session.note_replayed_frame(frame.as_ref());
+        }
+
+        let duplicate_first =
+            tokio::time::timeout(Duration::from_secs(1), session.subscriber.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            duplicate_first.end_offset,
+            Some(first_post_cutover.replication_offset)
+        );
+        assert!(!session.should_forward_live_frame(duplicate_first.as_ref()));
+
+        let duplicate_second =
+            tokio::time::timeout(Duration::from_secs(1), session.subscriber.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            duplicate_second.end_offset,
+            Some(second_post_cutover.replication_offset)
+        );
+        assert!(!session.should_forward_live_frame(duplicate_second.as_ref()));
+
+        let live_frame = replication.publish_write_frame(b"*1\r\n$3\r\nSET\r\n");
+        let forwarded = tokio::time::timeout(Duration::from_secs(1), session.subscriber.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(forwarded.end_offset, Some(live_frame.replication_offset));
+        assert!(session.should_forward_live_frame(forwarded.as_ref()));
     }
 }

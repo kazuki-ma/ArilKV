@@ -1,0 +1,1720 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 61  of event 'task-clock:ppp'
+# Event count (approx.): 616161610
+#
+# Overhead  Command          Shared Object      Symbol                                                                                                                             
+# ........  ...............  .................  ...................................................................................................................................
+#
+    11.48%  garnet-node-127  [kernel.kallsyms]  [k] __wake_up_sync_key
+            |
+            ---__wake_up_sync_key
+               |          
+               |--9.84%--tcp_data_ready
+               |          tcp_rcv_established
+               |          tcp_v4_do_rcv
+               |          tcp_v4_rcv
+               |          ip_protocol_deliver_rcu
+               |          ip_local_deliver_finish
+               |          ip_local_deliver
+               |          ip_rcv_finish
+               |          ip_rcv
+               |          __netif_receive_skb_one_core
+               |          __netif_receive_skb
+               |          process_backlog
+               |          __napi_poll
+               |          net_rx_action
+               |          handle_softirqs
+               |          __do_softirq
+               |          ____do_softirq
+               |          call_on_irq_stack
+               |          do_softirq_own_stack
+               |          do_softirq
+               |          __local_bh_enable_ip
+               |          __dev_queue_xmit
+               |          ip_finish_output2
+               |          __ip_finish_output
+               |          ip_finish_output
+               |          ip_output
+               |          __ip_queue_xmit
+               |          ip_queue_xmit
+               |          __tcp_transmit_skb
+               |          tcp_write_xmit
+               |          __tcp_push_pending_frames
+               |          tcp_push
+               |          tcp_sendmsg_locked
+               |          tcp_sendmsg
+               |          inet_sendmsg
+               |          __sock_sendmsg
+               |          __sys_sendto
+               |          __arm64_sys_sendto
+               |          invoke_syscall.constprop.0
+               |          do_el0_svc
+               |          el0_svc
+               |          el0t_64_sync_handler
+               |          el0t_64_sync
+               |          0xffffa9e8ef6c
+               |          0xffffa9e82617
+               |          0xffffa9e8265c
+               |          <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               |          <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               |          tokio::io::poll_evented::PollEvented<E>::poll_write
+               |          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               |          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               |          tokio::runtime::task::core::Core<T,S>::poll
+               |          tokio::runtime::task::harness::Harness<T,S>::poll
+               |          tokio::runtime::context::scoped::Scoped<T>::set
+               |          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               |          tokio::runtime::context::runtime::enter_runtime
+               |          std::sys::backtrace::__rust_begin_short_backtrace
+               |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               |          std::sys::thread::unix::Thread::new::thread_start
+               |          0xffffa9e85f38
+               |          0xffffa9eede9c
+               |          
+                --1.64%--sock_def_readable
+                          tcp_data_ready
+                          tcp_rcv_established
+                          tcp_v4_do_rcv
+                          tcp_v4_rcv
+                          ip_protocol_deliver_rcu
+                          ip_local_deliver_finish
+                          ip_local_deliver
+                          ip_rcv_finish
+                          ip_rcv
+                          __netif_receive_skb_one_core
+                          __netif_receive_skb
+                          process_backlog
+                          __napi_poll
+                          net_rx_action
+                          handle_softirqs
+                          __do_softirq
+                          ____do_softirq
+                          call_on_irq_stack
+                          do_softirq_own_stack
+                          do_softirq
+                          __local_bh_enable_ip
+                          __dev_queue_xmit
+                          ip_finish_output2
+                          __ip_finish_output
+                          ip_finish_output
+                          ip_output
+                          __ip_queue_xmit
+                          ip_queue_xmit
+                          __tcp_transmit_skb
+                          tcp_write_xmit
+                          __tcp_push_pending_frames
+                          tcp_push
+                          tcp_sendmsg_locked
+                          tcp_sendmsg
+                          inet_sendmsg
+                          __sock_sendmsg
+                          __sys_sendto
+                          __arm64_sys_sendto
+                          invoke_syscall.constprop.0
+                          do_el0_svc
+                          el0_svc
+                          el0t_64_sync_handler
+                          el0t_64_sync
+                          0xffffa9e8ef6c
+                          0xffffa9e82617
+                          0xffffa9e8265c
+                          <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+                          <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+                          tokio::io::poll_evented::PollEvented<E>::poll_write
+                          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+                          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+                          tokio::runtime::task::core::Core<T,S>::poll
+                          tokio::runtime::task::harness::Harness<T,S>::poll
+                          tokio::runtime::context::scoped::Scoped<T>::set
+                          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+                          tokio::runtime::context::runtime::enter_runtime
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+                          std::sys::thread::unix::Thread::new::thread_start
+                          0xffffa9e85f38
+                          0xffffa9eede9c
+
+     4.92%  garnet-node-127  [vdso]             [.] __kernel_clock_gettime
+            |
+            ---__kernel_clock_gettime
+               clock_gettime
+               std::sys::pal::unix::time::Timespec::now
+               |          
+               |--1.64%--garnet_server::ServerMetrics::set_client_last_command
+               |          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               |          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               |          tokio::runtime::task::core::Core<T,S>::poll
+               |          tokio::runtime::task::harness::Harness<T,S>::poll
+               |          tokio::runtime::context::scoped::Scoped<T>::set
+               |          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               |          tokio::runtime::context::runtime::enter_runtime
+               |          std::sys::backtrace::__rust_begin_short_backtrace
+               |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               |          std::sys::thread::unix::Thread::new::thread_start
+               |          0xffffa9e85f38
+               |          0xffffa9eede9c
+               |          
+               |--1.64%--garnet_server::ServerMetrics::add_client_output_bytes
+               |          garnet_server::connection_handler::finalize_client_command
+               |          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               |          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               |          tokio::runtime::task::core::Core<T,S>::poll
+               |          tokio::runtime::task::harness::Harness<T,S>::poll
+               |          tokio::runtime::context::scoped::Scoped<T>::set
+               |          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               |          tokio::runtime::context::runtime::enter_runtime
+               |          std::sys::backtrace::__rust_begin_short_backtrace
+               |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               |          std::sys::thread::unix::Thread::new::thread_start
+               |          0xffffa9e85f38
+               |          0xffffa9eede9c
+               |          
+                --1.64%--garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+                          garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+                          garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+                          garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+                          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+                          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+                          tokio::runtime::task::core::Core<T,S>::poll
+                          tokio::runtime::task::harness::Harness<T,S>::poll
+                          tokio::runtime::context::scoped::Scoped<T>::set
+                          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+                          tokio::runtime::context::runtime::enter_runtime
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+                          std::sys::thread::unix::Thread::new::thread_start
+                          0xffffa9e85f38
+                          0xffffa9eede9c
+
+     4.92%  garnet-node-127  libc.so.6          [.] 0x000000000008ef6c
+            |
+            ---0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               |          
+               |--3.28%--<&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               |          <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               |          tokio::io::poll_evented::PollEvented<E>::poll_write
+               |          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               |          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               |          tokio::runtime::task::core::Core<T,S>::poll
+               |          tokio::runtime::task::harness::Harness<T,S>::poll
+               |          tokio::runtime::context::scoped::Scoped<T>::set
+               |          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               |          tokio::runtime::context::runtime::enter_runtime
+               |          std::sys::backtrace::__rust_begin_short_backtrace
+               |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               |          std::sys::thread::unix::Thread::new::thread_start
+               |          0xffffa9e85f38
+               |          0xffffa9eede9c
+               |          
+                --1.64%--<&std::os::unix::net::stream::UnixStream as std::io::Read>::read
+                          <&mio::net::tcp::stream::TcpStream as std::io::Read>::read
+                          tokio::io::poll_evented::PollEvented<E>::poll_read
+                          <tokio::time::timeout::Timeout<T> as core::future::future::Future>::poll
+                          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+                          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+                          tokio::runtime::task::core::Core<T,S>::poll
+                          tokio::runtime::task::harness::Harness<T,S>::poll
+                          tokio::runtime::context::scoped::Scoped<T>::set
+                          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+                          tokio::runtime::context::runtime::enter_runtime
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+                          std::sys::thread::unix::Thread::new::thread_start
+                          0xffffa9e85f38
+                          0xffffa9eede9c
+
+     3.28%  garnet-node-127  [kernel.kallsyms]  [k] arch_counter_get_cntvct
+            |
+            ---arch_counter_get_cntvct
+               ktime_get
+               |          
+               |--1.64%--tcp_write_xmit
+               |          __tcp_push_pending_frames
+               |          tcp_push
+               |          tcp_sendmsg_locked
+               |          tcp_sendmsg
+               |          inet_sendmsg
+               |          __sock_sendmsg
+               |          __sys_sendto
+               |          __arm64_sys_sendto
+               |          invoke_syscall.constprop.0
+               |          do_el0_svc
+               |          el0_svc
+               |          el0t_64_sync_handler
+               |          el0t_64_sync
+               |          0xffffa9e8ef6c
+               |          0xffffa9e82617
+               |          0xffffa9e8265c
+               |          <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               |          <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               |          tokio::io::poll_evented::PollEvented<E>::poll_write
+               |          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               |          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               |          tokio::runtime::task::core::Core<T,S>::poll
+               |          tokio::runtime::task::harness::Harness<T,S>::poll
+               |          tokio::runtime::context::scoped::Scoped<T>::set
+               |          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               |          tokio::runtime::context::runtime::enter_runtime
+               |          std::sys::backtrace::__rust_begin_short_backtrace
+               |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               |          std::sys::thread::unix::Thread::new::thread_start
+               |          0xffffa9e85f38
+               |          0xffffa9eede9c
+               |          
+                --1.64%--tcp_mstamp_refresh
+                          tcp_rcv_established
+                          tcp_v4_do_rcv
+                          tcp_v4_rcv
+                          ip_protocol_deliver_rcu
+                          ip_local_deliver_finish
+                          ip_local_deliver
+                          ip_rcv_finish
+                          ip_rcv
+                          __netif_receive_skb_one_core
+                          __netif_receive_skb
+                          process_backlog
+                          __napi_poll
+                          net_rx_action
+                          handle_softirqs
+                          __do_softirq
+                          ____do_softirq
+                          call_on_irq_stack
+                          do_softirq_own_stack
+                          do_softirq
+                          __local_bh_enable_ip
+                          __dev_queue_xmit
+                          ip_finish_output2
+                          __ip_finish_output
+                          ip_finish_output
+                          ip_output
+                          __ip_queue_xmit
+                          ip_queue_xmit
+                          __tcp_transmit_skb
+                          tcp_write_xmit
+                          __tcp_push_pending_frames
+                          tcp_push
+                          tcp_sendmsg_locked
+                          tcp_sendmsg
+                          inet_sendmsg
+                          __sock_sendmsg
+                          __sys_sendto
+                          __arm64_sys_sendto
+                          invoke_syscall.constprop.0
+                          do_el0_svc
+                          el0_svc
+                          el0t_64_sync_handler
+                          el0t_64_sync
+                          0xffffa9e8ef6c
+                          0xffffa9e82617
+                          0xffffa9e8265c
+                          <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+                          <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+                          tokio::io::poll_evented::PollEvented<E>::poll_write
+                          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+                          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+                          tokio::runtime::task::core::Core<T,S>::poll
+                          tokio::runtime::task::harness::Harness<T,S>::poll
+                          tokio::runtime::context::scoped::Scoped<T>::set
+                          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+                          tokio::runtime::context::runtime::enter_runtime
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+                          std::sys::thread::unix::Thread::new::thread_start
+                          0xffffa9e85f38
+                          0xffffa9eede9c
+
+     3.28%  garnet-node-127  [kernel.kallsyms]  [k] el0_svc
+            |
+            ---el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               |          
+               |--1.64%--epoll_pwait
+               |          mio::poll::Poll::poll
+               |          _ZN5tokio7runtime2io6driver6Driver4turn17hc9e243f496bc36f0E.llvm.3233526379257084638
+               |          _ZN5tokio7runtime4time6Driver13park_internal17hd4a517e72f8e6f0cE.llvm.14820309516378673673
+               |          tokio::runtime::scheduler::current_thread::Context::park_internal
+               |          tokio::runtime::scheduler::current_thread::Context::park
+               |          tokio::runtime::context::scoped::Scoped<T>::set
+               |          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               |          tokio::runtime::context::runtime::enter_runtime
+               |          std::sys::backtrace::__rust_begin_short_backtrace
+               |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               |          std::sys::thread::unix::Thread::new::thread_start
+               |          0xffffa9e85f38
+               |          0xffffa9eede9c
+               |          
+                --1.64%--<&std::os::unix::net::stream::UnixStream as std::io::Read>::read
+                          <&mio::net::tcp::stream::TcpStream as std::io::Read>::read
+                          tokio::io::poll_evented::PollEvented<E>::poll_read
+                          <tokio::time::timeout::Timeout<T> as core::future::future::Future>::poll
+                          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+                          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+                          tokio::runtime::task::core::Core<T,S>::poll
+                          tokio::runtime::task::harness::Harness<T,S>::poll
+                          tokio::runtime::context::scoped::Scoped<T>::set
+                          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+                          tokio::runtime::context::runtime::enter_runtime
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+                          std::sys::thread::unix::Thread::new::thread_start
+                          0xffffa9e85f38
+                          0xffffa9eede9c
+
+     3.28%  garnet-node-127  garnet-server      [.] core::hash::BuildHasher::hash_one
+            |
+            ---core::hash::BuildHasher::hash_one
+               |          
+               |--1.64%--std::thread::local::LocalKey<T>::with
+               |          tsavorite::epoch::LightEpoch::pin
+               |          tsavorite::tsavorite_kv::TsavoriteSession<K,V,D,F>::read
+               |          garnet_server::request_lifecycle::string_commands::<impl garnet_server::request_lifecycle::RequestProcessor>::handle_get
+               |          garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               |          garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+               |          garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+               |          garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               |          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               |          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               |          tokio::runtime::task::core::Core<T,S>::poll
+               |          tokio::runtime::task::harness::Harness<T,S>::poll
+               |          tokio::runtime::context::scoped::Scoped<T>::set
+               |          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               |          tokio::runtime::context::runtime::enter_runtime
+               |          std::sys::backtrace::__rust_begin_short_backtrace
+               |          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               |          std::sys::thread::unix::Thread::new::thread_start
+               |          0xffffa9e85f38
+               |          0xffffa9eede9c
+               |          
+                --1.64%--core::hash::BuildHasher::hash_one
+                          std::thread::local::LocalKey<T>::with
+                          <tsavorite::epoch::EpochGuard as core::ops::drop::Drop>::drop
+                          tsavorite::tsavorite_kv::TsavoriteSession<K,V,D,F>::read
+                          garnet_server::request_lifecycle::string_commands::<impl garnet_server::request_lifecycle::RequestProcessor>::handle_get
+                          garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+                          garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+                          garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+                          garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+                          garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+                          _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+                          tokio::runtime::task::core::Core<T,S>::poll
+                          tokio::runtime::task::harness::Harness<T,S>::poll
+                          tokio::runtime::context::scoped::Scoped<T>::set
+                          tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+                          tokio::runtime::context::runtime::enter_runtime
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+                          std::sys::thread::unix::Thread::new::thread_start
+                          0xffffa9e85f38
+                          0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] __alloc_skb
+            |
+            ---__alloc_skb
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] __arch_copy_to_user
+            |
+            ---__arch_copy_to_user
+               simple_copy_to_iter
+               __skb_datagram_iter
+               skb_copy_datagram_iter
+               tcp_recvmsg_locked
+               tcp_recvmsg
+               inet_recvmsg
+               sock_recvmsg
+               __sys_recvfrom
+               __arm64_sys_recvfrom
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Read>::read
+               <&mio::net::tcp::stream::TcpStream as std::io::Read>::read
+               tokio::io::poll_evented::PollEvented<E>::poll_read
+               <tokio::time::timeout::Timeout<T> as core::future::future::Future>::poll
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] __mod_timer
+            |
+            ---__mod_timer
+               mod_timer
+               sk_reset_timer
+               tcp_rearm_rto.part.0
+               tcp_rearm_rto
+               tcp_event_new_data_sent
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] __netif_receive_skb
+            |
+            ---__netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] __netif_receive_skb_core.constprop.0
+            |
+            ---__netif_receive_skb_core.constprop.0
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] __tcp_transmit_skb
+            |
+            ---__tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] __wake_up_common_lock
+            |
+            ---__wake_up_common_lock
+               __wake_up_sync_key
+               sock_def_readable
+               tcp_data_ready
+               tcp_rcv_established
+               tcp_v4_do_rcv
+               tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] csum_tcpudp_nofold
+            |
+            ---csum_tcpudp_nofold
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] invoke_syscall.constprop.0
+            |
+            ---invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               epoll_pwait
+               mio::poll::Poll::poll
+               _ZN5tokio7runtime2io6driver6Driver4turn17hc9e243f496bc36f0E.llvm.3233526379257084638
+               _ZN5tokio7runtime4time6Driver13park_internal17hd4a517e72f8e6f0cE.llvm.14820309516378673673
+               tokio::runtime::scheduler::current_thread::Context::park_internal
+               tokio::runtime::scheduler::current_thread::Context::park
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] ip_finish_output2
+            |
+            ---ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] ip_local_deliver_finish
+            |
+            ---ip_local_deliver_finish
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] ip_rcv_finish_core.isra.0
+            |
+            ---ip_rcv_finish_core.isra.0
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] lock_sock_nested
+            |
+            ---lock_sock_nested
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] process_backlog
+            |
+            ---process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] skb_attempt_defer_free
+            |
+            ---skb_attempt_defer_free
+               tcp_recvmsg_locked
+               tcp_recvmsg
+               inet_recvmsg
+               sock_recvmsg
+               __sys_recvfrom
+               __arm64_sys_recvfrom
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Read>::read
+               <&mio::net::tcp::stream::TcpStream as std::io::Read>::read
+               tokio::io::poll_evented::PollEvented<E>::poll_read
+               <tokio::time::timeout::Timeout<T> as core::future::future::Future>::poll
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] tcp_push
+            |
+            ---tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] tcp_schedule_loss_probe.part.0
+            |
+            ---tcp_schedule_loss_probe.part.0
+               tcp_schedule_loss_probe
+               tcp_ack
+               tcp_rcv_established
+               tcp_v4_do_rcv
+               tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  [kernel.kallsyms]  [k] tcp_v4_rcv
+            |
+            ---tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               __sys_sendto
+               __arm64_sys_sendto
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               0xffffa9e8ef6c
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+            |
+            ---<&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] <hashbrown::raw::RawTable<T,A> as core::clone::Clone>::clone
+            |
+            ---<hashbrown::raw::RawTable<T,A> as core::clone::Clone>::clone
+               <garnet_server::AclUserProfile as core::clone::Clone>::clone
+               <garnet_server::AclUserProfile as core::clone::Clone>::clone
+               _ZN13garnet_server17request_lifecycle16RequestProcessor16acl_user_profile17h7d13d11d1fa1ef94E.llvm.7954987269239816544
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_client_command
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] _RNvCsdBezzDwma51_7___rustc11___rdl_alloc
+            |
+            ---_RNvCsdBezzDwma51_7___rustc11___rdl_alloc
+               garnet_server::ServerMetrics::client_user
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_client_command
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] _ZN71_$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$5write17hdd704341553a9e86E.llvm.6973520573579050615
+            |
+            ---_ZN71_$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$5write17hdd704341553a9e86E.llvm.6973520573579050615
+               core::hash::BuildHasher::hash_one
+               garnet_server::request_lifecycle::RequestProcessor::configured_databases
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_profile_command_with_mode
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_client_command
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] __aarch64_cas4_acq
+            |
+            ---__aarch64_cas4_acq
+               garnet_server::ServerMetrics::add_client_input_bytes
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] __aarch64_ldadd8_acq_rel
+            |
+            ---__aarch64_ldadd8_acq_rel
+               tokio::runtime::task::waker::drop_waker
+               tokio::runtime::time::<impl tokio::runtime::time::handle::Handle>::clear_entry
+               core::ptr::drop_in_place<tokio::time::sleep::Sleep>
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] garnet_server::ServerMetrics::connected_client_count
+            |
+            ---garnet_server::ServerMetrics::connected_client_count
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+            |
+            ---garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+            |
+            ---garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] garnet_server::connection_protocol::ascii_eq_ignore_case
+            |
+            ---garnet_server::connection_protocol::ascii_eq_ignore_case
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] garnet_server::request_lifecycle::RequestProcessor::take_pending_pubsub_messages
+            |
+            ---garnet_server::request_lifecycle::RequestProcessor::take_pending_pubsub_messages
+               garnet_server::request_lifecycle::RequestProcessor::take_pending_pubsub_messages
+               garnet_server::connection_handler::flush_pending_pubsub_messages::_$u7b$$u7b$closure$u7d$$u7d$::hbbbbe8317c8355ef
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] garnet_server::request_lifecycle::acl_first_denied_key
+            |
+            ---garnet_server::request_lifecycle::acl_first_denied_key
+               garnet_server::request_lifecycle::acl_first_denied_key
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_profile_command_with_mode
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_client_command
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] garnet_server::request_lifecycle::server_commands::redis_glob_match
+            |
+            ---garnet_server::request_lifecycle::server_commands::redis_glob_match
+               garnet_server::request_lifecycle::acl_first_denied_key
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_profile_command_with_mode
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_client_command
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] hashbrown::map::HashMap<K,V,S,A>::insert
+            |
+            ---hashbrown::map::HashMap<K,V,S,A>::insert
+               hashbrown::map::HashMap<K,V,S,A>::insert
+               garnet_server::request_lifecycle::DbKeyMapState<T>::insert
+               garnet_server::request_lifecycle::RequestProcessor::record_key_access
+               garnet_server::request_lifecycle::string_commands::<impl garnet_server::request_lifecycle::RequestProcessor>::handle_get
+               garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+               garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] std::thread::local::LocalKey<T>::with
+            |
+            ---std::thread::local::LocalKey<T>::with
+               garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+               garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] tsavorite::hash_index::HashIndex::find_tag_address
+            |
+            ---tsavorite::hash_index::HashIndex::find_tag_address
+               tsavorite::read_operation::read
+               tsavorite::read_operation::read
+               tsavorite::tsavorite_kv::TsavoriteSession<K,V,D,F>::read
+               garnet_server::request_lifecycle::string_commands::<impl garnet_server::request_lifecycle::RequestProcessor>::handle_get
+               garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+               garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  garnet-server      [.] tsavorite::tsavorite_kv::TsavoriteSession<K,V,D,F>::read
+            |
+            ---tsavorite::tsavorite_kv::TsavoriteSession<K,V,D,F>::read
+               garnet_server::request_lifecycle::string_commands::<impl garnet_server::request_lifecycle::RequestProcessor>::handle_get
+               garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+               garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  libc.so.6          [.] malloc
+            |
+            ---malloc
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  libc.so.6          [.] memcmp
+            |
+            ---memcmp
+               hashbrown::map::HashMap<K,V,S,A>::insert
+               garnet_server::request_lifecycle::DbKeyMapState<T>::insert
+               garnet_server::request_lifecycle::RequestProcessor::record_key_access
+               garnet_server::request_lifecycle::string_commands::<impl garnet_server::request_lifecycle::RequestProcessor>::handle_get
+               garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+               garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  libc.so.6          [.] 0x000000000008ef68
+            |
+            ---0xffffa9e8ef68
+               0xffffa9e82617
+               0xffffa9e8265c
+               <&std::os::unix::net::stream::UnixStream as std::io::Write>::write
+               <&mio::net::tcp::stream::TcpStream as std::io::Write>::write
+               tokio::io::poll_evented::PollEvented<E>::poll_write
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  libc.so.6          [.] 0x0000000000093968
+            |
+            ---0xffffa9e93968
+               0xffffa9e94f78
+               0xffffa9e96fe8
+               realloc
+               _ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hdf258a8ff8e899a9E.llvm.15494505818713929399
+               alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle
+               garnet_server::request_lifecycle::resp::append_bulk_string
+               garnet_server::request_lifecycle::string_commands::<impl garnet_server::request_lifecycle::RequestProcessor>::handle_get
+               garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+               garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  libc.so.6          [.] 0x0000000000095080
+            |
+            ---0xffffa9e95080
+               cfree
+               garnet_server::request_lifecycle::string_commands::<impl garnet_server::request_lifecycle::RequestProcessor>::handle_get
+               garnet_server::request_lifecycle::RequestProcessor::execute_bytes_in_db
+               garnet_server::request_lifecycle::RequestProcessor::execute_with_client_context_and_effects_in_db
+               garnet_server::connection_owner_routing::execute_frame_on_owner_thread
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  libc.so.6          [.] 0x00000000000a316c
+            |
+            ---0xffffa9ea316c
+               _ZN13garnet_server17request_lifecycle16RequestProcessor16acl_user_profile17h7d13d11d1fa1ef94E.llvm.7954987269239816544
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_client_command
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+     1.64%  garnet-node-127  libc.so.6          [.] 0x00000000000a3178
+            |
+            ---0xffffa9ea3178
+               garnet_server::request_lifecycle::RequestProcessor::acl_authorize_client_command
+               garnet_server::connection_handler::execute_blocking_frame_on_owner_thread::_$u7b$$u7b$closure$u7d$$u7d$::h970503f120ff25b3
+               garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::hc0830c94e1c1b821
+               _ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17he961c5c2390ed286E.llvm.146887899290455768
+               tokio::runtime::task::core::Core<T,S>::poll
+               tokio::runtime::task::harness::Harness<T,S>::poll
+               tokio::runtime::context::scoped::Scoped<T>::set
+               tokio::runtime::scheduler::current_thread::CoreGuard::block_on
+               tokio::runtime::context::runtime::enter_runtime
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb40fc93fd9f19d48
+               std::sys::thread::unix::Thread::new::thread_start
+               0xffffa9e85f38
+               0xffffa9eede9c
+
+
+
+#
+# (Tip: To measure approximate function latency with Processor Trace use perf record -e intel_pt// ... ; perf script --call-ret-trace)
+#

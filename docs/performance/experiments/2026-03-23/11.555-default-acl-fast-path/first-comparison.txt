@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=acl_full_auth_path
+new_label=acl_default_fast_path
+acl_full_auth_path.median_set_ops=71595.000
+acl_full_auth_path.median_get_ops=78278.000
+acl_full_auth_path.median_set_p99_ms=0.17500
+acl_full_auth_path.median_get_p99_ms=0.16700
+acl_default_fast_path.median_set_ops=82418.000
+acl_default_fast_path.median_get_ops=82292.000
+acl_default_fast_path.median_set_p99_ms=0.15900
+acl_default_fast_path.median_get_p99_ms=0.15100
+delta.set_ops_pct=15.12
+delta.get_ops_pct=5.13
+delta.set_p99_ms_pct=-9.14
+delta.get_p99_ms_pct=-9.58

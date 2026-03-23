@@ -12,10 +12,86 @@ use tokio::task::JoinSet;
 use crate::RequestProcessor;
 use crate::ServerConfig;
 use crate::ServerMetrics;
+use crate::StartupConfigOverrides;
 use crate::build_owner_thread_pool;
+use crate::config_paths::normalize_config_dir_path;
 use crate::handle_connection;
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::ShardIndex;
+
+#[cfg(test)]
+pub(crate) fn isolate_default_persistence_dir_for_tests(
+    processor: &RequestProcessor,
+) -> Option<std::path::PathBuf> {
+    let default_dir = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .into_owned()
+        .into_bytes();
+    let configured_dir = processor
+        .config_items_snapshot()
+        .into_iter()
+        .find(|(key, _)| key == b"dir")
+        .map(|(_, value)| value)
+        .unwrap_or_else(|| default_dir.clone());
+    if configured_dir != default_dir {
+        return None;
+    }
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("garnet-server-test-persistence-{nanos}"));
+    let _ = std::fs::create_dir_all(&dir);
+    processor.set_config_value(b"dir", dir.to_string_lossy().into_owned().into_bytes());
+    Some(dir)
+}
+
+#[cfg(not(test))]
+pub(crate) fn isolate_default_persistence_dir_for_tests(
+    _processor: &RequestProcessor,
+) -> Option<std::path::PathBuf> {
+    None
+}
+
+pub(crate) fn apply_startup_config_overrides_to_processor(
+    processor: &RequestProcessor,
+    overrides: &StartupConfigOverrides,
+) -> io::Result<()> {
+    if let Some(dir) = overrides.dir.as_ref() {
+        processor.set_config_value(b"dir", normalize_config_dir_path(dir));
+    }
+    if let Some(dbfilename) = overrides.dbfilename.as_ref() {
+        processor.set_config_value(b"dbfilename", dbfilename.clone().into_bytes());
+    }
+    if let Some(appendonly) = overrides.appendonly {
+        let value: &[u8] = if appendonly { b"yes" } else { b"no" };
+        processor.set_config_value(b"appendonly", value.to_vec());
+    }
+    if let Some(appendfsync) = overrides.appendfsync.as_ref() {
+        processor.set_config_value(b"appendfsync", appendfsync.clone().into_bytes());
+    }
+    if let Some(appendfilename) = overrides.appendfilename.as_ref() {
+        processor.set_config_value(b"appendfilename", appendfilename.clone().into_bytes());
+    }
+    if let Some(aclfile) = overrides.aclfile.as_ref() {
+        processor.set_config_value(
+            b"aclfile",
+            aclfile
+                .as_os_str()
+                .to_string_lossy()
+                .into_owned()
+                .into_bytes(),
+        );
+    }
+    if overrides.aclfile.is_some() {
+        processor
+            .load_acl_users_from_configured_file()
+            .map_err(io::Error::other)?;
+    }
+    Ok(())
+}
 
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
     run_with_shutdown(config, metrics, std::future::pending::<()>()).await
@@ -56,12 +132,20 @@ where
     F: Future<Output = ()> + Send,
 {
     let listener = TcpListener::bind(config.bind_addr).await?;
-    run_listener_with_shutdown_and_cluster(
+    let processor = Arc::new(RequestProcessor::new().map_err(|err| {
+        io::Error::other(format!("request processor initialization failed: {err}"))
+    })?);
+    apply_startup_config_overrides_to_processor(
+        processor.as_ref(),
+        &config.startup_config_overrides,
+    )?;
+    run_listener_with_shutdown_and_cluster_with_processor(
         listener,
         config.read_buffer_size,
         metrics,
         shutdown,
         cluster_config,
+        processor,
     )
     .await
 }
@@ -114,12 +198,38 @@ pub async fn run_listener_with_shutdown_and_cluster_with_processor<F>(
 where
     F: Future<Output = ()> + Send,
 {
+    let _ = isolate_default_persistence_dir_for_tests(processor.as_ref());
     if let Ok(local_addr) = listener.local_addr() {
         processor.set_config_value(b"bind", local_addr.ip().to_string().into_bytes());
         processor.set_config_value(b"port", local_addr.port().to_string().into_bytes());
     }
     if let Some(cluster_config_store) = cluster_config.as_ref() {
         processor.attach_cluster_config_store(Arc::clone(cluster_config_store));
+    }
+    if processor.appendonly_enabled() {
+        if processor.configured_appendonly_source_exists() {
+            processor.reload_configured_aof_source().map_err(|error| {
+                io::Error::other(format!(
+                    "configured appendonly replay failed during startup: {error:?}"
+                ))
+            })?;
+        } else {
+            processor
+                .reload_configured_dump_snapshot_file()
+                .map_err(|error| {
+                    io::Error::other(format!(
+                        "configured dump snapshot replay failed during startup: {error:?}"
+                    ))
+                })?;
+        }
+    } else {
+        processor
+            .reload_configured_dump_snapshot_file()
+            .map_err(|error| {
+                io::Error::other(format!(
+                    "configured dump snapshot replay failed during startup: {error:?}"
+                ))
+            })?;
     }
     processor
         .ensure_live_aof_durability_runtime()

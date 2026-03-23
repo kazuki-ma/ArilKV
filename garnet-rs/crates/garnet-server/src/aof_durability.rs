@@ -4,9 +4,12 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
@@ -39,7 +42,7 @@ impl AppendFsyncPolicy {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LiveAofDurabilityConfig {
     pub(crate) path: PathBuf,
     pub(crate) fsync_policy: AppendFsyncPolicy,
@@ -82,11 +85,13 @@ struct PublishedAofFrame {
 }
 
 pub(crate) struct LiveAofDurabilityRuntime {
-    publisher: mpsc::UnboundedSender<PublishedAofFrame>,
+    publisher: Mutex<Option<mpsc::UnboundedSender<PublishedAofFrame>>>,
     next_append_target: AtomicU64,
     local_append_offset: AtomicU64,
     local_fsync_offset: AtomicU64,
     frontier_notify: Notify,
+    shutdown_complete: Mutex<bool>,
+    shutdown_complete_condvar: Condvar,
 }
 
 impl LiveAofDurabilityRuntime {
@@ -103,34 +108,121 @@ impl LiveAofDurabilityRuntime {
         let initial_offset = writer.current_offset()?;
         let (publisher, receiver) = mpsc::unbounded_channel();
         let runtime = Arc::new(Self {
-            publisher,
+            publisher: Mutex::new(Some(publisher)),
             next_append_target: AtomicU64::new(u64::from(initial_offset)),
             local_append_offset: AtomicU64::new(u64::from(initial_offset)),
             local_fsync_offset: AtomicU64::new(u64::from(initial_offset)),
             frontier_notify: Notify::new(),
+            shutdown_complete: Mutex::new(false),
+            shutdown_complete_condvar: Condvar::new(),
         });
         let worker_runtime = Arc::clone(&runtime);
-        tokio::spawn(async move {
-            if let Err(error) =
-                run_live_aof_writer_task(worker_runtime, config, writer, receiver).await
-            {
-                eprintln!("live aof durability runtime stopped after IO failure: {error}");
-            }
-        });
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let result =
+                    run_live_aof_writer_task(Arc::clone(&worker_runtime), config, writer, receiver)
+                        .await;
+                worker_runtime.mark_shutdown_complete();
+                if let Err(error) = result {
+                    eprintln!("live aof durability runtime stopped after IO failure: {error}");
+                }
+            });
+        } else {
+            std::thread::Builder::new()
+                .name("garnet-live-aof".to_string())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build();
+                    let Ok(runtime) = runtime else {
+                        eprintln!("live aof durability runtime failed to create tokio runtime");
+                        return;
+                    };
+                    runtime.block_on(async move {
+                        let result = run_live_aof_writer_task(
+                            Arc::clone(&worker_runtime),
+                            config,
+                            writer,
+                            receiver,
+                        )
+                        .await;
+                        worker_runtime.mark_shutdown_complete();
+                        if let Err(error) = result {
+                            eprintln!(
+                                "live aof durability runtime stopped after IO failure: {error}"
+                            );
+                        }
+                    });
+                })
+                .map_err(|error| {
+                    io::Error::other(format!("failed to spawn live aof thread: {error}"))
+                })?;
+        }
         Ok(runtime)
     }
 
     pub(crate) fn publish_frame(&self, frame: &[u8]) -> LocalAofPublishTarget {
+        let publisher = self
+            .publisher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .cloned();
         let record_len = AOF_LENGTH_PREFIX_SIZE.saturating_add(frame.len() as u64);
         let previous_tail = self
             .next_append_target
             .fetch_add(record_len, Ordering::AcqRel);
         let append_offset = AofOffset::new(previous_tail.saturating_add(record_len));
-        let _ = self.publisher.send(PublishedAofFrame {
-            frame: Arc::from(frame.to_vec()),
-            append_offset,
-        });
+        if let Some(publisher) = publisher {
+            let _ = publisher.send(PublishedAofFrame {
+                frame: Arc::from(frame.to_vec()),
+                append_offset,
+            });
+        }
         LocalAofPublishTarget { append_offset }
+    }
+
+    pub(crate) fn append_target_offset(&self) -> AofOffset {
+        AofOffset::new(self.next_append_target.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.publisher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        self.frontier_notify.notify_waiters();
+    }
+
+    pub(crate) fn shutdown_and_wait(&self, timeout: Duration) -> bool {
+        self.shutdown();
+        let deadline = Instant::now() + timeout;
+        let mut complete = self
+            .shutdown_complete
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*complete {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            match self
+                .shutdown_complete_condvar
+                .wait_timeout(complete, remaining)
+            {
+                Ok((guard, wait_result)) => {
+                    complete = guard;
+                    if wait_result.timed_out() && !*complete {
+                        return false;
+                    }
+                }
+                Err(poisoned) => {
+                    let (guard, _) = poisoned.into_inner();
+                    complete = guard;
+                }
+            }
+        }
+        true
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -204,6 +296,16 @@ impl LiveAofDurabilityRuntime {
     fn publish_local_fsync_offset(&self, offset: AofOffset) {
         self.local_fsync_offset
             .fetch_max(u64::from(offset), Ordering::AcqRel);
+        self.frontier_notify.notify_waiters();
+    }
+
+    fn mark_shutdown_complete(&self) {
+        let mut complete = self
+            .shutdown_complete
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *complete = true;
+        self.shutdown_complete_condvar.notify_all();
         self.frontier_notify.notify_waiters();
     }
 }

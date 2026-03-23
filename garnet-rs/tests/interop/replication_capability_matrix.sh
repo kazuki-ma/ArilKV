@@ -331,6 +331,8 @@ test_garnet_primary_to_redis_replica() {
         return 0
     fi
 
+    redis-cli -h 127.0.0.1 -p "${garnet_port}" SET repl:seed:redis-side seed-from-garnet > /dev/null 2>&1 || true
+
     local repl_resp
     repl_resp="$(redis-cli -h 127.0.0.1 -p "${redis_port}" REPLICAOF "${REDIS_REPL_MASTER_HOST}" "${garnet_port}" 2>&1 || true)"
     echo "replicaof_response=${repl_resp}" >>"${log_file}"
@@ -365,13 +367,30 @@ test_garnet_primary_to_redis_replica() {
         return 0
     fi
 
+    local seeded=""
+    for _ in $(seq 1 40); do
+        seeded="$(redis-cli -h 127.0.0.1 -p "${redis_port}" GET repl:seed:redis-side 2>/dev/null || true)"
+        if [[ "${seeded}" == "seed-from-garnet" ]]; then
+            break
+        fi
+        sleep 0.25
+    done
+    if [[ "${seeded}" != "seed-from-garnet" ]]; then
+        status="FAIL"
+        details="master_link_status=up but seeded pre-sync key was not replicated"
+        stop_pid "${garnet_pid}"
+        cleanup_docker_nodes "${redis_name}"
+        record_result "garnet_primary_to_redis_replica" "${status}" "${details}; log=${log_file}"
+        return 0
+    fi
+
     redis-cli -h 127.0.0.1 -p "${garnet_port}" SET repl:probe garnet > /dev/null 2>&1 || true
     local replicated=""
     for _ in $(seq 1 40); do
         replicated="$(redis-cli -h 127.0.0.1 -p "${redis_port}" GET repl:probe 2>/dev/null || true)"
         if [[ "${replicated}" == "garnet" ]]; then
             status="PASS"
-            details="redis replica synced from garnet and received probe key"
+            details="redis replica synced from garnet, loaded seeded full-sync data, and received post-sync probe key"
             break
         fi
         sleep 0.25

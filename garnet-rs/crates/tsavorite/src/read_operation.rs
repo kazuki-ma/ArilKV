@@ -33,6 +33,14 @@ pub enum ReadOperationStatus {
     RetryLater,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeekOperationStatus<T> {
+    FoundInMemory(T),
+    FoundOnDisk(T),
+    NotFound,
+    RetryLater,
+}
+
 #[derive(Debug)]
 pub enum ReadOperationError {
     HashIndex(HashIndexError),
@@ -85,11 +93,21 @@ pub struct ReadOperationContext<'a, D: PageDevice> {
     pub device: &'a D,
 }
 
-struct MaterializedRecord {
+struct RecordView<'a> {
     record_info: RecordInfo,
-    key_bytes: Vec<u8>,
-    value_bytes: Vec<u8>,
+    key_bytes: &'a [u8],
+    value_bytes: &'a [u8],
     from_disk: bool,
+}
+
+enum ReadLoopAction {
+    Continue(LogicalAddress),
+    Return(ReadOperationStatus),
+}
+
+enum PeekLoopAction<T> {
+    Continue(LogicalAddress),
+    Return(PeekOperationStatus<T>),
 }
 
 pub fn read<F, D>(
@@ -115,17 +133,20 @@ where
             return Ok(ReadOperationStatus::NotFound);
         }
 
-        let record = materialize_record_at(context, current_address)?;
-        if functions.record_key_equals(key, &record.key_bytes) {
+        let safe_read_only_address = context.pointers.safe_read_only_address();
+        let action = with_record_at(context, current_address, |record| {
+            if !functions.record_key_equals(key, record.key_bytes) {
+                return ReadLoopAction::Continue(record.record_info.previous_address());
+            }
             if record.record_info.is_closed() {
-                return Ok(ReadOperationStatus::RetryLater);
+                return ReadLoopAction::Return(ReadOperationStatus::RetryLater);
             }
             if record.record_info.tombstone() || record.record_info.invalid() {
-                return Ok(ReadOperationStatus::NotFound);
+                return ReadLoopAction::Return(ReadOperationStatus::NotFound);
             }
 
-            let value = functions.value_from_record(&record.value_bytes);
-            let handled = if current_address >= context.pointers.safe_read_only_address() {
+            let value = functions.value_from_record(record.value_bytes);
+            let handled = if current_address >= safe_read_only_address {
                 functions.concurrent_reader(
                     key,
                     input,
@@ -139,25 +160,92 @@ where
             };
 
             if !handled {
-                return Ok(ReadOperationStatus::NotFound);
+                return ReadLoopAction::Return(ReadOperationStatus::NotFound);
             }
-            return Ok(if record.from_disk {
+            let status = if record.from_disk {
                 ReadOperationStatus::FoundOnDisk
             } else {
                 ReadOperationStatus::FoundInMemory
-            });
+            };
+            ReadLoopAction::Return(status)
+        })?;
+        match action {
+            ReadLoopAction::Continue(next_address) => {
+                current_address = next_address;
+            }
+            ReadLoopAction::Return(status) => {
+                return Ok(status);
+            }
         }
-
-        current_address = record.record_info.previous_address();
     }
 
     Ok(ReadOperationStatus::NotFound)
 }
 
-fn materialize_record_at<D: PageDevice>(
+pub fn peek<F, D, T, P>(
+    context: &mut ReadOperationContext<'_, D>,
+    functions: &F,
+    key_hash: u64,
+    key: &F::Key,
+    read_info: &ReadInfo,
+    on_found: P,
+) -> Result<PeekOperationStatus<T>, ReadOperationError>
+where
+    F: HybridLogReadAdapter,
+    D: PageDevice,
+    P: FnOnce(&[u8], &RecordInfo, &ReadInfo) -> T,
+{
+    let mut current_address = match context.hash_index.find_tag_address(key_hash) {
+        Some(address) => address,
+        None => return Ok(PeekOperationStatus::NotFound),
+    };
+    let mut on_found = Some(on_found);
+
+    while current_address != LogicalAddress(0) {
+        if current_address < context.pointers.begin_address() {
+            return Ok(PeekOperationStatus::NotFound);
+        }
+
+        let action = with_record_at(context, current_address, |record| {
+            if !functions.record_key_equals(key, record.key_bytes) {
+                return PeekLoopAction::Continue(record.record_info.previous_address());
+            }
+            if record.record_info.is_closed() {
+                return PeekLoopAction::Return(PeekOperationStatus::RetryLater);
+            }
+            if record.record_info.tombstone() || record.record_info.invalid() {
+                return PeekLoopAction::Return(PeekOperationStatus::NotFound);
+            }
+
+            let callback = on_found
+                .take()
+                .expect("peek callback may be consumed only once");
+            let callback_output = callback(record.value_bytes, &record.record_info, read_info);
+            let status = if record.from_disk {
+                PeekOperationStatus::FoundOnDisk(callback_output)
+            } else {
+                PeekOperationStatus::FoundInMemory(callback_output)
+            };
+            PeekLoopAction::Return(status)
+        })?;
+        match action {
+            PeekLoopAction::Continue(next_address) => {
+                current_address = next_address;
+            }
+            PeekLoopAction::Return(status) => {
+                return Ok(status);
+            }
+        }
+    }
+
+    Ok(PeekOperationStatus::NotFound)
+}
+
+fn with_record_at<D: PageDevice, T>(
     context: &mut ReadOperationContext<'_, D>,
     logical_address: LogicalAddress,
-) -> Result<MaterializedRecord, ReadOperationError> {
+    f: impl FnOnce(RecordView<'_>) -> T,
+) -> Result<T, ReadOperationError> {
     let logical = logical_address;
     let page_space = context.page_manager.address_space();
     let decoded = page_space.decode(logical);
@@ -186,12 +274,12 @@ fn materialize_record_at<D: PageDevice>(
     let key = parse_key_span(record_slice)?;
     let value = parse_value_span(record_slice)?;
 
-    Ok(MaterializedRecord {
+    Ok(f(RecordView {
         record_info,
-        key_bytes: key.as_slice().to_vec(),
-        value_bytes: value.as_slice().to_vec(),
+        key_bytes: key.as_slice(),
+        value_bytes: value.as_slice(),
         from_disk,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -437,6 +525,56 @@ mod tests {
     }
 
     #[test]
+    fn peek_returns_found_in_memory_with_borrowed_record_bytes() {
+        let hash_index = HashIndex::with_size_bits(2).unwrap();
+        let mut page_manager = PageManager::new(8, 4).unwrap();
+        page_manager.allocate_page(0).unwrap();
+
+        let key_hash = 14u64 << crate::HASH_TAG_SHIFT;
+        let logical_address = page_manager.address_space().encode(0, 8).unwrap();
+
+        let mut info = RecordInfo::default();
+        info.set_valid(true);
+        install_record(
+            &hash_index,
+            &mut page_manager,
+            key_hash,
+            logical_address,
+            b"foo",
+            b"peek",
+            info,
+        );
+
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        let device = InMemoryPageDevice::new(page_manager.page_size());
+        let functions = ByteSessionFunctions::default();
+        let key = b"foo".to_vec();
+        let read_info = ReadInfo::default();
+
+        let mut context = ReadOperationContext {
+            hash_index: &hash_index,
+            page_manager: &mut page_manager,
+            pointers: &pointers,
+            device: &device,
+        };
+
+        let status = peek(
+            &mut context,
+            &functions,
+            key_hash,
+            &key,
+            &read_info,
+            |value, record_info, _| {
+                assert!(record_info.valid());
+                value.to_vec()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(status, PeekOperationStatus::FoundInMemory(b"peek".to_vec()));
+    }
+
+    #[test]
     fn read_uses_single_reader_in_immutable_region() {
         let hash_index = HashIndex::with_size_bits(2).unwrap();
         let mut page_manager = PageManager::new(8, 4).unwrap();
@@ -548,6 +686,62 @@ mod tests {
     }
 
     #[test]
+    fn peek_loads_from_disk_when_address_is_below_head() {
+        let hash_index = HashIndex::with_size_bits(2).unwrap();
+        let mut page_manager = PageManager::new(8, 4).unwrap();
+        page_manager.allocate_page(0).unwrap();
+
+        let key_hash = 15u64 << crate::HASH_TAG_SHIFT;
+        let logical_address = page_manager.address_space().encode(0, 8).unwrap();
+
+        let mut info = RecordInfo::default();
+        info.set_valid(true);
+        install_record(
+            &hash_index,
+            &mut page_manager,
+            key_hash,
+            logical_address,
+            b"foo",
+            b"disk-peek",
+            info,
+        );
+
+        let device = InMemoryPageDevice::new(page_manager.page_size());
+        flush_page_to_device(&mut page_manager, &device, 0).unwrap();
+        page_manager.evict_page(0).unwrap();
+
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        pointers.shift_head_address(LogicalAddress(1u64 << 8));
+        pointers.shift_safe_read_only_address(LogicalAddress(1u64 << 8));
+
+        let functions = ByteSessionFunctions::default();
+        let key = b"foo".to_vec();
+        let read_info = ReadInfo::default();
+
+        let mut context = ReadOperationContext {
+            hash_index: &hash_index,
+            page_manager: &mut page_manager,
+            pointers: &pointers,
+            device: &device,
+        };
+
+        let status = peek(
+            &mut context,
+            &functions,
+            key_hash,
+            &key,
+            &read_info,
+            |value, _, _| value.to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            status,
+            PeekOperationStatus::FoundOnDisk(b"disk-peek".to_vec())
+        );
+    }
+
+    #[test]
     fn read_returns_retry_later_for_closed_record() {
         let hash_index = HashIndex::with_size_bits(2).unwrap();
         let mut page_manager = PageManager::new(8, 4).unwrap();
@@ -595,5 +789,53 @@ mod tests {
         .unwrap();
 
         assert_eq!(status, ReadOperationStatus::RetryLater);
+    }
+
+    #[test]
+    fn peek_returns_retry_later_for_closed_record() {
+        let hash_index = HashIndex::with_size_bits(2).unwrap();
+        let mut page_manager = PageManager::new(8, 4).unwrap();
+        page_manager.allocate_page(0).unwrap();
+
+        let key_hash = 16u64 << crate::HASH_TAG_SHIFT;
+        let logical_address = page_manager.address_space().encode(0, 8).unwrap();
+
+        let mut info = RecordInfo::default();
+        info.set_valid(true);
+        info.seal();
+        install_record(
+            &hash_index,
+            &mut page_manager,
+            key_hash,
+            logical_address,
+            b"foo",
+            b"closed",
+            info,
+        );
+
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        let device = InMemoryPageDevice::new(page_manager.page_size());
+        let functions = ByteSessionFunctions::default();
+        let key = b"foo".to_vec();
+        let read_info = ReadInfo::default();
+
+        let mut context = ReadOperationContext {
+            hash_index: &hash_index,
+            page_manager: &mut page_manager,
+            pointers: &pointers,
+            device: &device,
+        };
+
+        let status = peek(
+            &mut context,
+            &functions,
+            key_hash,
+            &key,
+            &read_info,
+            |value, _, _| value.to_vec(),
+        )
+        .unwrap();
+
+        assert_eq!(status, PeekOperationStatus::RetryLater);
     }
 }

@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 188  of event 'task-clock:ppp'
+# Event count (approx.): 1898989880
+#
+# Overhead  Command    Shared Object      Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+# ........  .........  .................  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+     6.38%  Proactor2  [kernel.kallsyms]  [k] __wake_up_sync_key
+            |
+            ---__wake_up_sync_key
+               tcp_data_ready
+               tcp_rcv_established
+               tcp_v4_do_rcv
+               tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               ip_local_deliver
+               ip_rcv_finish
+               ip_rcv
+               __netif_receive_skb_one_core
+               __netif_receive_skb
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               __do_softirq
+               ____do_softirq
+               call_on_irq_stack
+               do_softirq_own_stack
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               __ip_finish_output
+               ip_finish_output
+               ip_output
+               __ip_queue_xmit
+               ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_push
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               inet_sendmsg
+               __sock_sendmsg
+               ____sys_sendmsg
+               __sys_sendmsg_sock
+               io_sendmsg
+               io_issue_sqe
+               io_submit_sqes
+               __arm64_sys_io_uring_enter
+               invoke_syscall.constprop.0
+               do_el0_svc
+               el0_svc
+               el0t_64_sync_handler
+               el0t_64_sync
+               io_uring_submit_and_get_events
+               util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               finish
+
+     4.79%  Proactor5  [vdso]             [.] __kernel_clock_gettime
+            |
+            ---__kernel_clock_gettime
+               clock_gettime
+               absl::lts_20250512::GetCurrentTimeNanos()
+               |          
+               |--3.72%--util::fb2::detail::Scheduler::Run(util::fb2::FiberPriority)
+               |          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |          finish
+               |          
+               |--0.53%--util::fb2::detail::Scheduler::Preempt(bool)
+               |          util::fb2::FiberQueue::Run()
+               |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<dfly::TaskQueue::Start(std::basic_string_view<char, std::char_traits<char> >)::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, dfly::TaskQueue::Start(std::basic_string_view<char, std::char_traits<char> >)::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |          finish
+               |          
+                --0.53%--util::fb2::ProactorBase::RunOnIdleTasks()
+                          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+                          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+                          finish
+
+     3.72%  Proactor0  [vdso]             [.] __kernel_clock_gettime
+            |
+            ---__kernel_clock_gettime
+               clock_gettime
+               absl::lts_20250512::GetCurrentTimeNanos()
+               |          
+               |--2.66%--util::fb2::detail::Scheduler::Run(util::fb2::FiberPriority)
+               |          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |          finish
+               |          
+               |--0.53%--util::fb2::ProactorBase::RunOnIdleTasks()
+               |          util::fb2::UringProactor::MainLoop(util::fb2::detail::Scheduler*)
+               |          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, boost::context::basic_fixedsize_stack<boost::context::stack_traits>, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl(boost::context::preallocated const&, boost::context::basic_fixedsize_stack<boost::context::stack_traits>&&, util::fb2::detail::Scheduler*)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+               |          finish
+               |          
+                --0.53%--dfly::CommandContext::RecordLatency(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>) const
+                          dfly::Service::InvokeCmd(absl::lts_20250512::Span<std::basic_string_view<char, std::char_traits<char> > const>, dfly::CommandContext*)
+                          dfly::Service::DispatchCommand(facade::ParsedArgs, facade::ParsedCommand*)
+                          void absl::lts_20250512::functional_internal::InvokeObject<facade::Connection::ParseRedis(unsigned int)::{lambda()#1}, void>(absl::lts_20250512::functional_internal::VoidPtr)
+                          facade::Connection::DispatchSingle(bool, absl::lts_20250512::FunctionRef<void ()>, absl::lts_20250512::FunctionRef<facade::Connection::MessageHandle ()>)
+                          facade::Connection::ParseRedis(unsigned int)
+                          facade::Connection::IoLoop()
+                          facade::Connection::ConnectionFlow()
+                          facade::Connection::HandleRequests()
+                          util::ListenerInterface::RunSingleConnection(util::Connection*)
+                          void boost::context::detail::fiber_entry<boost::context::detail::fiber_record<boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl<util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}>::WorkerFiberImpl<util::fb2::FixedStackAllocator>(std::basic_string_view<char, std::char_traits<char> >, util::fb2::FiberPriority, boost::context::preallocated const&, util::fb2::FixedStackAllocator&&, util::ListenerInterface::RunAcceptLoop()::{lambda()#1}::operator()() const::{lambda()#1}&&)::{lambda(boost::context::fiber&&)#1}> >(boost::context::detail::transfer_t)
+                          finish
+
+     3.19%  Proactor1  [vdso]             [.] __kernel_clock_gettime
+            |
+            ---__kernel_clock_gettime
+               clock_gettime

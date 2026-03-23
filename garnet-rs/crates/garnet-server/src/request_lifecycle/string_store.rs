@@ -284,6 +284,27 @@ impl RequestProcessor {
         }
     }
 
+    pub(super) fn read_string_value_without_expiring(
+        &self,
+        key: DbKeyRef<'_>,
+    ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+        let db = key.db();
+        let key_bytes = key.key();
+        if !self.logical_db_uses_main_runtime(db)? {
+            let entry = self.auxiliary_value_snapshot(db, key_bytes);
+            self.track_read_key_for_current_client(key_bytes);
+            let Some(entry) = entry else {
+                return Ok(None);
+            };
+            let Some(MigrationValue::String(value)) = entry.value else {
+                return Ok(None);
+            };
+            return Ok(Some(value.into_vec()));
+        }
+
+        self.read_string_value(key)
+    }
+
     pub(super) fn key_exists(&self, key: DbKeyRef<'_>) -> Result<bool, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
@@ -945,6 +966,15 @@ impl RequestProcessor {
         registry.insert(RedisKey::from(key));
     }
 
+    pub(super) fn tracked_string_key_exists_in_shard(
+        &self,
+        key: &[u8],
+        shard_index: ShardIndex,
+    ) -> bool {
+        self.lock_string_key_registry_for_shard(shard_index)
+            .contains(key)
+    }
+
     pub(super) fn track_string_key(&self, key: &[u8]) {
         let shard_index = self.string_store_shard_index_for_key(key);
         self.track_string_key_in_shard(key, shard_index);
@@ -964,6 +994,15 @@ impl RequestProcessor {
     pub(super) fn track_object_key_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
         self.lock_object_key_registry_for_shard(shard_index)
             .insert(RedisKey::from(key));
+    }
+
+    pub(super) fn tracked_object_key_exists_in_shard(
+        &self,
+        key: &[u8],
+        shard_index: ShardIndex,
+    ) -> bool {
+        self.lock_object_key_registry_for_shard(shard_index)
+            .contains(key)
     }
 
     pub(super) fn untrack_object_key_in_shard(&self, key: DbKeyRef<'_>, shard_index: ShardIndex) {
@@ -1435,9 +1474,18 @@ impl RequestProcessor {
     }
 
     pub(super) fn bump_watch_version_in_db(&self, db: DbName, key: &[u8]) {
-        let slot = watch_version_slot(db, key);
-        self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
-        self.enqueue_tracking_invalidation_for_key(key);
+        let watching_clients = self.has_watching_clients();
+        let tracking_clients = self.has_tracking_clients();
+        if !watching_clients && !tracking_clients {
+            return;
+        }
+        if watching_clients {
+            let slot = watch_version_slot(db, key);
+            self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
+        }
+        if tracking_clients {
+            self.enqueue_tracking_invalidation_for_key(key);
+        }
     }
 
     pub(super) fn bump_watch_version(&self, key: DbKeyRef<'_>) {
@@ -1445,9 +1493,18 @@ impl RequestProcessor {
     }
 
     pub(super) fn bump_watch_version_server_origin_in_db(&self, db: DbName, key: &[u8]) {
-        let slot = watch_version_slot(db, key);
-        self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
-        self.enqueue_tracking_invalidation_for_key_as_server(key);
+        let watching_clients = self.has_watching_clients();
+        let tracking_clients = self.has_tracking_clients();
+        if !watching_clients && !tracking_clients {
+            return;
+        }
+        if watching_clients {
+            let slot = watch_version_slot(db, key);
+            self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
+        }
+        if tracking_clients {
+            self.enqueue_tracking_invalidation_for_key_as_server(key);
+        }
     }
 
     pub(super) fn bump_watch_version_server_origin(&self, key: DbKeyRef<'_>) {

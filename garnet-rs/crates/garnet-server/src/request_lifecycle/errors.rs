@@ -140,6 +140,8 @@ pub enum RequestExecutionError {
     NumidsParameterMustMatchArguments,
     ResultingScoreNotANumber,
     SortScoreNotDouble,
+    SortByDeniedByAcl,
+    SortGetDeniedByAcl,
 }
 
 impl RequestExecutionError {
@@ -526,6 +528,14 @@ impl RequestExecutionError {
             Self::SortScoreNotDouble => append_error(
                 response_out,
                 "ERR One or more scores can't be converted into double",
+            ),
+            Self::SortByDeniedByAcl => append_error(
+                response_out,
+                "ERR BY option of SORT denied due to insufficient ACL permissions.",
+            ),
+            Self::SortGetDeniedByAcl => append_error(
+                response_out,
+                "ERR GET option of SORT denied due to insufficient ACL permissions.",
             ),
         }
     }

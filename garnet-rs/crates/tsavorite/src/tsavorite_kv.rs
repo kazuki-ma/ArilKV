@@ -30,6 +30,7 @@ use crate::hybrid_log::PageManager;
 use crate::hybrid_log::PageManagerError;
 use crate::hybrid_log::PageResidencyError;
 use crate::hybrid_log::shift_head_address_and_evict;
+use crate::read_operation::PeekOperationStatus;
 use crate::read_operation::ReadOperationContext;
 use crate::read_operation::ReadOperationError;
 use crate::read_operation::ReadOperationStatus;
@@ -352,6 +353,35 @@ where
             input,
             output,
             read_info,
+        )
+    }
+
+    pub fn peek<T, P>(
+        &mut self,
+        key: &K,
+        read_info: &ReadInfo,
+        on_found: P,
+    ) -> Result<PeekOperationStatus<T>, ReadOperationError>
+    where
+        K: Hash,
+        F: HybridLogReadAdapter<Key = K>,
+        P: FnOnce(&[u8], &crate::RecordInfo, &ReadInfo) -> T,
+    {
+        let _guard = self.store.epoch.pin();
+        let key_hash = hash_key(key);
+        let mut context = ReadOperationContext {
+            hash_index: &self.store.hash_index,
+            page_manager: &mut self.store.page_manager,
+            pointers: &self.store.pointers,
+            device: &self.store.device,
+        };
+        crate::read_operation::peek(
+            &mut context,
+            self.functions,
+            key_hash,
+            key,
+            read_info,
+            on_found,
         )
     }
 

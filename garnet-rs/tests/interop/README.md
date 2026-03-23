@@ -50,19 +50,18 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
     - set `RUNTEXT_SINGLEDB=0` to exercise MultiDB-capable Garnet without the singledb skip profile
     - default mode is **full** (no `--single` / `--only` / `--tags` filters)
     - full mode applies `--timeout 120` by default (override with `RUNTEXT_TIMEOUT_SECONDS`)
-    - full mode skips `unit/querybuf` by default (`RUNTEXT_SKIP_QUERYBUF_IN_FULL=1`) to avoid
-      cron/expiration state contamination on early querybuf failure
-    - full mode skips `unit/scripting` by default (`RUNTEXT_SKIP_SCRIPTING_IN_FULL=1`) to avoid
-      debug-expiration state contamination from partial scripting failures
-    - full mode skips `unit/other` by default (`RUNTEXT_SKIP_OTHER_IN_FULL=1`) to avoid
-      long-run contamination at the inline `PIPELINING stresser` case
-    - full mode runs `unit/querybuf` in a separate isolated case by default
-      (`RUNTEXT_RUN_QUERYBUF_ISOLATED=1`)
-    - full mode runs `unit/scripting` in a separate isolated case by default
-      (`RUNTEXT_RUN_SCRIPTING_ISOLATED=1`)
-    - full mode runs `unit/other` in a separate isolated case by default
-      (`RUNTEXT_RUN_OTHER_ISOLATED=1`)
-    - isolated `unit/other` uses a longer per-unit timeout by default
+    - full mode keeps `unit/querybuf`, `unit/scripting`, `unit/other`, and
+      `integration/redis-cli` in-band by default; the old exact-skip tail is now
+      only available as an opt-in debugging escape hatch
+    - optional isolated reruns remain available for focused diagnosis:
+      `RUNTEXT_RUN_QUERYBUF_ISOLATED=1`,
+      `RUNTEXT_RUN_SCRIPTING_ISOLATED=1`,
+      `RUNTEXT_RUN_OTHER_ISOLATED=1`,
+      `RUNTEXT_RUN_SCRIPTING_NOREPLICAS_TEST_ISOLATED=1`,
+      `RUNTEXT_RUN_OTHER_PIPELINE_STRESSER_ISOLATED=1`,
+      `RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED=1`
+    - isolated `unit/other` still uses a longer per-unit timeout when that
+      debugging path is enabled
       (`RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS=180`) because the inline
       `PIPELINING stresser` is slower under Tcl external mode than the Rust
       exact regression
@@ -70,6 +69,9 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
       auto-restart if reset cannot recover a healthy `PING`
     - developer shortcut: `RUNTEXT_RUN_ONLY_ISOLATED_UNIT=<unit/path>` runs just one isolated
       unit path through the same restart/probe wrapper
+    - set `RUNTEXT_ENABLE_LARGE_MEMORY=1` to pass upstream `--large-memory`
+      into the same harness, with longer default timeouts and a higher
+      Tsavorite page budget
     - optional compatibility-smoke mode: `REDIS_RUNTEXT_MODE=subset`
   - Validates runtest stdout counts in all modes:
     - parses `[ok]` / `[err]` / `[ignore]` counts from log
@@ -78,6 +80,16 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
   - Includes a direct `redis-cli TYPE` probe (`string/hash/none`) in the same run.
   - Writes a CSV summary and per-case logs under
     `garnet-rs/tests/interop/results/...`.
+
+- `redis_runtest_external_large_memory.sh`
+  - Dedicated manual/CI lane for upstream `large-memory` cases:
+    - enables `RUNTEXT_ENABLE_LARGE_MEMORY=1`
+    - defaults to `RUNTEXT_EXTRA_ARGS='--tags large-memory'`
+    - increases timeouts (`900s` per test, `14400s` wall) and
+      `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES=524288`
+    - callers can still override `RUNTEXT_EXTRA_ARGS` for a narrower smoke run
+  - Keeps the default `redis_runtest_external_subset.sh` profile lean while
+    still providing a checked-in path for the 4GB-class upstream scenarios.
 
 - `build_command_status_matrix.sh`
   - Generates a full Redis-command status matrix for Garnet (all commands):
@@ -116,6 +128,7 @@ chmod +x command_coverage_audit.sh cluster_capability_matrix.sh
 chmod +x replication_capability_matrix.sh
 chmod +x cluster_wait_failover_gap_probe.sh
 chmod +x redis_runtest_external_subset.sh
+chmod +x redis_runtest_external_large_memory.sh
 chmod +x build_command_status_matrix.sh
 chmod +x build_command_maturity_matrix.sh
 chmod +x build_compatibility_report.sh
@@ -125,12 +138,20 @@ chmod +x build_compatibility_report.sh
 ./replication_capability_matrix.sh
 ./cluster_wait_failover_gap_probe.sh
 ./redis_runtest_external_subset.sh
+./redis_runtest_external_large_memory.sh
 ./build_command_status_matrix.sh
 ./build_command_maturity_matrix.sh
 ./build_compatibility_report.sh
 
 # optional: quick smoke mode (instead of default full probe)
 COMPAT_PROBE_MODE=subset ./build_compatibility_report.sh
+
+# dedicated large-memory lane
+./redis_runtest_external_large_memory.sh
+
+# safe plumbing smoke for the large-memory lane without allocating 4GB values
+RUNTEXT_EXTRA_ARGS='--single unit/type/string --only "SET and GET an item"' \
+./redis_runtest_external_large_memory.sh
 ```
 
 ## Required Flow For Command Edits

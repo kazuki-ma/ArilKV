@@ -8,10 +8,13 @@ use crate::ClientId;
 use crate::RequestProcessor;
 use crate::ShardOwnerThreadPool;
 use crate::command_spec::CommandId;
+use crate::connection_protocol::append_error_line;
 use crate::connection_protocol::ascii_eq_ignore_case;
 use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
+use crate::request_lifecycle::AclLogContext;
+use crate::request_lifecycle::ClientAclAuthorizationError;
 use crate::request_lifecycle::DbName;
 use crate::request_lifecycle::DeferredReplicationFrame;
 use crate::request_lifecycle::RequestConnectionEffects;
@@ -29,6 +32,10 @@ pub(crate) struct ConnectionTransactionState {
 }
 
 impl ConnectionTransactionState {
+    pub(crate) fn has_watches(&self) -> bool {
+        !self.watched_keys.is_empty()
+    }
+
     pub(crate) fn reset(&mut self) {
         self.in_multi = false;
         self.queued_frames.clear();
@@ -249,6 +256,55 @@ fn execute_transaction_queue_on_owner_thread(
                 }
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
                 let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                if let Some(current_client_id) = client_id
+                    && !command_bypasses_acl(command)
+                {
+                    let acl_args = args[..meta.argument_count]
+                        .iter()
+                        .map(arg_slice_bytes)
+                        .collect::<Vec<_>>();
+                    match processor.acl_authorize_client_command(
+                        current_client_id,
+                        item_selected_db,
+                        command,
+                        &acl_args,
+                    ) {
+                        Ok(()) => {}
+                        Err(ClientAclAuthorizationError::AuthenticationRequired) => {
+                            processor.record_error_reply(b"NOAUTH");
+                            append_error_line(
+                                &mut item_response,
+                                b"NOAUTH Authentication required.",
+                            );
+                            items.push(ExecutedTransactionItem {
+                                selected_db: item_selected_db,
+                                frame,
+                                response: item_response,
+                                deferred_replication_frames: Vec::new(),
+                            });
+                            continue;
+                        }
+                        Err(ClientAclAuthorizationError::Denied(error)) => {
+                            processor.record_acl_denial_for_client_with_context(
+                                current_client_id,
+                                &error,
+                                AclLogContext::Multi,
+                            );
+                            processor.record_error_reply(b"NOPERM");
+                            append_error_line(
+                                &mut item_response,
+                                &processor.acl_denial_message_for_client(current_client_id, &error),
+                            );
+                            items.push(ExecutedTransactionItem {
+                                selected_db: item_selected_db,
+                                frame,
+                                response: item_response,
+                                deferred_replication_frames: Vec::new(),
+                            });
+                            continue;
+                        }
+                    }
+                }
                 match processor.execute_with_client_no_touch_in_transaction_and_effects_in_db(
                     &args[..meta.argument_count],
                     &mut item_response,
@@ -308,6 +364,13 @@ fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
 fn command_is_replication_passthrough(command_name: &[u8]) -> bool {
     ascii_eq_ignore_case(command_name, b"REPLICAOF")
         || ascii_eq_ignore_case(command_name, b"SLAVEOF")
+}
+
+fn command_bypasses_acl(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Auth | CommandId::Hello | CommandId::Quit | CommandId::Reset
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

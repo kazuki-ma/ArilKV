@@ -23,9 +23,12 @@ CLIENT_CPU_SET="${CLIENT_CPU_SET:-}"
 GARNET_TSAVORITE_STRING_STORE_SHARDS="${GARNET_TSAVORITE_STRING_STORE_SHARDS:-2}"
 GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-262144}"
 GARNET_STRING_OWNER_THREADS="${GARNET_STRING_OWNER_THREADS:-}"
+TOKIO_WORKER_THREADS="${TOKIO_WORKER_THREADS:-}"
 GARNET_OWNER_THREAD_PINNING="${GARNET_OWNER_THREAD_PINNING:-}"
 GARNET_OWNER_THREAD_CPU_SET="${GARNET_OWNER_THREAD_CPU_SET:-}"
 GARNET_OWNER_EXECUTION_INLINE="${GARNET_OWNER_EXECUTION_INLINE:-}"
+DRAGONFLY_PROACTOR_THREADS="${DRAGONFLY_PROACTOR_THREADS:-}"
+DRAGONFLY_CONN_IO_THREADS="${DRAGONFLY_CONN_IO_THREADS:-}"
 
 OUTDIR_HOST="${OUTDIR_HOST:-${REPO_ROOT}/benches/results/linux-perf-diff-docker-$(date +%Y%m%d-%H%M%S)}"
 OUTDIR_BASENAME="$(basename "${OUTDIR_HOST}")"
@@ -44,10 +47,50 @@ docker info >/dev/null 2>&1 || {
 
 mkdir -p "${OUTDIR_HOST}"
 
-docker run --rm --privileged --security-opt seccomp=unconfined \
-    -v "${WORKSPACE_ROOT}:/work" \
-    -v "${OUTDIR_PARENT_HOST}:/out-host" \
-    -w /work \
+DOCKER_RUN_ARGS=(
+    --rm
+    --privileged
+    --security-opt seccomp=unconfined
+    -v "${WORKSPACE_ROOT}:/work"
+    -v "${OUTDIR_PARENT_HOST}:/out-host"
+    -w /work
+)
+
+add_required_env() {
+    DOCKER_RUN_ARGS+=(-e "$1=$2")
+}
+
+add_optional_env() {
+    if [[ -n "$2" ]]; then
+        DOCKER_RUN_ARGS+=(-e "$1=$2")
+    fi
+}
+
+add_required_env THREADS "${THREADS}"
+add_required_env CONNS "${CONNS}"
+add_required_env REQUESTS "${REQUESTS}"
+add_required_env PRELOAD_REQUESTS "${PRELOAD_REQUESTS}"
+add_required_env PIPELINE "${PIPELINE}"
+add_required_env SIZE_RANGE "${SIZE_RANGE}"
+add_required_env PORT_BASE "${PORT_BASE}"
+add_required_env PERF_FREQ "${PERF_FREQ}"
+add_required_env TARGETS "${TARGETS}"
+add_required_env WORKLOADS "${WORKLOADS}"
+add_required_env GARNET_TSAVORITE_STRING_STORE_SHARDS "${GARNET_TSAVORITE_STRING_STORE_SHARDS}"
+add_required_env GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES "${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}"
+add_required_env OUTDIR "${OUTDIR_CONTAINER}"
+
+add_optional_env SERVER_CPU_SET "${SERVER_CPU_SET}"
+add_optional_env CLIENT_CPU_SET "${CLIENT_CPU_SET}"
+add_optional_env GARNET_STRING_OWNER_THREADS "${GARNET_STRING_OWNER_THREADS}"
+add_optional_env TOKIO_WORKER_THREADS "${TOKIO_WORKER_THREADS}"
+add_optional_env GARNET_OWNER_THREAD_PINNING "${GARNET_OWNER_THREAD_PINNING}"
+add_optional_env GARNET_OWNER_THREAD_CPU_SET "${GARNET_OWNER_THREAD_CPU_SET}"
+add_optional_env GARNET_OWNER_EXECUTION_INLINE "${GARNET_OWNER_EXECUTION_INLINE}"
+add_optional_env DRAGONFLY_PROACTOR_THREADS "${DRAGONFLY_PROACTOR_THREADS}"
+add_optional_env DRAGONFLY_CONN_IO_THREADS "${DRAGONFLY_CONN_IO_THREADS}"
+
+docker run "${DOCKER_RUN_ARGS[@]}" \
     "${DOCKER_IMAGE}" bash -lc "
 set -euo pipefail
 export RUSTUP_HOME=/usr/local/rustup
@@ -88,28 +131,9 @@ chmod +x \"/tmp/dragonfly/\${dfly_name}\"
 
 cd /work/garnet-rs
 export CARGO_TARGET_DIR=/tmp/garnet-target-linux
-MEMTIER_BIN=/tmp/memtier-src/memtier_benchmark \
-DRAGONFLY_BIN=\"/tmp/dragonfly/\${dfly_name}\" \
-GARNET_BIN=/tmp/garnet-target-linux/release/garnet-server \
-THREADS='${THREADS}' \
-CONNS='${CONNS}' \
-REQUESTS='${REQUESTS}' \
-PRELOAD_REQUESTS='${PRELOAD_REQUESTS}' \
-PIPELINE='${PIPELINE}' \
-SIZE_RANGE='${SIZE_RANGE}' \
-PORT_BASE='${PORT_BASE}' \
-PERF_FREQ='${PERF_FREQ}' \
-TARGETS='${TARGETS}' \
-WORKLOADS='${WORKLOADS}' \
-SERVER_CPU_SET='${SERVER_CPU_SET}' \
-CLIENT_CPU_SET='${CLIENT_CPU_SET}' \
-GARNET_TSAVORITE_STRING_STORE_SHARDS='${GARNET_TSAVORITE_STRING_STORE_SHARDS}' \
-GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES='${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}' \
-GARNET_STRING_OWNER_THREADS='${GARNET_STRING_OWNER_THREADS}' \
-GARNET_OWNER_THREAD_PINNING='${GARNET_OWNER_THREAD_PINNING}' \
-GARNET_OWNER_THREAD_CPU_SET='${GARNET_OWNER_THREAD_CPU_SET}' \
-GARNET_OWNER_EXECUTION_INLINE='${GARNET_OWNER_EXECUTION_INLINE}' \
-OUTDIR='${OUTDIR_CONTAINER}' \
+export MEMTIER_BIN=/tmp/memtier-src/memtier_benchmark
+export DRAGONFLY_BIN=\"/tmp/dragonfly/\${dfly_name}\"
+export GARNET_BIN=/tmp/garnet-target-linux/release/garnet-server
 ./benches/linux_perf_diff_profile.sh
 "
 
