@@ -1,0 +1,418 @@
+diff --git a/garnet-rs/crates/garnet-server/src/connection_handler.rs b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+index a0b774b534..e5d2ee9469 100644
+--- a/garnet-rs/crates/garnet-server/src/connection_handler.rs
++++ b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+@@ -596,6 +596,18 @@ impl ClientConnectionState {
+         self.tracking_prefixes.clear();
+         self.tracking_caching = None;
+     }
++
++    fn should_track_reads(&self) -> bool {
++        if self.tracking_bcast {
++            return false;
++        }
++        match self.tracking_mode {
++            ClientTrackingMode::Off => false,
++            ClientTrackingMode::On => true,
++            ClientTrackingMode::OptIn => self.tracking_caching == Some(true),
++            ClientTrackingMode::OptOut => self.tracking_caching != Some(false),
++        }
++    }
+ }
+ 
+ fn reset_connection_auth_state(
+@@ -1645,6 +1657,7 @@ pub(crate) async fn handle_connection(
+                                                     &mut responses,
+                                                     max_resp_arguments,
+                                                     client_state.no_touch,
++                                                    client_state.should_track_reads(),
+                                                     Some(client_id),
+                                                     client_state.authenticated,
+                                                     client_state.authenticated_user.clone(),
+@@ -2257,6 +2270,7 @@ pub(crate) async fn handle_connection(
+                                 command_mutating,
+                                 frame,
+                                 client_state.no_touch,
++                                client_state.should_track_reads(),
+                                 client_id,
+                                 client_state.authenticated,
+                                 client_state.authenticated_user.as_slice(),
+@@ -2659,6 +2673,7 @@ async fn execute_frame_on_owner_thread_async(
+     command: CommandId,
+     frame: &[u8],
+     client_no_touch: bool,
++    client_tracks_reads: bool,
+     client_id: Option<ClientId>,
+     selected_db: DbName,
+ ) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
+@@ -2671,6 +2686,7 @@ async fn execute_frame_on_owner_thread_async(
+                 &task_processor,
+                 &owned_args,
+                 client_no_touch,
++                client_tracks_reads,
+                 client_id,
+                 selected_db,
+             )
+@@ -2687,6 +2703,7 @@ async fn execute_frame_on_owner_thread_async(
+         command,
+         frame,
+         client_no_touch,
++        client_tracks_reads,
+         client_id,
+         selected_db,
+     )
+@@ -2703,6 +2720,7 @@ async fn execute_blocking_frame_on_owner_thread(
+     command_mutating: bool,
+     frame: &[u8],
+     client_no_touch: bool,
++    client_tracks_reads: bool,
+     client_id: ClientId,
+     client_authenticated: bool,
+     client_user: &[u8],
+@@ -2939,6 +2957,7 @@ async fn execute_blocking_frame_on_owner_thread(
+             command,
+             frame,
+             client_no_touch,
++            client_tracks_reads,
+             Some(client_id),
+             selected_db,
+         )
+diff --git a/garnet-rs/crates/garnet-server/src/connection_owner_routing.rs b/garnet-rs/crates/garnet-server/src/connection_owner_routing.rs
+index 38617f0d30..e5bdaff4a4 100644
+--- a/garnet-rs/crates/garnet-server/src/connection_owner_routing.rs
++++ b/garnet-rs/crates/garnet-server/src/connection_owner_routing.rs
+@@ -119,6 +119,7 @@ pub(crate) fn execute_owned_frame_args_via_processor(
+     processor: &RequestProcessor,
+     owned_args: &OwnedFrameArgs,
+     client_no_touch: bool,
++    client_tracks_reads: bool,
+     client_id: Option<ClientId>,
+     selected_db: DbName,
+ ) -> Result<OwnedExecutionOutcome, RoutedExecutionError> {
+@@ -126,10 +127,11 @@ pub(crate) fn execute_owned_frame_args_via_processor(
+ 
+     let mut response = Vec::new();
+     let execution_effects = processor
+-        .execute_with_client_context_and_effects_in_db(
++        .execute_with_client_tracking_context_and_effects_in_db(
+             &args,
+             &mut response,
+             client_no_touch,
++            client_tracks_reads,
+             client_id,
+             false,
+             selected_db,
+@@ -149,16 +151,18 @@ pub(crate) fn execute_frame_on_owner_thread(
+     command: CommandId,
+     frame: &[u8],
+     client_no_touch: bool,
++    client_tracks_reads: bool,
+     client_id: Option<ClientId>,
+     selected_db: DbName,
+ ) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
+     if owner_thread_pool.is_inline_execution() {
+         let mut response = Vec::new();
+         let execution_effects = processor
+-            .execute_with_client_context_and_effects_in_db(
++            .execute_with_client_tracking_context_and_effects_in_db(
+                 args,
+                 &mut response,
+                 client_no_touch,
++                client_tracks_reads,
+                 client_id,
+                 false,
+                 selected_db,
+@@ -180,6 +184,7 @@ pub(crate) fn execute_frame_on_owner_thread(
+                 &routed_processor,
+                 &owned_args,
+                 client_no_touch,
++                client_tracks_reads,
+                 client_id,
+                 selected_db,
+             )
+diff --git a/garnet-rs/crates/garnet-server/src/connection_transaction.rs b/garnet-rs/crates/garnet-server/src/connection_transaction.rs
+index 90c91f94c9..2c3624fef7 100644
+--- a/garnet-rs/crates/garnet-server/src/connection_transaction.rs
++++ b/garnet-rs/crates/garnet-server/src/connection_transaction.rs
+@@ -107,6 +107,7 @@ pub(crate) fn execute_transaction_queue(
+     responses: &mut Vec<u8>,
+     max_resp_arguments: usize,
+     client_no_touch: bool,
++    client_tracks_reads: bool,
+     client_id: Option<ClientId>,
+     client_authenticated: bool,
+     client_user: Vec<u8>,
+@@ -135,6 +136,7 @@ pub(crate) fn execute_transaction_queue(
+                 queued,
+                 max_resp_arguments,
+                 client_no_touch,
++                client_tracks_reads,
+                 client_id,
+                 client_authenticated,
+                 client_user.as_slice(),
+@@ -217,6 +219,7 @@ fn execute_transaction_queue_on_owner_thread(
+     queued: Vec<Vec<u8>>,
+     max_resp_arguments: usize,
+     client_no_touch: bool,
++    client_tracks_reads: bool,
+     client_id: Option<ClientId>,
+     client_authenticated: bool,
+     client_user: &[u8],
+@@ -312,13 +315,15 @@ fn execute_transaction_queue_on_owner_thread(
+                         }
+                     }
+                 }
+-                match processor.execute_with_client_no_touch_in_transaction_and_effects_in_db(
+-                    &args[..meta.argument_count],
+-                    &mut item_response,
+-                    client_no_touch,
+-                    client_id,
+-                    transaction_selected_db,
+-                ) {
++                match processor
++                    .execute_with_client_tracking_no_touch_in_transaction_and_effects_in_db(
++                        &args[..meta.argument_count],
++                        &mut item_response,
++                        client_no_touch,
++                        client_tracks_reads,
++                        client_id,
++                        transaction_selected_db,
++                    ) {
+                     Ok(execution_effects) => {
+                         connection_effects_after_exec
+                             .merge_from(execution_effects.connection_effects);
+diff --git a/garnet-rs/crates/garnet-server/src/redis_replication.rs b/garnet-rs/crates/garnet-server/src/redis_replication.rs
+index b17047202f..e193ce5905 100644
+--- a/garnet-rs/crates/garnet-server/src/redis_replication.rs
++++ b/garnet-rs/crates/garnet-server/src/redis_replication.rs
+@@ -1419,6 +1419,7 @@ async fn process_upstream_frame(
+         command_id,
+         frame,
+         false,
++        false,
+         None,
+         *applied_selected_db,
+     ) {
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+index 7649827a69..93dfdcee43 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+@@ -3591,9 +3591,6 @@ impl RequestProcessor {
+     }
+ 
+     pub(crate) fn track_read_key_for_current_client(&self, key: &[u8]) {
+-        if !self.has_tracking_clients() {
+-            return;
+-        }
+         if !current_request_tracking_reads_enabled() {
+             return;
+         }
+@@ -7365,11 +7362,12 @@ impl RequestProcessor {
+         .map(|_| ())
+     }
+ 
+-    pub(crate) fn execute_with_client_context_and_effects_in_db(
++    pub(crate) fn execute_with_client_tracking_context_and_effects_in_db(
+         &self,
+         args: &[ArgSlice],
+         response_out: &mut Vec<u8>,
+         client_no_touch: bool,
++        client_tracks_reads: bool,
+         client_id: Option<ClientId>,
+         in_transaction: bool,
+         selected_db: DbName,
+@@ -7378,7 +7376,7 @@ impl RequestProcessor {
+             client_no_touch,
+             client_id,
+             in_transaction,
+-            tracking_reads_enabled: false,
++            tracking_reads_enabled: client_tracks_reads,
+             connection_effects: RequestConnectionEffects::NONE,
+         });
+         begin_deferred_replication_frame_collection();
+@@ -7391,6 +7389,26 @@ impl RequestProcessor {
+         execution.map(|_| execution_effects)
+     }
+ 
++    pub(crate) fn execute_with_client_context_and_effects_in_db(
++        &self,
++        args: &[ArgSlice],
++        response_out: &mut Vec<u8>,
++        client_no_touch: bool,
++        client_id: Option<ClientId>,
++        in_transaction: bool,
++        selected_db: DbName,
++    ) -> Result<RequestExecutionEffects, RequestExecutionError> {
++        self.execute_with_client_tracking_context_and_effects_in_db(
++            args,
++            response_out,
++            client_no_touch,
++            false,
++            client_id,
++            in_transaction,
++            selected_db,
++        )
++    }
++
+     #[cfg(test)]
+     pub(crate) fn execute_with_client_no_touch_in_transaction_in_db(
+         &self,
+@@ -7400,28 +7418,31 @@ impl RequestProcessor {
+         client_id: Option<ClientId>,
+         selected_db: DbName,
+     ) -> Result<(), RequestExecutionError> {
+-        self.execute_with_client_no_touch_in_transaction_and_effects_in_db(
++        self.execute_with_client_tracking_no_touch_in_transaction_and_effects_in_db(
+             args,
+             response_out,
+             client_no_touch,
++            false,
+             client_id,
+             selected_db,
+         )
+         .map(|_| ())
+     }
+ 
+-    pub(crate) fn execute_with_client_no_touch_in_transaction_and_effects_in_db(
++    pub(crate) fn execute_with_client_tracking_no_touch_in_transaction_and_effects_in_db(
+         &self,
+         args: &[ArgSlice],
+         response_out: &mut Vec<u8>,
+         client_no_touch: bool,
++        client_tracks_reads: bool,
+         client_id: Option<ClientId>,
+         selected_db: DbName,
+     ) -> Result<RequestExecutionEffects, RequestExecutionError> {
+-        self.execute_with_client_context_and_effects_in_db(
++        self.execute_with_client_tracking_context_and_effects_in_db(
+             args,
+             response_out,
+             client_no_touch,
++            client_tracks_reads,
+             client_id,
+             true,
+             selected_db,
+@@ -7488,7 +7509,7 @@ impl RequestProcessor {
+         let previous_tracking_reads_enabled = REQUEST_EXECUTION_CONTEXT.with(|state| {
+             let mut context = state.get();
+             let previous = context.tracking_reads_enabled;
+-            context.tracking_reads_enabled = !command_mutating;
++            context.tracking_reads_enabled = previous && !command_mutating;
+             state.set(context);
+             previous
+         });
+diff --git a/garnet-rs/crates/garnet-server/src/tests.rs b/garnet-rs/crates/garnet-server/src/tests.rs
+index d2293bcd1e..baa713a738 100644
+--- a/garnet-rs/crates/garnet-server/src/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/tests.rs
+@@ -20274,6 +20274,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
+         &processor,
+         &set_owned_args,
+         false,
++        false,
+         None,
+         crate::request_lifecycle::DbName::fixture(),
+     )
+@@ -20287,6 +20288,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
+         &processor,
+         &get_owned_args,
+         false,
++        false,
+         None,
+         crate::request_lifecycle::DbName::fixture(),
+     )
+@@ -25502,6 +25504,94 @@ async fn tracking_gets_notification_of_expired_keys_like_external_scenario() {
+     server.await.unwrap();
+ }
+ 
++#[tokio::test]
++async fn client_tracking_optin_only_tracks_reads_after_caching_yes() {
++    let (addr, shutdown_tx, server) = start_test_server().await;
++    wait_for_server_ping(addr).await;
++
++    let timeout = Duration::from_secs(1);
++    let mut writer = TcpStream::connect(addr).await.unwrap();
++    let mut redirect = TcpStream::connect(addr).await.unwrap();
++
++    let redirect_id = send_and_read_integer(
++        &mut redirect,
++        &encode_resp_command(&[b"CLIENT", b"ID"]),
++        timeout,
++    )
++    .await;
++    let redirect_id_text = redirect_id.to_string();
++
++    send_and_expect(
++        &mut writer,
++        &encode_resp_command(&[
++            b"CLIENT",
++            b"TRACKING",
++            b"ON",
++            b"OPTIN",
++            b"REDIRECT",
++            redirect_id_text.as_bytes(),
++        ]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    send_and_expect(
++        &mut writer,
++        &encode_resp_command(&[b"SET", b"tracked", b"v1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut writer,
++        &encode_resp_command(&[b"GET", b"tracked"]),
++        b"$2\r\nv1\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut writer,
++        &encode_resp_command(&[b"SET", b"tracked", b"v2"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let mut peek_probe = [0u8; 1];
++    assert!(
++        tokio::time::timeout(Duration::from_millis(200), redirect.peek(&mut peek_probe))
++            .await
++            .is_err(),
++        "OPTIN without CLIENT CACHING YES must not register read tracking"
++    );
++
++    send_and_expect(
++        &mut writer,
++        &encode_resp_command(&[b"CLIENT", b"CACHING", b"YES"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut writer,
++        &encode_resp_command(&[b"GET", b"tracked"]),
++        b"$2\r\nv2\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut writer,
++        &encode_resp_command(&[b"SET", b"tracked", b"v3"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let message = read_resp_value_with_timeout(&mut redirect, Duration::from_secs(1)).await;
++    let items = resp_socket_array(&message);
++    assert_eq!(items.len(), 3);
++    assert_eq!(resp_socket_bulk(&items[0]), b"message");
++    assert_eq!(resp_socket_bulk(&items[1]), b"__redis__:invalidate");
++    assert_eq!(resp_socket_bulk(&items[2]), b"tracked");
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
+ async fn wait_until<P>(mut predicate: P, timeout: Duration)
+ where
+     P: FnMut() -> bool,

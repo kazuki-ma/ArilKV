@@ -3591,9 +3591,6 @@ impl RequestProcessor {
     }
 
     pub(crate) fn track_read_key_for_current_client(&self, key: &[u8]) {
-        if !self.has_tracking_clients() {
-            return;
-        }
         if !current_request_tracking_reads_enabled() {
             return;
         }
@@ -7365,11 +7362,12 @@ impl RequestProcessor {
         .map(|_| ())
     }
 
-    pub(crate) fn execute_with_client_context_and_effects_in_db(
+    pub(crate) fn execute_with_client_tracking_context_and_effects_in_db(
         &self,
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
         client_no_touch: bool,
+        client_tracks_reads: bool,
         client_id: Option<ClientId>,
         in_transaction: bool,
         selected_db: DbName,
@@ -7378,7 +7376,7 @@ impl RequestProcessor {
             client_no_touch,
             client_id,
             in_transaction,
-            tracking_reads_enabled: false,
+            tracking_reads_enabled: client_tracks_reads,
             connection_effects: RequestConnectionEffects::NONE,
         });
         begin_deferred_replication_frame_collection();
@@ -7391,6 +7389,26 @@ impl RequestProcessor {
         execution.map(|_| execution_effects)
     }
 
+    pub(crate) fn execute_with_client_context_and_effects_in_db(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        client_no_touch: bool,
+        client_id: Option<ClientId>,
+        in_transaction: bool,
+        selected_db: DbName,
+    ) -> Result<RequestExecutionEffects, RequestExecutionError> {
+        self.execute_with_client_tracking_context_and_effects_in_db(
+            args,
+            response_out,
+            client_no_touch,
+            false,
+            client_id,
+            in_transaction,
+            selected_db,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn execute_with_client_no_touch_in_transaction_in_db(
         &self,
@@ -7400,28 +7418,31 @@ impl RequestProcessor {
         client_id: Option<ClientId>,
         selected_db: DbName,
     ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_no_touch_in_transaction_and_effects_in_db(
+        self.execute_with_client_tracking_no_touch_in_transaction_and_effects_in_db(
             args,
             response_out,
             client_no_touch,
+            false,
             client_id,
             selected_db,
         )
         .map(|_| ())
     }
 
-    pub(crate) fn execute_with_client_no_touch_in_transaction_and_effects_in_db(
+    pub(crate) fn execute_with_client_tracking_no_touch_in_transaction_and_effects_in_db(
         &self,
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
         client_no_touch: bool,
+        client_tracks_reads: bool,
         client_id: Option<ClientId>,
         selected_db: DbName,
     ) -> Result<RequestExecutionEffects, RequestExecutionError> {
-        self.execute_with_client_context_and_effects_in_db(
+        self.execute_with_client_tracking_context_and_effects_in_db(
             args,
             response_out,
             client_no_touch,
+            client_tracks_reads,
             client_id,
             true,
             selected_db,
@@ -7488,7 +7509,7 @@ impl RequestProcessor {
         let previous_tracking_reads_enabled = REQUEST_EXECUTION_CONTEXT.with(|state| {
             let mut context = state.get();
             let previous = context.tracking_reads_enabled;
-            context.tracking_reads_enabled = !command_mutating;
+            context.tracking_reads_enabled = previous && !command_mutating;
             state.set(context);
             previous
         });

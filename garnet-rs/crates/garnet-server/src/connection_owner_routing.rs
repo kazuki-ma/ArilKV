@@ -119,6 +119,7 @@ pub(crate) fn execute_owned_frame_args_via_processor(
     processor: &RequestProcessor,
     owned_args: &OwnedFrameArgs,
     client_no_touch: bool,
+    client_tracks_reads: bool,
     client_id: Option<ClientId>,
     selected_db: DbName,
 ) -> Result<OwnedExecutionOutcome, RoutedExecutionError> {
@@ -126,10 +127,11 @@ pub(crate) fn execute_owned_frame_args_via_processor(
 
     let mut response = Vec::new();
     let execution_effects = processor
-        .execute_with_client_context_and_effects_in_db(
+        .execute_with_client_tracking_context_and_effects_in_db(
             &args,
             &mut response,
             client_no_touch,
+            client_tracks_reads,
             client_id,
             false,
             selected_db,
@@ -149,16 +151,18 @@ pub(crate) fn execute_frame_on_owner_thread(
     command: CommandId,
     frame: &[u8],
     client_no_touch: bool,
+    client_tracks_reads: bool,
     client_id: Option<ClientId>,
     selected_db: DbName,
 ) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
     if owner_thread_pool.is_inline_execution() {
         let mut response = Vec::new();
         let execution_effects = processor
-            .execute_with_client_context_and_effects_in_db(
+            .execute_with_client_tracking_context_and_effects_in_db(
                 args,
                 &mut response,
                 client_no_touch,
+                client_tracks_reads,
                 client_id,
                 false,
                 selected_db,
@@ -180,6 +184,7 @@ pub(crate) fn execute_frame_on_owner_thread(
                 &routed_processor,
                 &owned_args,
                 client_no_touch,
+                client_tracks_reads,
                 client_id,
                 selected_db,
             )

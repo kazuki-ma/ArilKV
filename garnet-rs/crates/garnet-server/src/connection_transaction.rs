@@ -107,6 +107,7 @@ pub(crate) fn execute_transaction_queue(
     responses: &mut Vec<u8>,
     max_resp_arguments: usize,
     client_no_touch: bool,
+    client_tracks_reads: bool,
     client_id: Option<ClientId>,
     client_authenticated: bool,
     client_user: Vec<u8>,
@@ -135,6 +136,7 @@ pub(crate) fn execute_transaction_queue(
                 queued,
                 max_resp_arguments,
                 client_no_touch,
+                client_tracks_reads,
                 client_id,
                 client_authenticated,
                 client_user.as_slice(),
@@ -217,6 +219,7 @@ fn execute_transaction_queue_on_owner_thread(
     queued: Vec<Vec<u8>>,
     max_resp_arguments: usize,
     client_no_touch: bool,
+    client_tracks_reads: bool,
     client_id: Option<ClientId>,
     client_authenticated: bool,
     client_user: &[u8],
@@ -312,13 +315,15 @@ fn execute_transaction_queue_on_owner_thread(
                         }
                     }
                 }
-                match processor.execute_with_client_no_touch_in_transaction_and_effects_in_db(
-                    &args[..meta.argument_count],
-                    &mut item_response,
-                    client_no_touch,
-                    client_id,
-                    transaction_selected_db,
-                ) {
+                match processor
+                    .execute_with_client_tracking_no_touch_in_transaction_and_effects_in_db(
+                        &args[..meta.argument_count],
+                        &mut item_response,
+                        client_no_touch,
+                        client_tracks_reads,
+                        client_id,
+                        transaction_selected_db,
+                    ) {
                     Ok(execution_effects) => {
                         connection_effects_after_exec
                             .merge_from(execution_effects.connection_effects);

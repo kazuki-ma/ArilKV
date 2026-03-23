@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=tracking_read_atomic_path
+new_label=connection_local_tracking_reads
+tracking_read_atomic_path.median_set_ops=105366.000
+tracking_read_atomic_path.median_get_ops=125048.000
+tracking_read_atomic_path.median_set_p99_ms=0.08700
+tracking_read_atomic_path.median_get_p99_ms=0.08700
+connection_local_tracking_reads.median_set_ops=113434.000
+connection_local_tracking_reads.median_get_ops=129050.000
+connection_local_tracking_reads.median_set_p99_ms=0.07900
+connection_local_tracking_reads.median_get_p99_ms=0.08700
+delta.set_ops_pct=7.66
+delta.get_ops_pct=3.20
+delta.set_p99_ms_pct=-9.20
+delta.get_p99_ms_pct=0.00

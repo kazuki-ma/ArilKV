@@ -1419,6 +1419,7 @@ async fn process_upstream_frame(
         command_id,
         frame,
         false,
+        false,
         None,
         *applied_selected_db,
     ) {

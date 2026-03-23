@@ -20274,6 +20274,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
         &processor,
         &set_owned_args,
         false,
+        false,
         None,
         crate::request_lifecycle::DbName::fixture(),
     )
@@ -20286,6 +20287,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
     let routed_get = execute_owned_frame_args_via_processor(
         &processor,
         &get_owned_args,
+        false,
         false,
         None,
         crate::request_lifecycle::DbName::fixture(),
@@ -25497,6 +25499,94 @@ async fn tracking_gets_notification_of_expired_keys_like_external_scenario() {
     assert_eq!(resp_socket_bulk(&items[0]), b"message");
     assert_eq!(resp_socket_bulk(&items[1]), b"__redis__:invalidate");
     assert_eq!(resp_socket_bulk(&items[2]), b"mykey");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_tracking_optin_only_tracks_reads_after_caching_yes() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let timeout = Duration::from_secs(1);
+    let mut writer = TcpStream::connect(addr).await.unwrap();
+    let mut redirect = TcpStream::connect(addr).await.unwrap();
+
+    let redirect_id = send_and_read_integer(
+        &mut redirect,
+        &encode_resp_command(&[b"CLIENT", b"ID"]),
+        timeout,
+    )
+    .await;
+    let redirect_id_text = redirect_id.to_string();
+
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[
+            b"CLIENT",
+            b"TRACKING",
+            b"ON",
+            b"OPTIN",
+            b"REDIRECT",
+            redirect_id_text.as_bytes(),
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"SET", b"tracked", b"v1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"GET", b"tracked"]),
+        b"$2\r\nv1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"SET", b"tracked", b"v2"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut peek_probe = [0u8; 1];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), redirect.peek(&mut peek_probe))
+            .await
+            .is_err(),
+        "OPTIN without CLIENT CACHING YES must not register read tracking"
+    );
+
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"CLIENT", b"CACHING", b"YES"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"GET", b"tracked"]),
+        b"$2\r\nv2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"SET", b"tracked", b"v3"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let message = read_resp_value_with_timeout(&mut redirect, Duration::from_secs(1)).await;
+    let items = resp_socket_array(&message);
+    assert_eq!(items.len(), 3);
+    assert_eq!(resp_socket_bulk(&items[0]), b"message");
+    assert_eq!(resp_socket_bulk(&items[1]), b"__redis__:invalidate");
+    assert_eq!(resp_socket_bulk(&items[2]), b"tracked");
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();

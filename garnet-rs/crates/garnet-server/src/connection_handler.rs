@@ -596,6 +596,18 @@ impl ClientConnectionState {
         self.tracking_prefixes.clear();
         self.tracking_caching = None;
     }
+
+    fn should_track_reads(&self) -> bool {
+        if self.tracking_bcast {
+            return false;
+        }
+        match self.tracking_mode {
+            ClientTrackingMode::Off => false,
+            ClientTrackingMode::On => true,
+            ClientTrackingMode::OptIn => self.tracking_caching == Some(true),
+            ClientTrackingMode::OptOut => self.tracking_caching != Some(false),
+        }
+    }
 }
 
 fn reset_connection_auth_state(
@@ -1645,6 +1657,7 @@ pub(crate) async fn handle_connection(
                                                     &mut responses,
                                                     max_resp_arguments,
                                                     client_state.no_touch,
+                                                    client_state.should_track_reads(),
                                                     Some(client_id),
                                                     client_state.authenticated,
                                                     client_state.authenticated_user.clone(),
@@ -2257,6 +2270,7 @@ pub(crate) async fn handle_connection(
                                 command_mutating,
                                 frame,
                                 client_state.no_touch,
+                                client_state.should_track_reads(),
                                 client_id,
                                 client_state.authenticated,
                                 client_state.authenticated_user.as_slice(),
@@ -2659,6 +2673,7 @@ async fn execute_frame_on_owner_thread_async(
     command: CommandId,
     frame: &[u8],
     client_no_touch: bool,
+    client_tracks_reads: bool,
     client_id: Option<ClientId>,
     selected_db: DbName,
 ) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
@@ -2671,6 +2686,7 @@ async fn execute_frame_on_owner_thread_async(
                 &task_processor,
                 &owned_args,
                 client_no_touch,
+                client_tracks_reads,
                 client_id,
                 selected_db,
             )
@@ -2687,6 +2703,7 @@ async fn execute_frame_on_owner_thread_async(
         command,
         frame,
         client_no_touch,
+        client_tracks_reads,
         client_id,
         selected_db,
     )
@@ -2703,6 +2720,7 @@ async fn execute_blocking_frame_on_owner_thread(
     command_mutating: bool,
     frame: &[u8],
     client_no_touch: bool,
+    client_tracks_reads: bool,
     client_id: ClientId,
     client_authenticated: bool,
     client_user: &[u8],
@@ -2939,6 +2957,7 @@ async fn execute_blocking_frame_on_owner_thread(
             command,
             frame,
             client_no_touch,
+            client_tracks_reads,
             Some(client_id),
             selected_db,
         )
