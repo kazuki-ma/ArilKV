@@ -1,0 +1,112 @@
+diff --git a/garnet-rs/crates/garnet-server/src/connection_handler.rs b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+index a0b774b534..c4deedf49f 100644
+--- a/garnet-rs/crates/garnet-server/src/connection_handler.rs
++++ b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+@@ -5286,11 +5286,9 @@ fn finalize_client_command(
+     }
+ 
+     let output_delta = responses.len().saturating_sub(response_mark) as u64;
+-    metrics.add_client_output_bytes(client_id, output_delta);
+-
+     let minimum_delta = if command == CommandId::Client { 1 } else { 0 };
+     let applied_commands = commands_processed.max(minimum_delta);
+-    metrics.add_client_commands_processed(client_id, applied_commands);
++    metrics.record_client_command_completion(client_id, output_delta, applied_commands);
+ 
+     outcome.disconnect_after_reply
+ }
+diff --git a/garnet-rs/crates/garnet-server/src/lib.rs b/garnet-rs/crates/garnet-server/src/lib.rs
+index 97aa6826b1..6e04c873c6 100644
+--- a/garnet-rs/crates/garnet-server/src/lib.rs
++++ b/garnet-rs/crates/garnet-server/src/lib.rs
+@@ -878,6 +878,39 @@ impl ServerMetrics {
+         }
+     }
+ 
++    pub fn record_client_command_completion(
++        &self,
++        client_id: ClientId,
++        output_bytes: u64,
++        commands_processed: u64,
++    ) {
++        if output_bytes == 0 && commands_processed == 0 {
++            return;
++        }
++
++        let mut now = None;
++        let mut settings = None;
++        if output_bytes != 0 {
++            now = Some(Instant::now());
++            settings = Some(self.reply_buffer_settings_snapshot());
++        }
++
++        if let Ok(mut clients) = self.clients.lock()
++            && let Some(client) = clients.get_mut(&client_id)
++        {
++            if output_bytes != 0 {
++                let observed_now = now.expect("output path initializes timestamp");
++                let reply_settings = settings.expect("output path initializes settings");
++                client.total_output_bytes = client.total_output_bytes.saturating_add(output_bytes);
++                client.last_activity = observed_now;
++                client.observe_reply_bytes(output_bytes as usize, reply_settings, observed_now);
++            }
++            if commands_processed != 0 {
++                client.total_commands = client.total_commands.saturating_add(commands_processed);
++            }
++        }
++    }
++
+     pub fn update_client_buffer_info(
+         &self,
+         client_id: ClientId,
+diff --git a/garnet-rs/crates/garnet-server/src/tests.rs b/garnet-rs/crates/garnet-server/src/tests.rs
+index d2293bcd1e..3d6986082c 100644
+--- a/garnet-rs/crates/garnet-server/src/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/tests.rs
+@@ -4894,6 +4894,46 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping()
+     assert!(after_output > after_bookkeeping);
+ }
+ 
++#[test]
++fn client_command_completion_updates_output_activity_and_command_count_together() {
++    let metrics = ServerMetrics::default();
++    let client_id = metrics.register_client(None, None);
++
++    let initial_activity = metrics
++        .clients
++        .lock()
++        .unwrap()
++        .get(&client_id)
++        .unwrap()
++        .last_activity;
++
++    std::thread::sleep(Duration::from_millis(2));
++    metrics.record_client_command_completion(client_id, 7, 3);
++
++    {
++        let clients = metrics.clients.lock().unwrap();
++        let client = clients.get(&client_id).unwrap();
++        assert!(client.last_activity > initial_activity);
++        assert_eq!(client.total_output_bytes, 7);
++        assert_eq!(client.total_commands, 3);
++    }
++
++    let after_output_activity = metrics
++        .clients
++        .lock()
++        .unwrap()
++        .get(&client_id)
++        .unwrap()
++        .last_activity;
++
++    metrics.record_client_command_completion(client_id, 0, 2);
++    let clients = metrics.clients.lock().unwrap();
++    let client = clients.get(&client_id).unwrap();
++    assert_eq!(client.last_activity, after_output_activity);
++    assert_eq!(client.total_output_bytes, 7);
++    assert_eq!(client.total_commands, 5);
++}
++
+ #[test]
+ fn client_last_command_stores_lowercased_command_and_subcommand() {
+     let metrics = ServerMetrics::default();
