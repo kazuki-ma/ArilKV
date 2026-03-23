@@ -1,0 +1,236 @@
+diff --git a/garnet-rs/crates/garnet-server/src/command_spec.rs b/garnet-rs/crates/garnet-server/src/command_spec.rs
+index ca2b76683d..32b7594a20 100644
+--- a/garnet-rs/crates/garnet-server/src/command_spec.rs
++++ b/garnet-rs/crates/garnet-server/src/command_spec.rs
+@@ -318,7 +318,7 @@ struct CommandSpecEntry {
+ 
+ const REPLICATION_PROTOCOL_COMMANDS: [&[u8]; 5] =
+     [b"REPLICAOF", b"SLAVEOF", b"REPLCONF", b"PSYNC", b"SYNC"];
+-const COMMAND_ID_COUNT: usize = CommandId::Unknown as usize + 1;
++pub(crate) const COMMAND_ID_COUNT: usize = CommandId::Unknown as usize + 1;
+ 
+ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
+     CommandSpecEntry {
+@@ -2904,6 +2904,12 @@ pub(crate) fn command_id_from_name(command_name: &[u8]) -> Option<CommandId> {
+         .map(|entry| entry.id)
+ }
+ 
++pub(crate) fn known_command_ids() -> impl Iterator<Item = CommandId> {
++    COMMAND_SPECS[..CommandId::Unknown as usize]
++        .iter()
++        .map(|entry| entry.id)
++}
++
+ pub fn command_transaction_control(command: CommandId) -> TransactionControlCommand {
+     spec_for(command).transaction_control
+ }
+diff --git a/garnet-rs/crates/garnet-server/src/connection_handler.rs b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+index 6250045006..97a529bcc7 100644
+--- a/garnet-rs/crates/garnet-server/src/connection_handler.rs
++++ b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+@@ -1060,7 +1060,7 @@ pub(crate) async fn handle_connection(
+             metrics.add_client_input_bytes(client_id, frame_bytes_consumed as u64);
+             metrics.set_client_last_command(client_id, command_name, subcommand_name);
+             let stats_subcommand_name = command_stats_subcommand_name(command, subcommand_name);
+-            processor.record_command_call_with_subcommand(command_name, stats_subcommand_name);
++            processor.record_dispatched_command_call(command, command_name, stats_subcommand_name);
+             let mut command_call_name = None;
+             let should_publish_monitor_event = command != CommandId::Monitor
+                 && command != CommandId::Unknown
+@@ -2874,7 +2874,11 @@ async fn execute_blocking_frame_on_owner_thread(
+                         );
+                     }
+                 }
+-                processor.undo_recorded_command_call(command_name_upper(command));
++                processor.undo_recorded_dispatched_command_call(
++                    command,
++                    command_name_upper(command),
++                    None,
++                );
+                 return Ok(BlockingExecutionOutcome {
+                     frame_response,
+                     should_replicate: false,
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+index 3de7768023..e965b34191 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+@@ -19,10 +19,13 @@ use crate::aof_durability::AppendFsyncPolicy;
+ use crate::aof_durability::LiveAofDurabilityConfig;
+ use crate::aof_durability::LiveAofDurabilityRuntime;
+ use crate::aof_durability::LocalAofFrontiersSnapshot;
++use crate::command_spec::COMMAND_ID_COUNT;
+ use crate::command_spec::KeyAccessPattern;
+ use crate::command_spec::command_allowed_while_script_busy;
+ use crate::command_spec::command_is_effectively_mutating;
+ use crate::command_spec::command_key_access_pattern;
++use crate::command_spec::command_name_upper;
++use crate::command_spec::known_command_ids;
+ use crate::debug_concurrency::LockClass;
+ use crate::debug_concurrency::OrderedMutex;
+ use crate::debug_concurrency::OrderedMutexGuard;
+@@ -2468,6 +2471,7 @@ pub struct RequestProcessor {
+     rdb_key_save_delay_micros: AtomicU64,
+     rdb_bgsave_deadline_unix_millis: AtomicU64,
+     rdb_bgsave_child: Mutex<Option<Child>>,
++    command_call_counts_by_id: [AtomicU64; COMMAND_ID_COUNT],
+     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
+     command_rejected_calls: Mutex<HashMap<Vec<u8>, u64>>,
+     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
+@@ -3001,6 +3005,7 @@ impl RequestProcessor {
+             rdb_key_save_delay_micros: AtomicU64::new(0),
+             rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
+             rdb_bgsave_child: Mutex::new(None),
++            command_call_counts_by_id: std::array::from_fn(|_| AtomicU64::new(0)),
+             command_calls: Mutex::new(HashMap::new()),
+             command_rejected_calls: Mutex::new(HashMap::new()),
+             command_failed_calls: Mutex::new(HashMap::new()),
+@@ -5828,6 +5833,22 @@ impl RequestProcessor {
+         increment_command_stats_counter(&self.command_calls, command_name, None);
+     }
+ 
++    pub(crate) fn record_dispatched_command_call(
++        &self,
++        command: CommandId,
++        command_name: &[u8],
++        subcommand_name: Option<&[u8]>,
++    ) {
++        if command_name.is_empty() {
++            return;
++        }
++        if subcommand_name.is_none() && command != CommandId::Unknown {
++            self.command_call_counts_by_id[command as usize].fetch_add(1, Ordering::Relaxed);
++            return;
++        }
++        increment_command_stats_counter(&self.command_calls, command_name, subcommand_name);
++    }
++
+     pub(crate) fn record_command_call_with_subcommand(
+         &self,
+         command_name: &[u8],
+@@ -5840,13 +5861,32 @@ impl RequestProcessor {
+     }
+ 
+     pub(crate) fn command_call_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
++        let mut ordered = BTreeMap::new();
+         let Ok(calls) = self.command_calls.lock() else {
+-            return Vec::new();
++            for command in known_command_ids() {
++                let count =
++                    self.command_call_counts_by_id[command as usize].load(Ordering::Relaxed);
++                if count == 0 {
++                    continue;
++                }
++                ordered.insert(normalize_ascii_lower(command_name_upper(command)), count);
++            }
++            return ordered.into_iter().collect();
+         };
+-        let mut ordered = BTreeMap::new();
+         for (command, count) in calls.iter() {
+             ordered.insert(command.clone(), *count);
+         }
++        for command in known_command_ids() {
++            let count = self.command_call_counts_by_id[command as usize].load(Ordering::Relaxed);
++            if count == 0 {
++                continue;
++            }
++            let normalized = normalize_ascii_lower(command_name_upper(command));
++            ordered
++                .entry(normalized)
++                .and_modify(|existing| *existing += count)
++                .or_insert(count);
++        }
+         ordered.into_iter().collect()
+     }
+ 
+@@ -6045,6 +6085,9 @@ impl RequestProcessor {
+     }
+ 
+     pub(crate) fn reset_commandstats(&self) {
++        for command in known_command_ids() {
++            self.command_call_counts_by_id[command as usize].store(0, Ordering::Relaxed);
++        }
+         if let Ok(mut calls) = self.command_calls.lock() {
+             calls.clear();
+         }
+@@ -6139,6 +6182,27 @@ impl RequestProcessor {
+         }
+     }
+ 
++    pub(crate) fn undo_recorded_dispatched_command_call(
++        &self,
++        command: CommandId,
++        command_name: &[u8],
++        subcommand_name: Option<&[u8]>,
++    ) {
++        if command_name.is_empty() {
++            return;
++        }
++        if subcommand_name.is_none() && command != CommandId::Unknown {
++            let counter = &self.command_call_counts_by_id[command as usize];
++            let current = counter.load(Ordering::Relaxed);
++            if current == 0 {
++                return;
++            }
++            counter.fetch_sub(1, Ordering::Relaxed);
++            return;
++        }
++        self.undo_recorded_command_call(command_name);
++    }
++
+     pub(super) fn record_key_access(&self, key: DbKeyRef<'_>, force_touch: bool) {
+         if key.key().is_empty() {
+             return;
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+index 5494abd358..3275b1541d 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+@@ -14211,6 +14211,49 @@ fn commandstats_normalize_subcommand_names_when_recorded_from_parts() {
+     );
+ }
+ 
++#[test]
++fn commandstats_snapshot_merges_atomic_top_level_and_map_counts() {
++    let processor = RequestProcessor::new().unwrap();
++    processor.record_dispatched_command_call(CommandId::Set, b"SET", None);
++    processor.record_dispatched_command_call(CommandId::Set, b"SET", None);
++    processor.record_command_call(b"set");
++    processor.record_command_call_with_subcommand(b"CLIENT", Some(b"LIST"));
++
++    let commandstats = parse_bulk_payload(&execute_frame(
++        &processor,
++        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
++    ))
++    .expect("INFO COMMANDSTATS should return bulk payload");
++    let commandstats_text = String::from_utf8_lossy(&commandstats);
++    assert!(
++        commandstats_text.contains("cmdstat_set:calls=3"),
++        "unexpected INFO COMMANDSTATS payload: {commandstats_text}"
++    );
++    assert!(
++        commandstats_text.contains("cmdstat_client|list:calls=1"),
++        "unexpected INFO COMMANDSTATS payload: {commandstats_text}"
++    );
++}
++
++#[test]
++fn undo_recorded_dispatched_command_call_reverts_atomic_top_level_counts() {
++    let processor = RequestProcessor::new().unwrap();
++    processor.record_dispatched_command_call(CommandId::Set, b"SET", None);
++    processor.record_dispatched_command_call(CommandId::Set, b"SET", None);
++    processor.undo_recorded_dispatched_command_call(CommandId::Set, b"SET", None);
++
++    let commandstats = parse_bulk_payload(&execute_frame(
++        &processor,
++        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
++    ))
++    .expect("INFO COMMANDSTATS should return bulk payload");
++    let commandstats_text = String::from_utf8_lossy(&commandstats);
++    assert!(
++        commandstats_text.contains("cmdstat_set:calls=1"),
++        "unexpected INFO COMMANDSTATS payload: {commandstats_text}"
++    );
++}
++
+ #[test]
+ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
+     let processor = RequestProcessor::new().unwrap();

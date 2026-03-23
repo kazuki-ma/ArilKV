@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=commandstats_mutex
+new_label=commandstats_atomic_top_level
+commandstats_mutex.median_set_ops=123200.000
+commandstats_mutex.median_get_ops=151410.000
+commandstats_mutex.median_set_p99_ms=0.07900
+commandstats_mutex.median_get_p99_ms=0.06300
+commandstats_atomic_top_level.median_set_ops=130140.000
+commandstats_atomic_top_level.median_get_ops=145197.000
+commandstats_atomic_top_level.median_set_p99_ms=0.07100
+commandstats_atomic_top_level.median_get_p99_ms=0.07100
+delta.set_ops_pct=5.63
+delta.get_ops_pct=-4.10
+delta.set_p99_ms_pct=-10.13
+delta.get_p99_ms_pct=12.70
