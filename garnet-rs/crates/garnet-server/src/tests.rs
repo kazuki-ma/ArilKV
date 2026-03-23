@@ -4844,6 +4844,95 @@ async fn client_info_and_list_follow_selected_db_and_reset_to_zero() {
     server.await.unwrap();
 }
 
+#[test]
+fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() {
+    let metrics = ServerMetrics::default();
+    let client_id = metrics.register_client(None, None);
+
+    let initial_activity = metrics
+        .clients
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .last_activity;
+
+    std::thread::sleep(Duration::from_millis(2));
+    metrics.add_client_input_bytes(client_id, 5);
+    let after_input = metrics
+        .clients
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .last_activity;
+    assert!(after_input > initial_activity);
+
+    std::thread::sleep(Duration::from_millis(2));
+    metrics.set_client_last_command(client_id, b"GET", None);
+    metrics.add_client_commands_processed(client_id, 1);
+    metrics.set_client_wait_target_offset(client_id, 11);
+    metrics.set_client_local_aof_wait_target_offset(client_id, 22);
+    let after_bookkeeping = metrics
+        .clients
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .last_activity;
+    assert_eq!(after_bookkeeping, after_input);
+
+    std::thread::sleep(Duration::from_millis(2));
+    metrics.add_client_output_bytes(client_id, 7);
+    let after_output = metrics
+        .clients
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .last_activity;
+    assert!(after_output > after_bookkeeping);
+}
+
+#[test]
+fn client_last_command_stores_lowercased_command_and_subcommand() {
+    let metrics = ServerMetrics::default();
+    let client_id = metrics.register_client(None, None);
+
+    metrics.set_client_last_command(client_id, b"GET", None);
+    let after_get = metrics
+        .clients
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .last_command
+        .clone();
+    assert_eq!(after_get, b"get");
+
+    metrics.set_client_last_command(client_id, b"CLIENT", Some(b"LIST"));
+    let after_client_list = metrics
+        .clients
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .last_command
+        .clone();
+    assert_eq!(after_client_list, b"client|list");
+
+    metrics.set_client_last_command(client_id, b"PING", Some(b""));
+    let after_ping = metrics
+        .clients
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .last_command
+        .clone();
+    assert_eq!(after_ping, b"ping");
+}
+
 #[tokio::test]
 async fn multidb_select_copy_move_and_flushdb_match_external_scenarios_over_tcp() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

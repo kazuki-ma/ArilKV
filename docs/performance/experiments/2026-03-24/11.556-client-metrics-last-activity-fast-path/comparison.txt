@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=metrics_activity_before
+new_label=metrics_activity_after
+metrics_activity_before.median_set_ops=124345.000
+metrics_activity_before.median_get_ops=143070.000
+metrics_activity_before.median_set_p99_ms=0.07100
+metrics_activity_before.median_get_p99_ms=0.06300
+metrics_activity_after.median_set_ops=126536.000
+metrics_activity_after.median_get_ops=147450.000
+metrics_activity_after.median_set_p99_ms=0.07100
+metrics_activity_after.median_get_p99_ms=0.06300
+delta.set_ops_pct=1.76
+delta.get_ops_pct=3.06
+delta.set_p99_ms_pct=0.00
+delta.get_p99_ms_pct=0.00

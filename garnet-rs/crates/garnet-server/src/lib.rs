@@ -85,6 +85,7 @@ pub use server_runtime::run_with_shutdown_and_cluster_config;
 pub use shard_owner_threads::ShardOwnerThreadPool;
 pub use shard_owner_threads::ShardOwnerThreadPoolError;
 
+use crate::connection_protocol::ascii_eq_ignore_case;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
@@ -718,6 +719,10 @@ impl ServerMetrics {
             let subcommand = subcommand_name.filter(|value| !value.is_empty());
             let required_len = command_name.len() + subcommand.map_or(0, |value| value.len() + 1);
 
+            if last_command_matches(client.last_command.as_slice(), command_name, subcommand) {
+                return;
+            }
+
             client.last_command.clear();
             client.last_command.reserve(required_len);
             client
@@ -729,7 +734,6 @@ impl ServerMetrics {
                     .last_command
                     .extend(subcommand.iter().map(|byte| byte.to_ascii_lowercase()));
             }
-            client.last_activity = Instant::now();
         }
     }
 
@@ -880,7 +884,6 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.total_commands = client.total_commands.saturating_add(delta);
-            client.last_activity = Instant::now();
         }
     }
 
@@ -898,7 +901,6 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.wait_target_offset = wait_target;
-            client.last_activity = Instant::now();
         }
     }
 
@@ -919,7 +921,6 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.local_aof_wait_target_offset = wait_target;
-            client.last_activity = Instant::now();
         }
     }
 
@@ -1154,6 +1155,28 @@ impl ServerMetrics {
             .map(|settings| *settings)
             .unwrap_or_default()
     }
+}
+
+fn last_command_matches(
+    stored: &[u8],
+    command_name: &[u8],
+    subcommand_name: Option<&[u8]>,
+) -> bool {
+    let subcommand = subcommand_name.filter(|value| !value.is_empty());
+    let required_len = command_name.len() + subcommand.map_or(0, |value| value.len() + 1);
+    if stored.len() != required_len {
+        return false;
+    }
+    if !ascii_eq_ignore_case(&stored[..command_name.len()], command_name) {
+        return false;
+    }
+    let Some(subcommand) = subcommand else {
+        return true;
+    };
+    if stored[command_name.len()] != b'|' {
+        return false;
+    }
+    ascii_eq_ignore_case(&stored[command_name.len() + 1..], subcommand)
 }
 
 fn render_client_line(

@@ -231,3 +231,6 @@ BenchmarkDotNet.Artifacts/
 # Rust workspace artifacts
 /garnet-rs/target/
 /garnet-rs/benches/results/
+/garnet-rs/crates/garnet-server/appendonly.aof
+/garnet-rs/crates/garnet-server/dump.rdb
+**/perf.data
