@@ -1,0 +1,16 @@
+11.585 parking_lot key-access lock
+
+status: dropped
+before_commit: e80078891f
+
+validation while live:
+- cargo test -p garnet-server db_scoped_object_access_metadata_does_not_leak_between_databases -- --nocapture
+- cargo test -p garnet-server swapdb_zero_and_nonzero_preserves_object_access_metadata -- --nocapture
+- cargo test -p garnet-server object_idletime_returns_integer_for_existing_key -- --nocapture
+
+benchmark:
+- run 1: SET -2.36%, GET -0.18%, SET p99 flat, GET p99 +12.70%
+- run 2: SET +3.81%, GET -0.75%, SET p99 flat, GET p99 flat
+
+decision:
+- dropped because GET stayed negative in both runs
