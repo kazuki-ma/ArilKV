@@ -1,0 +1,15 @@
+status=accepted
+before_commit=18702fef2cb4deec73563c1a1625370d561de4e8
+after_commit=6d042940a2c693cebf6cd839e2439628d7a74714
+p1.delta_set_ops_pct=7.13
+p1.delta_get_ops_pct=3.78
+p1.delta_set_p99_ms_pct=-18.39
+p1.delta_get_p99_ms_pct=-9.20
+p16_first.delta_set_ops_pct=-6.03
+p16_first.delta_get_ops_pct=10.99
+p16_first.delta_set_p99_ms_pct=3.59
+p16_first.delta_get_p99_ms_pct=-8.74
+p16_rerun.delta_set_ops_pct=2.72
+p16_rerun.delta_get_ops_pct=3.28
+p16_rerun.delta_set_p99_ms_pct=-6.48
+p16_rerun.delta_get_p99_ms_pct=-8.74

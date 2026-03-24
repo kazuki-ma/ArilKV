@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=baseline_resp_growth
+new_label=reserve_bulk_string
+baseline_resp_growth.median_set_ops=119876.000
+baseline_resp_growth.median_get_ops=135482.000
+baseline_resp_growth.median_set_p99_ms=0.08700
+baseline_resp_growth.median_get_p99_ms=0.08700
+reserve_bulk_string.median_set_ops=128429.000
+reserve_bulk_string.median_get_ops=140608.000
+reserve_bulk_string.median_set_p99_ms=0.07100
+reserve_bulk_string.median_get_p99_ms=0.07900
+delta.set_ops_pct=7.13
+delta.get_ops_pct=3.78
+delta.set_p99_ms_pct=-18.39
+delta.get_p99_ms_pct=-9.20
