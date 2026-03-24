@@ -1165,10 +1165,12 @@ struct DbKeyMapState<T> {
 
 impl<T> DbKeyMapState<T> {
     fn insert(&mut self, key: DbKeyRef<'_>, value: T) {
-        self.by_db
-            .entry(key.db())
-            .or_default()
-            .insert(RedisKey::from(key.key_ref()), value);
+        let values = self.by_db.entry(key.db()).or_default();
+        if let Some(existing) = values.get_mut(key.key()) {
+            *existing = value;
+            return;
+        }
+        values.insert(RedisKey::from(key.key_ref()), value);
     }
 
     fn remove(&mut self, key: DbKeyRef<'_>) -> Option<T> {

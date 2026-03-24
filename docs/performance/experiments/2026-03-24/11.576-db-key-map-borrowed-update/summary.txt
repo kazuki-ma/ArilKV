@@ -1,0 +1,18 @@
+Experiment: 11.576 DbKeyMap borrowed update
+Commit before change: 6f2ea5fbfca4963fba597a253f334bc2e084a8b5
+Shape: owner-inline local A/B, THREADS=1, CONNS=4, REQUESTS=50000, PIPELINE=1
+
+Change:
+- update existing `DbKeyMapState` entries in place from borrowed keys
+- only clone `RedisKey` on first insert
+
+Validation:
+- targeted Rust PASS for object metadata scoping and swapdb preservation
+- `make fmt` PASS
+- `make fmt-check` PASS
+- `make test-server` PASS with `712 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`
+
+Benchmark note:
+- run 1: `SET +72.30%`, `GET +51.60%`, `SET p99 -57.79%`, `GET p99 -54.11%`
+- run 2: `SET +100.99%`, `GET +88.96%`, `SET p99 -64.11%`, `GET p99 -55.81%`
+- both reruns stayed strongly positive, so the slice was accepted despite the unusually large magnitude
