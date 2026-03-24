@@ -1,0 +1,4 @@
+# Reverted candidate summary
+# - resp.rs: specialized append_bulk_string(...) for 1/2/3 digit value lengths
+#   instead of routing every prefix through the generic decimal helper.
+# - resp.rs tests: added a small exact-output regression for those prefix cases.

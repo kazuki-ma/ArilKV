@@ -1,0 +1,6 @@
+experiment=11.580-bulk-string-small-prefix-fast-path-drop
+status=dropped
+target=append_bulk_string small-length prefix specialization
+run_1=SET +9.47%, GET +1.49%, SET p99 -16.84%, GET p99 +10.13%
+run_2=SET -4.54%, GET -2.58%, SET p99 +20.25%, GET p99 +10.13%
+decision=drop
