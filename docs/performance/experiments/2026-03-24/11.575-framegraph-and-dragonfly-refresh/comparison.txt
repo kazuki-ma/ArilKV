@@ -1,0 +1,25 @@
+Owner-inline single-thread comparison plus fresh local Garnet flamegraph
+
+Garnet SET:
+- ops/sec: 141700.26
+- p99 ms: 0.079
+
+Dragonfly SET:
+- ops/sec: 81235.82
+- p99 ms: 0.111
+
+SET delta:
+- ops/sec: +74.43% in favor of Garnet
+- p99: -28.83% in favor of Garnet
+
+Garnet GET:
+- ops/sec: 144459.93
+- p99 ms: 0.079
+
+Dragonfly GET:
+- ops/sec: 90499.79
+- p99 ms: 0.111
+
+GET delta:
+- ops/sec: +59.62% in favor of Garnet
+- p99: -28.83% in favor of Garnet

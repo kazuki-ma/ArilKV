@@ -1,0 +1,5 @@
+Fresh local macOS flamegraph notes for Garnet `SET`
+
+- inclusive root remains `handle_connection -> owner-thread execution -> execute_bytes_in_db -> handle_set`
+- sampled internal work still includes `record_key_access`, `HashIndex::find_tag_entry`, `track_string_key_in_shard`, `capture_time_snapshot`, `add_client_input_bytes`, and `add_client_output_bytes`
+- leaf samples are still led by `__sendto`, `__recvfrom`, and `HashIndex::find_tag_entry`
