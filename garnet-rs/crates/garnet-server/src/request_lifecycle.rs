@@ -2485,6 +2485,7 @@ pub struct RequestProcessor {
     slowlog_next_id: AtomicU64,
     slowlog_threshold_micros: AtomicI64,
     slowlog_max_len: AtomicUsize,
+    pending_pubsub_message_count: AtomicUsize,
     pubsub_state: Mutex<PubSubState>,
     tracking_state: Mutex<TrackingState>,
     tracking_table_max_keys: AtomicU64,
@@ -3018,6 +3019,7 @@ impl RequestProcessor {
             slowlog_next_id: AtomicU64::new(0),
             slowlog_threshold_micros: AtomicI64::new(DEFAULT_SLOWLOG_THRESHOLD_MICROS),
             slowlog_max_len: AtomicUsize::new(DEFAULT_SLOWLOG_MAX_LEN),
+            pending_pubsub_message_count: AtomicUsize::new(0),
             pubsub_state: Mutex::new(PubSubState::default()),
             tracking_state: Mutex::new(TrackingState::default()),
             tracking_table_max_keys: AtomicU64::new(1_000_000),
@@ -3369,7 +3371,7 @@ impl RequestProcessor {
     }
 
     pub(crate) fn unregister_pubsub_client(&self, client_id: ClientId) {
-        let source_resp_versions = {
+        let (source_resp_versions, removed_pending_messages) = {
             let Ok(mut state) = self.pubsub_state.lock() else {
                 return;
             };
@@ -3388,11 +3390,19 @@ impl RequestProcessor {
                 client_id,
                 PubSubTargetKind::Pattern,
             );
-            let _ = state.pending_messages.remove(&client_id);
+            let removed_pending_messages = state
+                .pending_messages
+                .remove(&client_id)
+                .map(|messages| messages.len())
+                .unwrap_or(0);
             let _ = state.pending_message_notifiers.remove(&client_id);
             let _ = state.client_resp_versions.remove(&client_id);
-            state.client_resp_versions.clone()
+            (state.client_resp_versions.clone(), removed_pending_messages)
         };
+        if removed_pending_messages > 0 {
+            self.pending_pubsub_message_count
+                .fetch_sub(removed_pending_messages, Ordering::Relaxed);
+        }
         self.mark_tracking_redirect_target_broken(client_id, &source_resp_versions);
         self.clear_client_tracking(client_id);
     }
@@ -3675,6 +3685,8 @@ impl RequestProcessor {
             .entry(client_id)
             .or_default()
             .push_back(frame);
+        self.pending_pubsub_message_count
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn pubsub_subscription_count(&self, client_id: ClientId) -> usize {
@@ -3877,6 +3889,7 @@ impl RequestProcessor {
         let mut resp3_message_frame: Option<Vec<u8>> = None;
         let mut notified_clients = HashSet::new();
         let mut pending_notifiers = Vec::new();
+        let mut queued_messages = 0usize;
         for target in channel_targets {
             let resp3 = state
                 .client_resp_versions
@@ -3901,6 +3914,7 @@ impl RequestProcessor {
                 .entry(target)
                 .or_default()
                 .push_back(frame);
+            queued_messages += 1;
             if notified_clients.insert(target)
                 && let Some(notify) = state.pending_message_notifiers.get(&target)
             {
@@ -3921,6 +3935,7 @@ impl RequestProcessor {
                 .entry(target)
                 .or_default()
                 .push_back(frame);
+            queued_messages += 1;
             if notified_clients.insert(target)
                 && let Some(notify) = state.pending_message_notifiers.get(&target)
             {
@@ -3929,6 +3944,10 @@ impl RequestProcessor {
         }
 
         drop(state);
+        if queued_messages > 0 {
+            self.pending_pubsub_message_count
+                .fetch_add(queued_messages, Ordering::Relaxed);
+        }
         for notify in pending_notifiers {
             notify.notify_waiters();
         }
@@ -4030,16 +4049,21 @@ impl RequestProcessor {
     }
 
     pub(crate) fn take_pending_pubsub_messages(&self, client_id: ClientId) -> Vec<Vec<u8>> {
+        if self.pending_pubsub_message_count.load(Ordering::Relaxed) == 0 {
+            return Vec::new();
+        }
         let Ok(mut state) = self.pubsub_state.lock() else {
             return Vec::new();
         };
         let Some(messages) = state.pending_messages.get_mut(&client_id) else {
             return Vec::new();
         };
-        let mut drained = Vec::with_capacity(messages.len());
-        while let Some(message) = messages.pop_front() {
-            drained.push(message);
+        if messages.is_empty() {
+            return Vec::new();
         }
+        let drained = std::mem::take(messages).into_iter().collect::<Vec<_>>();
+        self.pending_pubsub_message_count
+            .fetch_sub(drained.len(), Ordering::Relaxed);
         drained
     }
 
@@ -4050,6 +4074,10 @@ impl RequestProcessor {
         let Some(messages) = state.pending_messages.get_mut(&client_id) else {
             return;
         };
+        if messages.is_empty() {
+            return;
+        }
+        let original_len = messages.len();
         let mut retained = VecDeque::with_capacity(messages.len());
         while let Some(message) = messages.pop_front() {
             if pending_message_is_tracking_message(&message) {
@@ -4057,7 +4085,12 @@ impl RequestProcessor {
             }
             retained.push_back(message);
         }
+        let removed_count = original_len.saturating_sub(retained.len());
         *messages = retained;
+        if removed_count > 0 {
+            self.pending_pubsub_message_count
+                .fetch_sub(removed_count, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn emit_tracking_invalidations_for_keys(&self, keys: &[RedisKey]) {
