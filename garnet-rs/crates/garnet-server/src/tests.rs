@@ -4895,6 +4895,30 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() 
 }
 
 #[test]
+fn add_client_output_bytes_updates_chunk_capacity_reply_buffer_state() {
+    let metrics = ServerMetrics::default();
+    let client_id = metrics.register_client(None, None);
+
+    let (initial_activity, initial_peak_reset) = {
+        let clients = metrics.clients.lock().unwrap();
+        let client = clients.get(&client_id).unwrap();
+        assert_eq!(client.reply_buffer_size, REPLY_BUFFER_CHUNK_BYTES);
+        (client.last_activity, client.reply_buffer_peak_last_reset)
+    };
+
+    std::thread::sleep(Duration::from_millis(2));
+    metrics.add_client_output_bytes(client_id, 257);
+
+    let clients = metrics.clients.lock().unwrap();
+    let client = clients.get(&client_id).unwrap();
+    assert_eq!(client.total_output_bytes, 257);
+    assert_eq!(client.reply_buffer_size, REPLY_BUFFER_CHUNK_BYTES);
+    assert_eq!(client.reply_buffer_peak, 257);
+    assert!(client.last_activity > initial_activity);
+    assert!(client.reply_buffer_peak_last_reset > initial_peak_reset);
+}
+
+#[test]
 fn combined_input_and_last_command_updates_counters_activity_and_lowercased_command() {
     let metrics = ServerMetrics::default();
     let client_id = metrics.register_client(None, None);

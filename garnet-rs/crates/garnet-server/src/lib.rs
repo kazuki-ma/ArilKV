@@ -597,6 +597,16 @@ impl ClientRuntimeInfo {
         self.reply_buffer_peak_last_reset = now;
     }
 
+    fn observe_reply_bytes_at_chunk_capacity(&mut self, bytes: usize, now: Instant) {
+        if bytes == 0 {
+            return;
+        }
+
+        let observed_bytes = bytes.max(1);
+        self.reply_buffer_peak = self.reply_buffer_peak.max(observed_bytes);
+        self.reply_buffer_peak_last_reset = now;
+    }
+
     fn apply_reply_buffer_housekeeping(
         &mut self,
         settings: ReplyBufferSettings,
@@ -901,13 +911,20 @@ impl ServerMetrics {
     }
 
     pub fn add_client_output_bytes(&self, client_id: ClientId, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
         let now = Instant::now();
-        let settings = self.reply_buffer_settings_snapshot();
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.total_output_bytes = client.total_output_bytes.saturating_add(bytes);
             client.last_activity = now;
+            if client.reply_buffer_size == REPLY_BUFFER_CHUNK_BYTES {
+                client.observe_reply_bytes_at_chunk_capacity(bytes as usize, now);
+                return;
+            }
+            let settings = self.reply_buffer_settings_snapshot();
             client.observe_reply_bytes(bytes as usize, settings, now);
         }
     }

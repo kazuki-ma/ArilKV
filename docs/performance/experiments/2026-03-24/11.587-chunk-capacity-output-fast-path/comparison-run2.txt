@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=baseline_reply_buffer_output_settings
+new_label=chunk_capacity_output_fast_path
+baseline_reply_buffer_output_settings.median_set_ops=125983.000
+baseline_reply_buffer_output_settings.median_get_ops=156947.000
+baseline_reply_buffer_output_settings.median_set_p99_ms=0.07100
+baseline_reply_buffer_output_settings.median_get_p99_ms=0.07100
+chunk_capacity_output_fast_path.median_set_ops=135433.000
+chunk_capacity_output_fast_path.median_get_ops=157347.000
+chunk_capacity_output_fast_path.median_set_p99_ms=0.07100
+chunk_capacity_output_fast_path.median_get_p99_ms=0.07100
+delta.set_ops_pct=7.50
+delta.get_ops_pct=0.25
+delta.set_p99_ms_pct=0.00
+delta.get_p99_ms_pct=0.00
