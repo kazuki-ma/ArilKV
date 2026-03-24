@@ -1,0 +1,7 @@
+# Reverted candidate summary
+# - tsavorite/read_operation.rs: added a borrowed-key peek helper using raw
+#   key bytes for record matching.
+# - tsavorite/tsavorite_kv.rs: exposed session.peek_bytes(...) plus a focused
+#   unit test.
+# - string_commands.rs: rewired GET/STRLEN/GETRANGE to stay on borrowed key
+#   bytes and call the borrowed-key peek helper.

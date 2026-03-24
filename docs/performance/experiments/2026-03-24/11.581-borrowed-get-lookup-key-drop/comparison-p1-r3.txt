@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=baseline_metadata_clone_fix
+new_label=borrowed_get_lookup_key
+baseline_metadata_clone_fix.median_set_ops=109434.000
+baseline_metadata_clone_fix.median_get_ops=131755.000
+baseline_metadata_clone_fix.median_set_p99_ms=0.08700
+baseline_metadata_clone_fix.median_get_p99_ms=0.07100
+borrowed_get_lookup_key.median_set_ops=110164.000
+borrowed_get_lookup_key.median_get_ops=122054.000
+borrowed_get_lookup_key.median_set_p99_ms=0.07900
+borrowed_get_lookup_key.median_get_p99_ms=0.07100
+delta.set_ops_pct=0.67
+delta.get_ops_pct=-7.36
+delta.set_p99_ms_pct=-9.20
+delta.get_p99_ms_pct=0.00
