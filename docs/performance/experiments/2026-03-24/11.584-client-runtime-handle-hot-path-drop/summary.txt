@@ -1,0 +1,17 @@
+11.584 client runtime handle hot path
+
+status: dropped
+before_commit: bf6f54b11f
+
+validation while live:
+- cargo test -p garnet-server combined_input_and_last_command_updates_counters_activity_and_lowercased_command -- --nocapture
+- cargo test -p garnet-server executes_set_then_get_roundtrip -- --nocapture
+- cargo test -p garnet-server client_info_and_list_follow_selected_db_and_reset_to_zero -- --nocapture
+
+benchmark:
+- run 1: SET -2.12%, GET +0.33%, SET p99 +12.70%, GET p99 flat
+- run 2: SET +3.95%, GET -0.80%, SET p99 flat, GET p99 flat
+- run 3: SET +4.41%, GET -0.64%, SET p99 flat, GET p99 +12.70%
+
+decision:
+- dropped because the read path stayed negative in 2/3 runs and the tie-break also regressed GET p99
