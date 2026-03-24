@@ -26,6 +26,15 @@ fn append_usize_ascii(response_out: &mut Vec<u8>, value: usize) {
     append_u64_ascii(response_out, value as u64);
 }
 
+fn ascii_len_usize(mut value: usize) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
+}
+
 fn append_i64_ascii(response_out: &mut Vec<u8>, value: i64) {
     if value < 0 {
         response_out.push(b'-');
@@ -48,8 +57,11 @@ pub(super) fn append_error(response_out: &mut Vec<u8>, message: &[u8]) {
 }
 
 pub(super) fn append_bulk_string(response_out: &mut Vec<u8>, value: &[u8]) {
+    let value_len = value.len();
+    let additional_capacity = 1 + ascii_len_usize(value_len) + 2 + value_len + 2;
+    response_out.reserve(additional_capacity);
     response_out.extend_from_slice(b"$");
-    append_usize_ascii(response_out, value.len());
+    append_usize_ascii(response_out, value_len);
     response_out.extend_from_slice(b"\r\n");
     response_out.extend_from_slice(value);
     response_out.extend_from_slice(b"\r\n");
