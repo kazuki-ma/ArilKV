@@ -1,0 +1,5 @@
+# Reverted candidate summary
+# - lib.rs: introduced a narrow helper combining output-byte and command-count
+#   updates under one client-table lock.
+# - connection_handler.rs: rewired finalize_client_command(...) to call it.
+# - tests.rs: added a small unit test covering the combined metrics update.

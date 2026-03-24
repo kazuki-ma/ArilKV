@@ -1,0 +1,7 @@
+experiment=11.582-combined-output-and-command-metrics-drop
+status=dropped
+target=single-lock finalize metrics update
+run_1=SET +1.48%, GET -0.71%, SET p99 0.00%, GET p99 0.00%
+run_2=SET -0.50%, GET +3.02%, SET p99 0.00%, GET p99 0.00%
+run_3=SET -1.92%, GET -9.61%, SET p99 -7.21%, GET p99 +20.25%
+decision=drop
