@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=baseline_pending_pubsub_fast_path
+new_label=burst_request_start_batch
+baseline_pending_pubsub_fast_path.median_set_ops=122703.000
+baseline_pending_pubsub_fast_path.median_get_ops=154822.000
+baseline_pending_pubsub_fast_path.median_set_p99_ms=0.07900
+baseline_pending_pubsub_fast_path.median_get_p99_ms=0.08700
+burst_request_start_batch.median_set_ops=114797.000
+burst_request_start_batch.median_get_ops=151386.000
+burst_request_start_batch.median_set_p99_ms=0.09500
+burst_request_start_batch.median_get_p99_ms=0.07900
+delta.set_ops_pct=-6.44
+delta.get_ops_pct=-2.22
+delta.set_p99_ms_pct=20.25
+delta.get_p99_ms_pct=-9.20
