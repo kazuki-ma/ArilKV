@@ -3649,18 +3649,12 @@ impl RequestProcessor {
 
     pub(crate) fn begin_tracking_invalidation_batch(&self) {
         begin_tracking_invalidation_collection();
-        if current_request_tracking_reads_enabled() {
-            begin_tracking_read_collection();
-        }
+        begin_tracking_read_collection();
     }
 
     pub(crate) fn finish_tracking_invalidation_batch(&self, origin_client_id: Option<ClientId>) {
         let invalidated_keys = finish_tracking_invalidation_collection();
-        let deferred_reads = if current_request_tracking_reads_enabled() {
-            finish_tracking_read_collection()
-        } else {
-            Vec::new()
-        };
+        let deferred_reads = finish_tracking_read_collection();
         if !invalidated_keys.is_empty() {
             self.emit_tracking_invalidations_for_keys_with_origin(
                 &invalidated_keys,
@@ -7512,20 +7506,16 @@ impl RequestProcessor {
         if self.command_rejected_while_script_busy(command, subcommand)? {
             return Err(RequestExecutionError::BusyScript);
         }
-        let (previous_tracking_reads_enabled, tracking_reads_enabled) =
-            REQUEST_EXECUTION_CONTEXT.with(|state| {
+        let previous_tracking_reads_enabled = REQUEST_EXECUTION_CONTEXT.with(|state| {
             let mut context = state.get();
             let previous = context.tracking_reads_enabled;
-            let tracking_reads_enabled = previous && !command_mutating;
-            context.tracking_reads_enabled = tracking_reads_enabled;
+            context.tracking_reads_enabled = previous && !command_mutating;
             state.set(context);
-            (previous, tracking_reads_enabled)
+            previous
         });
         begin_deferred_replication_frame_collection();
         begin_tracking_invalidation_collection();
-        if tracking_reads_enabled {
-            begin_tracking_read_collection();
-        }
+        begin_tracking_read_collection();
         let maxmemory_limit_bytes = self.maxmemory_limit_bytes();
         if maxmemory_limit_bytes > 0 {
             let evicted_any = self
@@ -7813,20 +7803,14 @@ impl RequestProcessor {
         };
 
         let invalidated_keys = finish_tracking_invalidation_collection_into_parent();
-        let deferred_read_keys = if tracking_reads_enabled {
-            finish_tracking_read_collection_into_parent()
-        } else {
-            Vec::new()
-        };
+        let deferred_read_keys = finish_tracking_read_collection_into_parent();
         let _ = finish_deferred_replication_frame_collection_into_parent();
         REQUEST_EXECUTION_CONTEXT.with(|state| {
             let mut context = state.get();
             context.tracking_reads_enabled = previous_tracking_reads_enabled;
             state.set(context);
         });
-        if tracking_reads_enabled {
-            self.apply_deferred_tracking_reads_for_current_client(&deferred_read_keys);
-        }
+        self.apply_deferred_tracking_reads_for_current_client(&deferred_read_keys);
         self.clear_client_tracking_caching_override_for_current_client();
         if execution_result.is_ok() && !invalidated_keys.is_empty() {
             self.emit_tracking_invalidations_for_keys(&invalidated_keys);
