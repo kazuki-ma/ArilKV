@@ -1,0 +1,7 @@
+experiment=11.579-request-time-snapshot-drop
+status=dropped
+target=request-local time reuse
+broad_run_1=SET +6.76%, GET -0.10%, SET p99 -14.41%, GET p99 -8.42%
+broad_run_2=SET -4.35%, GET +1.04%, SET p99 +15.53%, GET p99 0.00%
+narrow_run=SET +6.26%, GET -3.91%, SET p99 -20.17%, GET p99 +18.39%
+decision=drop

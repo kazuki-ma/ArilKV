@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=baseline_metadata_clone_fix
+new_label=request_time_snapshot
+baseline_metadata_clone_fix.median_set_ops=90949.000
+baseline_metadata_clone_fix.median_get_ops=116792.000
+baseline_metadata_clone_fix.median_set_p99_ms=0.11100
+baseline_metadata_clone_fix.median_get_p99_ms=0.09500
+request_time_snapshot.median_set_ops=97100.000
+request_time_snapshot.median_get_ops=116679.000
+request_time_snapshot.median_set_p99_ms=0.09500
+request_time_snapshot.median_get_p99_ms=0.08700
+delta.set_ops_pct=6.76
+delta.get_ops_pct=-0.10
+delta.set_p99_ms_pct=-14.41
+delta.get_p99_ms_pct=-8.42
