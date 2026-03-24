@@ -1,0 +1,22 @@
+11.583 combined input and last-command metrics
+
+status: accepted
+before_commit: 5ae2d535d76967f8edfe4f9d2cc794fdc58959b0
+
+validation:
+- cargo test -p garnet-server combined_input_and_last_command_updates_counters_activity_and_lowercased_command -- --nocapture
+- cargo test -p garnet-server client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping -- --nocapture
+- cargo test -p garnet-server client_last_command_stores_lowercased_command_and_subcommand -- --nocapture
+- cargo test -p garnet-server executes_set_then_get_roundtrip -- --nocapture
+- make fmt
+- make fmt-check
+- make test-server
+- verified counts: 713 passed; 0 failed; 16 ignored, plus 26 passed, plus 1 passed
+
+benchmark:
+- run 1: SET +1.29%, GET +4.84%, SET p99 flat, GET p99 -10.13%
+- run 2: SET +2.90%, GET +3.34%, SET p99 flat, GET p99 flat
+
+accepted because:
+- both identical owner-inline reruns stayed net positive
+- change is small, local, and removes one client-table lock acquisition from the plain request loop

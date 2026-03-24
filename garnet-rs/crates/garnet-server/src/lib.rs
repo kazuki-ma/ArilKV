@@ -866,6 +866,40 @@ impl ServerMetrics {
         }
     }
 
+    pub fn add_client_input_bytes_and_last_command(
+        &self,
+        client_id: ClientId,
+        bytes: u64,
+        command_name: &[u8],
+        subcommand_name: Option<&[u8]>,
+    ) {
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.total_input_bytes = client.total_input_bytes.saturating_add(bytes);
+            client.last_activity = Instant::now();
+
+            let subcommand = subcommand_name.filter(|value| !value.is_empty());
+            let required_len = command_name.len() + subcommand.map_or(0, |value| value.len() + 1);
+
+            if last_command_matches(client.last_command.as_slice(), command_name, subcommand) {
+                return;
+            }
+
+            client.last_command.clear();
+            client.last_command.reserve(required_len);
+            client
+                .last_command
+                .extend(command_name.iter().map(|byte| byte.to_ascii_lowercase()));
+            if let Some(subcommand) = subcommand {
+                client.last_command.push(b'|');
+                client
+                    .last_command
+                    .extend(subcommand.iter().map(|byte| byte.to_ascii_lowercase()));
+            }
+        }
+    }
+
     pub fn add_client_output_bytes(&self, client_id: ClientId, bytes: u64) {
         let now = Instant::now();
         let settings = self.reply_buffer_settings_snapshot();

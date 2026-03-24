@@ -1101,8 +1101,12 @@ pub(crate) async fn handle_connection(
                 .await?;
             }
             processor.set_resp_protocol_version(client_state.resp_protocol_version);
-            metrics.add_client_input_bytes(client_id, frame_bytes_consumed as u64);
-            metrics.set_client_last_command(client_id, command_name, subcommand_name);
+            metrics.add_client_input_bytes_and_last_command(
+                client_id,
+                frame_bytes_consumed as u64,
+                command_name,
+                subcommand_name,
+            );
             let stats_subcommand_name = command_stats_subcommand_name(command, subcommand_name);
             processor.record_command_call_with_subcommand(command_name, stats_subcommand_name);
             let mut command_call_name = None;

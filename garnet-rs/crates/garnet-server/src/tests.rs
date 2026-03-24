@@ -4895,6 +4895,28 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() 
 }
 
 #[test]
+fn combined_input_and_last_command_updates_counters_activity_and_lowercased_command() {
+    let metrics = ServerMetrics::default();
+    let client_id = metrics.register_client(None, None);
+    let initial_activity = metrics
+        .clients
+        .lock()
+        .unwrap()
+        .get(&client_id)
+        .unwrap()
+        .last_activity;
+
+    std::thread::sleep(Duration::from_millis(2));
+    metrics.add_client_input_bytes_and_last_command(client_id, 13, b"CLIENT", Some(b"LIST"));
+
+    let clients = metrics.clients.lock().unwrap();
+    let client = clients.get(&client_id).unwrap();
+    assert_eq!(client.total_input_bytes, 13);
+    assert_eq!(client.last_command, b"client|list");
+    assert!(client.last_activity > initial_activity);
+}
+
+#[test]
 fn client_last_command_stores_lowercased_command_and_subcommand() {
     let metrics = ServerMetrics::default();
     let client_id = metrics.register_client(None, None);
