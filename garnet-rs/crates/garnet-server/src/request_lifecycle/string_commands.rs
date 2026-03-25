@@ -148,6 +148,7 @@ impl Default for PfSetState {
 impl RequestProcessor {
     pub(super) fn handle_get(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -173,7 +174,7 @@ impl RequestProcessor {
 
         if !self.logical_db_uses_main_runtime(selected_db)? {
             if let Some(output) = self.read_string_value(db_key)? {
-                self.record_key_access(db_key, false);
+                self.record_key_access_with_ctx(db_key, false, ctx);
                 append_bulk_string(response_out, &output);
                 return Ok(());
             }
@@ -199,7 +200,7 @@ impl RequestProcessor {
             PeekOperationStatus::FoundInMemory(Some(()))
             | PeekOperationStatus::FoundOnDisk(Some(())) => {
                 self.track_read_key_for_current_client(&key);
-                self.record_key_access(db_key, false);
+                self.record_key_access_with_ctx(db_key, false, ctx);
                 Ok(())
             }
             PeekOperationStatus::FoundInMemory(None)
@@ -1527,6 +1528,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_set(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1609,7 +1611,7 @@ impl RequestProcessor {
 
             self.clear_forced_raw_string_encoding(db_key);
             self.bump_watch_version(db_key);
-            self.record_key_access(db_key, true);
+            self.record_key_access_with_ctx(db_key, true, ctx);
 
             if !string_exists && !object_exists {
                 self.notify_keyspace_event(selected_db, NOTIFY_STRING, b"set", &key);
@@ -1771,7 +1773,7 @@ impl RequestProcessor {
             self.track_string_key_in_shard(&key, shard_index);
         }
         self.bump_watch_version(db_key);
-        self.record_key_access(db_key, true);
+        self.record_key_access_with_ctx(db_key, true, ctx);
 
         if !string_exists && !object_exists {
             self.notify_keyspace_event(selected_db, NOTIFY_STRING, b"set", &key);
@@ -1805,6 +1807,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_setnx(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1812,7 +1815,7 @@ impl RequestProcessor {
         require_exact_arity(args, 3, "SETNX", "SETNX key value")?;
         let translated: [&[u8]; 4] = [b"SET", args[1], args[2], b"NX"];
         let mut set_response = Vec::new();
-        self.handle_set(selected_db, &translated, &mut set_response)?;
+        self.handle_set(ctx, selected_db, &translated, &mut set_response)?;
         if set_response == b"+OK\r\n" {
             append_integer(response_out, 1);
         } else {
@@ -1823,28 +1826,31 @@ impl RequestProcessor {
 
     pub(super) fn handle_setex(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SETEX", "SETEX key seconds value")?;
         let translated: [&[u8]; 5] = [b"SET", args[1], args[3], b"EX", args[2]];
-        self.handle_set(selected_db, &translated, response_out)
+        self.handle_set(ctx, selected_db, &translated, response_out)
     }
 
     pub(super) fn handle_psetex(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "PSETEX", "PSETEX key milliseconds value")?;
         let translated: [&[u8]; 5] = [b"SET", args[1], args[3], b"PX", args[2]];
-        self.handle_set(selected_db, &translated, response_out)
+        self.handle_set(ctx, selected_db, &translated, response_out)
     }
 
     pub(super) fn handle_getset(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1853,11 +1859,11 @@ impl RequestProcessor {
 
         let mut previous_value_response = Vec::new();
         let get_args: [&[u8]; 2] = [b"GET", args[1]];
-        self.handle_get(selected_db, &get_args, &mut previous_value_response)?;
+        self.handle_get(ctx, selected_db, &get_args, &mut previous_value_response)?;
 
         let set_args: [&[u8]; 3] = [b"SET", args[1], args[2]];
         let mut set_response = Vec::new();
-        self.handle_set(selected_db, &set_args, &mut set_response)?;
+        self.handle_set(ctx, selected_db, &set_args, &mut set_response)?;
 
         response_out.extend_from_slice(&previous_value_response);
         Ok(())
@@ -1865,6 +1871,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_getdel(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1873,7 +1880,7 @@ impl RequestProcessor {
 
         let get_args: [&[u8]; 2] = [b"GET", args[1]];
         let mut previous_value_response = Vec::new();
-        self.handle_get(selected_db, &get_args, &mut previous_value_response)?;
+        self.handle_get(ctx, selected_db, &get_args, &mut previous_value_response)?;
         let is_null = previous_value_response.as_slice() == b"$-1\r\n"
             || previous_value_response.as_slice() == b"_\r\n";
         if is_null {

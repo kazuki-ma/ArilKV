@@ -1,0 +1,11 @@
+before_commit=92f974fd1b
+after_commit=this_commit
+p1.set_ops_pct=0.84
+p1.get_ops_pct=-1.75
+p1.set_p99_ms_pct=0.00
+p1.get_p99_ms_pct=10.13
+p4mt.set_ops_pct=1.05
+p4mt.get_ops_pct=3.58
+p4mt.set_p99_ms_pct=0.76
+p4mt.get_p99_ms_pct=-3.08
+decision=keep

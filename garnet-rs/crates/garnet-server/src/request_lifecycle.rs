@@ -343,6 +343,30 @@ pub(crate) struct RequestTimeSnapshotScope {
     previous: Option<RequestTimeSnapshot>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CommandContext {
+    time_snapshot: RequestTimeSnapshot,
+}
+
+impl CommandContext {
+    #[inline]
+    pub(crate) fn capture_or_current() -> Self {
+        let time_snapshot =
+            current_request_time_snapshot().unwrap_or_else(RequestTimeSnapshot::capture);
+        Self { time_snapshot }
+    }
+
+    #[inline]
+    pub(crate) fn instant(self) -> Instant {
+        self.time_snapshot.instant
+    }
+
+    #[inline]
+    pub(crate) fn time_snapshot(self) -> RequestTimeSnapshot {
+        self.time_snapshot
+    }
+}
+
 impl RequestExecutionContextScope {
     #[inline]
     fn enter(context: RequestExecutionContext) -> Self {
@@ -6275,13 +6299,26 @@ impl RequestProcessor {
     }
 
     pub(super) fn record_key_access(&self, key: DbKeyRef<'_>, force_touch: bool) {
+        self.record_key_access_at(key, force_touch, current_instant());
+    }
+
+    pub(super) fn record_key_access_with_ctx(
+        &self,
+        key: DbKeyRef<'_>,
+        force_touch: bool,
+        ctx: CommandContext,
+    ) {
+        self.record_key_access_at(key, force_touch, ctx.instant());
+    }
+
+    fn record_key_access_at(&self, key: DbKeyRef<'_>, force_touch: bool, now: Instant) {
         if key.key().is_empty() {
             return;
         }
         if !force_touch && current_client_no_touch_mode() {
             return;
         }
-        let now_millis = self.current_access_metadata_millis();
+        let now_millis = self.current_access_metadata_millis_at(now);
         let shard_index = self.string_store_shard_index_for_key(key.key());
         if let Ok(mut lru_state) =
             self.db_catalog.side_state.key_lru_access_millis[shard_index].lock()
@@ -6349,7 +6386,10 @@ impl RequestProcessor {
     }
 
     fn current_access_metadata_millis(&self) -> u64 {
-        let now = current_instant();
+        self.current_access_metadata_millis_at(current_instant())
+    }
+
+    fn current_access_metadata_millis_at(&self, now: Instant) -> u64 {
         let elapsed = now.saturating_duration_since(self.access_clock_start);
         let elapsed_millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         self.access_clock_start_unix_millis
@@ -7649,6 +7689,7 @@ impl RequestProcessor {
         let command = dispatch_command_name(args[0]);
         let subcommand = args.get(1).copied();
         let command_mutating = command_is_effectively_mutating(command, subcommand);
+        let ctx = CommandContext::capture_or_current();
         let slowlog_started_at_micros = cached_monotonic_micros();
         if self.command_rejected_while_script_busy(command, subcommand)? {
             return Err(RequestExecutionError::BusyScript);
@@ -7676,10 +7717,10 @@ impl RequestProcessor {
         }
 
         let execution_result = match command {
-            CommandId::Get => self.handle_get(selected_db, args, response_out),
-            CommandId::Set => self.handle_set(selected_db, args, response_out),
-            CommandId::Setex => self.handle_setex(selected_db, args, response_out),
-            CommandId::Setnx => self.handle_setnx(selected_db, args, response_out),
+            CommandId::Get => self.handle_get(ctx, selected_db, args, response_out),
+            CommandId::Set => self.handle_set(ctx, selected_db, args, response_out),
+            CommandId::Setex => self.handle_setex(ctx, selected_db, args, response_out),
+            CommandId::Setnx => self.handle_setnx(ctx, selected_db, args, response_out),
             CommandId::Strlen => self.handle_strlen(selected_db, args, response_out),
             CommandId::Getrange => self.handle_getrange(selected_db, args, response_out),
             CommandId::Substr => self.handle_substr(selected_db, args, response_out),
@@ -7706,11 +7747,11 @@ impl RequestProcessor {
             CommandId::Touch => self.handle_touch(selected_db, args, response_out),
             CommandId::Unlink => self.handle_unlink(selected_db, args, response_out),
             CommandId::Move => self.handle_move(selected_db, args, response_out),
-            CommandId::Psetex => self.handle_psetex(selected_db, args, response_out),
+            CommandId::Psetex => self.handle_psetex(ctx, selected_db, args, response_out),
             CommandId::Digest => self.handle_digest(selected_db, args, response_out),
             CommandId::Delex => self.handle_delex(selected_db, args, response_out),
-            CommandId::Getset => self.handle_getset(selected_db, args, response_out),
-            CommandId::Getdel => self.handle_getdel(selected_db, args, response_out),
+            CommandId::Getset => self.handle_getset(ctx, selected_db, args, response_out),
+            CommandId::Getdel => self.handle_getdel(ctx, selected_db, args, response_out),
             CommandId::Msetex => self.handle_msetex(selected_db, args, response_out),
             CommandId::Del => self.handle_del(selected_db, args, response_out),
             CommandId::Rename => self.handle_rename(selected_db, args, response_out),
@@ -7875,14 +7916,14 @@ impl RequestProcessor {
             CommandId::Zscan => self.handle_zscan(selected_db, args, response_out),
             CommandId::Flushdb => self.handle_flushdb(selected_db, args, response_out),
             CommandId::Flushall => self.handle_flushall(args, response_out),
-            CommandId::Function => self.handle_function(args, response_out),
-            CommandId::Script => self.handle_script(args, response_out),
-            CommandId::Eval => self.handle_eval(selected_db, args, response_out),
-            CommandId::EvalRo => self.handle_eval_ro(selected_db, args, response_out),
-            CommandId::Evalsha => self.handle_evalsha(selected_db, args, response_out),
-            CommandId::EvalshaRo => self.handle_evalsha_ro(selected_db, args, response_out),
-            CommandId::Fcall => self.handle_fcall(selected_db, args, response_out),
-            CommandId::FcallRo => self.handle_fcall_ro(selected_db, args, response_out),
+            CommandId::Function => self.handle_function(ctx, args, response_out),
+            CommandId::Script => self.handle_script(ctx, args, response_out),
+            CommandId::Eval => self.handle_eval(ctx, selected_db, args, response_out),
+            CommandId::EvalRo => self.handle_eval_ro(ctx, selected_db, args, response_out),
+            CommandId::Evalsha => self.handle_evalsha(ctx, selected_db, args, response_out),
+            CommandId::EvalshaRo => self.handle_evalsha_ro(ctx, selected_db, args, response_out),
+            CommandId::Fcall => self.handle_fcall(ctx, selected_db, args, response_out),
+            CommandId::FcallRo => self.handle_fcall_ro(ctx, selected_db, args, response_out),
             CommandId::Config => self.handle_config(selected_db, args, response_out),
             CommandId::Command => self.handle_command(args, response_out),
             CommandId::Dump => self.handle_dump(selected_db, args, response_out),

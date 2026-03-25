@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::CommandId;
-use crate::RequestTimeSnapshot;
 use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_is_write_pause_affected;
 use crate::command_spec::eval_script_shebang_flags;
@@ -218,6 +217,7 @@ impl Drop for RunningScriptGuard<'_> {
 impl RequestProcessor {
     pub(super) fn handle_function(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -456,6 +456,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_script(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -539,6 +540,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_eval(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -554,6 +556,7 @@ impl RequestProcessor {
         let key_end = key_start + key_count;
         let _ = self.cache_script(script);
         self.execute_lua_script(
+            ctx,
             selected_db,
             script,
             &args[key_start..key_end],
@@ -567,6 +570,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_eval_ro(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -582,6 +586,7 @@ impl RequestProcessor {
         let key_end = key_start + key_count;
         let _ = self.cache_script(script);
         self.execute_lua_script(
+            ctx,
             selected_db,
             script,
             &args[key_start..key_end],
@@ -595,6 +600,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_evalsha(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -610,6 +616,7 @@ impl RequestProcessor {
         let key_start = 3;
         let key_end = key_start + key_count;
         self.execute_lua_script(
+            ctx,
             selected_db,
             &script,
             &args[key_start..key_end],
@@ -623,6 +630,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_evalsha_ro(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -638,6 +646,7 @@ impl RequestProcessor {
         let key_start = 3;
         let key_end = key_start + key_count;
         self.execute_lua_script(
+            ctx,
             selected_db,
             &script,
             &args[key_start..key_end],
@@ -651,6 +660,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_fcall(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -673,6 +683,7 @@ impl RequestProcessor {
             ScriptMutability::ReadWrite
         };
         self.execute_lua_function(
+            ctx,
             selected_db,
             &function_target.library_source,
             function_name,
@@ -689,6 +700,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_fcall_ro(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -709,6 +721,7 @@ impl RequestProcessor {
         let key_start = 3;
         let key_end = key_start + key_count;
         self.execute_lua_function(
+            ctx,
             selected_db,
             &function_target.library_source,
             function_name,
@@ -830,6 +843,7 @@ impl RequestProcessor {
 
     fn enter_running_script(
         &self,
+        ctx: CommandContext,
         kind: RunningScriptKind,
         name: &str,
         command: String,
@@ -843,8 +857,7 @@ impl RequestProcessor {
         if running_script.is_some() {
             return Err(RequestExecutionError::BusyScript);
         }
-        let frozen_time =
-            current_request_time_snapshot().unwrap_or_else(RequestTimeSnapshot::capture);
+        let frozen_time = ctx.time_snapshot();
         // TLA+ : BeginScriptCriticalSection
         self.script_kill_requested.store(false, Ordering::Release);
         self.function_kill_requested.store(false, Ordering::Release);
@@ -1391,6 +1404,7 @@ impl RequestProcessor {
 
     fn execute_lua_script(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         script: &[u8],
         keys: &[&[u8]],
@@ -1451,7 +1465,8 @@ impl RequestProcessor {
         }
 
         let _running_script_guard =
-            match self.enter_running_script(RunningScriptKind::Script, "", "eval".to_string()) {
+            match self.enter_running_script(ctx, RunningScriptKind::Script, "", "eval".to_string())
+            {
                 Ok(guard) => guard,
                 Err(error) => {
                     error.append_resp_error(response_out);
@@ -1696,6 +1711,7 @@ impl RequestProcessor {
     #[allow(clippy::too_many_arguments)]
     fn execute_lua_function(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         library_source: &[u8],
         function_name: &[u8],
@@ -1728,6 +1744,7 @@ impl RequestProcessor {
             return;
         }
         let _running_script_guard = match self.enter_running_script(
+            ctx,
             RunningScriptKind::Function,
             function_name_text.as_str(),
             command,

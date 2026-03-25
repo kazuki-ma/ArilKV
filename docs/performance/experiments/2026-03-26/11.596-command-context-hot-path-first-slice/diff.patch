@@ -1,0 +1,450 @@
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+index d3a24c8a57..2a61dcfbe8 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+@@ -343,6 +343,30 @@ pub(crate) struct RequestTimeSnapshotScope {
+     previous: Option<RequestTimeSnapshot>,
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) struct CommandContext {
++    time_snapshot: RequestTimeSnapshot,
++}
++
++impl CommandContext {
++    #[inline]
++    pub(crate) fn capture_or_current() -> Self {
++        let time_snapshot =
++            current_request_time_snapshot().unwrap_or_else(RequestTimeSnapshot::capture);
++        Self { time_snapshot }
++    }
++
++    #[inline]
++    pub(crate) fn instant(self) -> Instant {
++        self.time_snapshot.instant
++    }
++
++    #[inline]
++    pub(crate) fn time_snapshot(self) -> RequestTimeSnapshot {
++        self.time_snapshot
++    }
++}
++
+ impl RequestExecutionContextScope {
+     #[inline]
+     fn enter(context: RequestExecutionContext) -> Self {
+@@ -6275,13 +6299,26 @@ impl RequestProcessor {
+     }
+ 
+     pub(super) fn record_key_access(&self, key: DbKeyRef<'_>, force_touch: bool) {
++        self.record_key_access_at(key, force_touch, current_instant());
++    }
++
++    pub(super) fn record_key_access_with_ctx(
++        &self,
++        key: DbKeyRef<'_>,
++        force_touch: bool,
++        ctx: CommandContext,
++    ) {
++        self.record_key_access_at(key, force_touch, ctx.instant());
++    }
++
++    fn record_key_access_at(&self, key: DbKeyRef<'_>, force_touch: bool, now: Instant) {
+         if key.key().is_empty() {
+             return;
+         }
+         if !force_touch && current_client_no_touch_mode() {
+             return;
+         }
+-        let now_millis = self.current_access_metadata_millis();
++        let now_millis = self.current_access_metadata_millis_at(now);
+         let shard_index = self.string_store_shard_index_for_key(key.key());
+         if let Ok(mut lru_state) =
+             self.db_catalog.side_state.key_lru_access_millis[shard_index].lock()
+@@ -6349,7 +6386,10 @@ impl RequestProcessor {
+     }
+ 
+     fn current_access_metadata_millis(&self) -> u64 {
+-        let now = current_instant();
++        self.current_access_metadata_millis_at(current_instant())
++    }
++
++    fn current_access_metadata_millis_at(&self, now: Instant) -> u64 {
+         let elapsed = now.saturating_duration_since(self.access_clock_start);
+         let elapsed_millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+         self.access_clock_start_unix_millis
+@@ -7649,6 +7689,7 @@ impl RequestProcessor {
+         let command = dispatch_command_name(args[0]);
+         let subcommand = args.get(1).copied();
+         let command_mutating = command_is_effectively_mutating(command, subcommand);
++        let ctx = CommandContext::capture_or_current();
+         let slowlog_started_at_micros = cached_monotonic_micros();
+         if self.command_rejected_while_script_busy(command, subcommand)? {
+             return Err(RequestExecutionError::BusyScript);
+@@ -7676,10 +7717,10 @@ impl RequestProcessor {
+         }
+ 
+         let execution_result = match command {
+-            CommandId::Get => self.handle_get(selected_db, args, response_out),
+-            CommandId::Set => self.handle_set(selected_db, args, response_out),
+-            CommandId::Setex => self.handle_setex(selected_db, args, response_out),
+-            CommandId::Setnx => self.handle_setnx(selected_db, args, response_out),
++            CommandId::Get => self.handle_get(ctx, selected_db, args, response_out),
++            CommandId::Set => self.handle_set(ctx, selected_db, args, response_out),
++            CommandId::Setex => self.handle_setex(ctx, selected_db, args, response_out),
++            CommandId::Setnx => self.handle_setnx(ctx, selected_db, args, response_out),
+             CommandId::Strlen => self.handle_strlen(selected_db, args, response_out),
+             CommandId::Getrange => self.handle_getrange(selected_db, args, response_out),
+             CommandId::Substr => self.handle_substr(selected_db, args, response_out),
+@@ -7706,11 +7747,11 @@ impl RequestProcessor {
+             CommandId::Touch => self.handle_touch(selected_db, args, response_out),
+             CommandId::Unlink => self.handle_unlink(selected_db, args, response_out),
+             CommandId::Move => self.handle_move(selected_db, args, response_out),
+-            CommandId::Psetex => self.handle_psetex(selected_db, args, response_out),
++            CommandId::Psetex => self.handle_psetex(ctx, selected_db, args, response_out),
+             CommandId::Digest => self.handle_digest(selected_db, args, response_out),
+             CommandId::Delex => self.handle_delex(selected_db, args, response_out),
+-            CommandId::Getset => self.handle_getset(selected_db, args, response_out),
+-            CommandId::Getdel => self.handle_getdel(selected_db, args, response_out),
++            CommandId::Getset => self.handle_getset(ctx, selected_db, args, response_out),
++            CommandId::Getdel => self.handle_getdel(ctx, selected_db, args, response_out),
+             CommandId::Msetex => self.handle_msetex(selected_db, args, response_out),
+             CommandId::Del => self.handle_del(selected_db, args, response_out),
+             CommandId::Rename => self.handle_rename(selected_db, args, response_out),
+@@ -7875,14 +7916,14 @@ impl RequestProcessor {
+             CommandId::Zscan => self.handle_zscan(selected_db, args, response_out),
+             CommandId::Flushdb => self.handle_flushdb(selected_db, args, response_out),
+             CommandId::Flushall => self.handle_flushall(args, response_out),
+-            CommandId::Function => self.handle_function(args, response_out),
+-            CommandId::Script => self.handle_script(args, response_out),
+-            CommandId::Eval => self.handle_eval(selected_db, args, response_out),
+-            CommandId::EvalRo => self.handle_eval_ro(selected_db, args, response_out),
+-            CommandId::Evalsha => self.handle_evalsha(selected_db, args, response_out),
+-            CommandId::EvalshaRo => self.handle_evalsha_ro(selected_db, args, response_out),
+-            CommandId::Fcall => self.handle_fcall(selected_db, args, response_out),
+-            CommandId::FcallRo => self.handle_fcall_ro(selected_db, args, response_out),
++            CommandId::Function => self.handle_function(ctx, args, response_out),
++            CommandId::Script => self.handle_script(ctx, args, response_out),
++            CommandId::Eval => self.handle_eval(ctx, selected_db, args, response_out),
++            CommandId::EvalRo => self.handle_eval_ro(ctx, selected_db, args, response_out),
++            CommandId::Evalsha => self.handle_evalsha(ctx, selected_db, args, response_out),
++            CommandId::EvalshaRo => self.handle_evalsha_ro(ctx, selected_db, args, response_out),
++            CommandId::Fcall => self.handle_fcall(ctx, selected_db, args, response_out),
++            CommandId::FcallRo => self.handle_fcall_ro(ctx, selected_db, args, response_out),
+             CommandId::Config => self.handle_config(selected_db, args, response_out),
+             CommandId::Command => self.handle_command(args, response_out),
+             CommandId::Dump => self.handle_dump(selected_db, args, response_out),
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs
+index dfbb5c9644..2dc661c5cb 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs
+@@ -2,7 +2,6 @@
+ 
+ use super::*;
+ use crate::CommandId;
+-use crate::RequestTimeSnapshot;
+ use crate::command_spec::command_is_mutating;
+ use crate::command_spec::command_is_write_pause_affected;
+ use crate::command_spec::eval_script_shebang_flags;
+@@ -218,6 +217,7 @@ impl Drop for RunningScriptGuard<'_> {
+ impl RequestProcessor {
+     pub(super) fn handle_function(
+         &self,
++        _ctx: CommandContext,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+     ) -> Result<(), RequestExecutionError> {
+@@ -456,6 +456,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_script(
+         &self,
++        _ctx: CommandContext,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+     ) -> Result<(), RequestExecutionError> {
+@@ -539,6 +540,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_eval(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -554,6 +556,7 @@ impl RequestProcessor {
+         let key_end = key_start + key_count;
+         let _ = self.cache_script(script);
+         self.execute_lua_script(
++            ctx,
+             selected_db,
+             script,
+             &args[key_start..key_end],
+@@ -567,6 +570,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_eval_ro(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -582,6 +586,7 @@ impl RequestProcessor {
+         let key_end = key_start + key_count;
+         let _ = self.cache_script(script);
+         self.execute_lua_script(
++            ctx,
+             selected_db,
+             script,
+             &args[key_start..key_end],
+@@ -595,6 +600,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_evalsha(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -610,6 +616,7 @@ impl RequestProcessor {
+         let key_start = 3;
+         let key_end = key_start + key_count;
+         self.execute_lua_script(
++            ctx,
+             selected_db,
+             &script,
+             &args[key_start..key_end],
+@@ -623,6 +630,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_evalsha_ro(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -638,6 +646,7 @@ impl RequestProcessor {
+         let key_start = 3;
+         let key_end = key_start + key_count;
+         self.execute_lua_script(
++            ctx,
+             selected_db,
+             &script,
+             &args[key_start..key_end],
+@@ -651,6 +660,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_fcall(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -673,6 +683,7 @@ impl RequestProcessor {
+             ScriptMutability::ReadWrite
+         };
+         self.execute_lua_function(
++            ctx,
+             selected_db,
+             &function_target.library_source,
+             function_name,
+@@ -689,6 +700,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_fcall_ro(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -709,6 +721,7 @@ impl RequestProcessor {
+         let key_start = 3;
+         let key_end = key_start + key_count;
+         self.execute_lua_function(
++            ctx,
+             selected_db,
+             &function_target.library_source,
+             function_name,
+@@ -830,6 +843,7 @@ impl RequestProcessor {
+ 
+     fn enter_running_script(
+         &self,
++        ctx: CommandContext,
+         kind: RunningScriptKind,
+         name: &str,
+         command: String,
+@@ -843,8 +857,7 @@ impl RequestProcessor {
+         if running_script.is_some() {
+             return Err(RequestExecutionError::BusyScript);
+         }
+-        let frozen_time =
+-            current_request_time_snapshot().unwrap_or_else(RequestTimeSnapshot::capture);
++        let frozen_time = ctx.time_snapshot();
+         // TLA+ : BeginScriptCriticalSection
+         self.script_kill_requested.store(false, Ordering::Release);
+         self.function_kill_requested.store(false, Ordering::Release);
+@@ -1391,6 +1404,7 @@ impl RequestProcessor {
+ 
+     fn execute_lua_script(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         script: &[u8],
+         keys: &[&[u8]],
+@@ -1451,7 +1465,8 @@ impl RequestProcessor {
+         }
+ 
+         let _running_script_guard =
+-            match self.enter_running_script(RunningScriptKind::Script, "", "eval".to_string()) {
++            match self.enter_running_script(ctx, RunningScriptKind::Script, "", "eval".to_string())
++            {
+                 Ok(guard) => guard,
+                 Err(error) => {
+                     error.append_resp_error(response_out);
+@@ -1696,6 +1711,7 @@ impl RequestProcessor {
+     #[allow(clippy::too_many_arguments)]
+     fn execute_lua_function(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         library_source: &[u8],
+         function_name: &[u8],
+@@ -1728,6 +1744,7 @@ impl RequestProcessor {
+             return;
+         }
+         let _running_script_guard = match self.enter_running_script(
++            ctx,
+             RunningScriptKind::Function,
+             function_name_text.as_str(),
+             command,
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
+index ba6b3fc40f..81d90faefa 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
+@@ -148,6 +148,7 @@ impl Default for PfSetState {
+ impl RequestProcessor {
+     pub(super) fn handle_get(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -173,7 +174,7 @@ impl RequestProcessor {
+ 
+         if !self.logical_db_uses_main_runtime(selected_db)? {
+             if let Some(output) = self.read_string_value(db_key)? {
+-                self.record_key_access(db_key, false);
++                self.record_key_access_with_ctx(db_key, false, ctx);
+                 append_bulk_string(response_out, &output);
+                 return Ok(());
+             }
+@@ -199,7 +200,7 @@ impl RequestProcessor {
+             PeekOperationStatus::FoundInMemory(Some(()))
+             | PeekOperationStatus::FoundOnDisk(Some(())) => {
+                 self.track_read_key_for_current_client(&key);
+-                self.record_key_access(db_key, false);
++                self.record_key_access_with_ctx(db_key, false, ctx);
+                 Ok(())
+             }
+             PeekOperationStatus::FoundInMemory(None)
+@@ -1527,6 +1528,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_set(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -1609,7 +1611,7 @@ impl RequestProcessor {
+ 
+             self.clear_forced_raw_string_encoding(db_key);
+             self.bump_watch_version(db_key);
+-            self.record_key_access(db_key, true);
++            self.record_key_access_with_ctx(db_key, true, ctx);
+ 
+             if !string_exists && !object_exists {
+                 self.notify_keyspace_event(selected_db, NOTIFY_STRING, b"set", &key);
+@@ -1771,7 +1773,7 @@ impl RequestProcessor {
+             self.track_string_key_in_shard(&key, shard_index);
+         }
+         self.bump_watch_version(db_key);
+-        self.record_key_access(db_key, true);
++        self.record_key_access_with_ctx(db_key, true, ctx);
+ 
+         if !string_exists && !object_exists {
+             self.notify_keyspace_event(selected_db, NOTIFY_STRING, b"set", &key);
+@@ -1805,6 +1807,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_setnx(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -1812,7 +1815,7 @@ impl RequestProcessor {
+         require_exact_arity(args, 3, "SETNX", "SETNX key value")?;
+         let translated: [&[u8]; 4] = [b"SET", args[1], args[2], b"NX"];
+         let mut set_response = Vec::new();
+-        self.handle_set(selected_db, &translated, &mut set_response)?;
++        self.handle_set(ctx, selected_db, &translated, &mut set_response)?;
+         if set_response == b"+OK\r\n" {
+             append_integer(response_out, 1);
+         } else {
+@@ -1823,28 +1826,31 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_setex(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+     ) -> Result<(), RequestExecutionError> {
+         require_exact_arity(args, 4, "SETEX", "SETEX key seconds value")?;
+         let translated: [&[u8]; 5] = [b"SET", args[1], args[3], b"EX", args[2]];
+-        self.handle_set(selected_db, &translated, response_out)
++        self.handle_set(ctx, selected_db, &translated, response_out)
+     }
+ 
+     pub(super) fn handle_psetex(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+     ) -> Result<(), RequestExecutionError> {
+         require_exact_arity(args, 4, "PSETEX", "PSETEX key milliseconds value")?;
+         let translated: [&[u8]; 5] = [b"SET", args[1], args[3], b"PX", args[2]];
+-        self.handle_set(selected_db, &translated, response_out)
++        self.handle_set(ctx, selected_db, &translated, response_out)
+     }
+ 
+     pub(super) fn handle_getset(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -1853,11 +1859,11 @@ impl RequestProcessor {
+ 
+         let mut previous_value_response = Vec::new();
+         let get_args: [&[u8]; 2] = [b"GET", args[1]];
+-        self.handle_get(selected_db, &get_args, &mut previous_value_response)?;
++        self.handle_get(ctx, selected_db, &get_args, &mut previous_value_response)?;
+ 
+         let set_args: [&[u8]; 3] = [b"SET", args[1], args[2]];
+         let mut set_response = Vec::new();
+-        self.handle_set(selected_db, &set_args, &mut set_response)?;
++        self.handle_set(ctx, selected_db, &set_args, &mut set_response)?;
+ 
+         response_out.extend_from_slice(&previous_value_response);
+         Ok(())
+@@ -1865,6 +1871,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn handle_getdel(
+         &self,
++        ctx: CommandContext,
+         selected_db: DbName,
+         args: &[&[u8]],
+         response_out: &mut Vec<u8>,
+@@ -1873,7 +1880,7 @@ impl RequestProcessor {
+ 
+         let get_args: [&[u8]; 2] = [b"GET", args[1]];
+         let mut previous_value_response = Vec::new();
+-        self.handle_get(selected_db, &get_args, &mut previous_value_response)?;
++        self.handle_get(ctx, selected_db, &get_args, &mut previous_value_response)?;
+         let is_null = previous_value_response.as_slice() == b"$-1\r\n"
+             || previous_value_response.as_slice() == b"_\r\n";
+         if is_null {
