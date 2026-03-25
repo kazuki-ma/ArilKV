@@ -1,0 +1,2610 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="998" onload="init(evt)" viewBox="0 0 1200 998" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="998.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="981" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="981" > </text>
+<g id="frames">
+<g >
+<title>__siphash_unaligned (20,202,020 samples, 0.39%)</title><rect x="110.2" y="453" width="4.6" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="113.23" y="463.5" ></text>
+</g>
+<g >
+<title>fget (40,404,040 samples, 0.77%)</title><rect x="62.4" y="709" width="9.1" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="65.39" y="719.5" ></text>
+</g>
+<g >
+<title>io_netmsg_recycle (10,101,010 samples, 0.19%)</title><rect x="14.6" y="661" width="2.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="17.56" y="671.5" ></text>
+</g>
+<g >
+<title>tcp_chrono_start (10,101,010 samples, 0.19%)</title><rect x="101.1" y="613" width="2.3" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="104.12" y="623.5" ></text>
+</g>
+<g >
+<title>dfly::CommandContext::RecordLatency (50,505,050 samples, 0.97%)</title><rect x="754.9" y="821" width="11.4" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="757.90" y="831.5" ></text>
+</g>
+<g >
+<title>io_recv (121,212,120 samples, 2.32%)</title><rect x="14.6" y="693" width="27.3" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="17.56" y="703.5" >i..</text>
+</g>
+<g >
+<title>do_el0_svc (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="741" width="2.3" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1190.72" y="751.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="821" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1190.72" y="831.5" ></text>
+</g>
+<g >
+<title>util::fb2::BlockingCounter::BlockingCounter (20,202,020 samples, 0.39%)</title><rect x="882.5" y="805" width="4.5" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="885.47" y="815.5" ></text>
+</g>
+<g >
+<title>_mi_stat_decrease (10,101,010 samples, 0.19%)</title><rect x="1010.0" y="821" width="2.3" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="1013.04" y="831.5" ></text>
+</g>
+<g >
+<title>tcp_ack (101,010,100 samples, 1.93%)</title><rect x="178.6" y="117" width="22.8" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="181.57" y="127.5" >t..</text>
+</g>
+<g >
+<title>facade::CapturingReplyBuilder::SendBulkString (20,202,020 samples, 0.39%)</title><rect x="408.6" y="789" width="4.6" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="411.65" y="799.5" ></text>
+</g>
+<g >
+<title>__ip_finish_output (818,181,810 samples, 15.64%)</title><rect x="121.6" y="485" width="184.5" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="124.62" y="495.5" >__ip_finish_output</text>
+</g>
+<g >
+<title>ip_local_deliver_finish (505,050,500 samples, 9.65%)</title><rect x="155.8" y="197" width="113.9" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="158.79" y="207.5" >ip_local_deliv..</text>
+</g>
+<g >
+<title>ip_finish_output (818,181,810 samples, 15.64%)</title><rect x="121.6" y="501" width="184.5" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="124.62" y="511.5" >ip_finish_output</text>
+</g>
+<g >
+<title>__ip_queue_xmit (878,787,870 samples, 16.80%)</title><rect x="108.0" y="533" width="198.1" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="110.95" y="543.5" >__ip_queue_xmit</text>
+</g>
+<g >
+<title>mi_find_page (40,404,040 samples, 0.77%)</title><rect x="1019.2" y="773" width="9.1" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1022.15" y="783.5" ></text>
+</g>
+<g >
+<title>__kernel_clock_gettime (10,101,010 samples, 0.19%)</title><rect x="1055.6" y="709" width="2.3" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1058.60" y="719.5" ></text>
+</g>
+<g >
+<title>arch_counter_get_cntvct (30,303,030 samples, 0.58%)</title><rect x="35.1" y="565" width="6.8" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="38.06" y="575.5" ></text>
+</g>
+<g >
+<title>mi_free_size (10,101,010 samples, 0.19%)</title><rect x="880.2" y="805" width="2.3" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="883.19" y="815.5" ></text>
+</g>
+<g >
+<title>util::fb2::UringSocket::Recv (10,101,010 samples, 0.19%)</title><rect x="1105.7" y="789" width="2.3" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1108.71" y="799.5" ></text>
+</g>
+<g >
+<title>util::fb2::EmbeddedBlockingCounter::Dec (10,101,010 samples, 0.19%)</title><rect x="739.0" y="741" width="2.2" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="741.96" y="751.5" ></text>
+</g>
+<g >
+<title>util::fb2::UringProactor::ProcessCqeBatch (50,505,050 samples, 0.97%)</title><rect x="342.6" y="853" width="11.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="345.59" y="863.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::ExecuteSquashed (242,424,240 samples, 4.63%)</title><rect x="846.0" y="821" width="54.7" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="849.02" y="831.5" >dfly:..</text>
+</g>
+<g >
+<title>absl::lts_20250512::GetCurrentTimeNanos (10,101,010 samples, 0.19%)</title><rect x="1055.6" y="741" width="2.3" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="1058.60" y="751.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FbInitializer (10,101,010 samples, 0.19%)</title><rect x="887.0" y="789" width="2.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="890.03" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::SquashedHopCb (20,202,020 samples, 0.39%)</title><rect x="358.5" y="837" width="4.6" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="361.53" y="847.5" ></text>
+</g>
+<g >
+<title>_mi_malloc_generic (40,404,040 samples, 0.77%)</title><rect x="1019.2" y="789" width="9.1" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="1022.15" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::DbSlice::FindInternal (60,606,060 samples, 1.16%)</title><rect x="720.7" y="677" width="13.7" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="723.73" y="687.5" ></text>
+</g>
+<g >
+<title>__io_run_local_work (151,515,150 samples, 2.90%)</title><rect x="10.0" y="757" width="34.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="13.00" y="767.5" >__..</text>
+</g>
+<g >
+<title>ip_output (828,282,820 samples, 15.83%)</title><rect x="119.3" y="517" width="186.8" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="122.34" y="527.5" >ip_output</text>
+</g>
+<g >
+<title>__dentry_kill (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="645" width="2.3" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="1190.72" y="655.5" ></text>
+</g>
+<g >
+<title>dfly::StoredCmd::ArgList (10,101,010 samples, 0.19%)</title><rect x="978.1" y="805" width="2.3" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="981.15" y="815.5" ></text>
+</g>
+<g >
+<title>_mi_stat_increase (383,838,380 samples, 7.34%)</title><rect x="579.5" y="613" width="86.6" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="582.50" y="623.5" >_mi_stat_i..</text>
+</g>
+<g >
+<title>io_poll_task_func (10,101,010 samples, 0.19%)</title><rect x="60.1" y="757" width="2.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="63.12" y="767.5" ></text>
+</g>
+<g >
+<title>nf_hook_slow (10,101,010 samples, 0.19%)</title><rect x="274.2" y="213" width="2.3" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="277.25" y="223.5" ></text>
+</g>
+<g >
+<title>el0_da (40,404,040 samples, 0.77%)</title><rect x="930.3" y="661" width="9.1" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="933.31" y="671.5" ></text>
+</g>
+<g >
+<title>nf_hook_slow (50,505,050 samples, 0.97%)</title><rect x="108.0" y="501" width="11.3" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="110.95" y="511.5" ></text>
+</g>
+<g >
+<title>io_poll_task_func (141,414,140 samples, 2.70%)</title><rect x="12.3" y="741" width="31.9" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="15.28" y="751.5" >io..</text>
+</g>
+<g >
+<title>netdev_core_pick_tx (10,101,010 samples, 0.19%)</title><rect x="303.9" y="453" width="2.2" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="306.86" y="463.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::Scheduler::Preempt (30,303,030 samples, 0.58%)</title><rect x="827.8" y="869" width="6.8" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="830.80" y="879.5" ></text>
+</g>
+<g >
+<title>arch_counter_get_cntvct (20,202,020 samples, 0.39%)</title><rect x="308.4" y="549" width="4.6" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="311.42" y="559.5" ></text>
+</g>
+<g >
+<title>facade::CapturingReplyBuilder::SendBulkString (60,606,060 samples, 1.16%)</title><rect x="741.2" y="805" width="13.7" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="744.24" y="815.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;void  (10,101,010 samples, 0.19%)</title><rect x="825.5" y="853" width="2.3" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="828.52" y="863.5" ></text>
+</g>
+<g >
+<title>facade::Connection::DispatchSingle (151,515,150 samples, 2.90%)</title><rect x="1112.5" y="805" width="34.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1115.55" y="815.5" >fa..</text>
+</g>
+<g >
+<title>mi_page_free_list_extend.isra.0 (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="757" width="6.9" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1024.43" y="767.5" ></text>
+</g>
+<g >
+<title>facade::Connection::MessageHandle::UsedMemory (10,101,010 samples, 0.19%)</title><rect x="1035.1" y="837" width="2.3" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="1038.10" y="847.5" ></text>
+</g>
+<g >
+<title>operator new (20,202,020 samples, 0.39%)</title><rect x="980.4" y="805" width="4.6" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="983.42" y="815.5" ></text>
+</g>
+<g >
+<title>facade::Connection::ConnectionFlow (464,646,460 samples, 8.88%)</title><rect x="1082.9" y="853" width="104.8" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1085.93" y="863.5" >facade::Conn..</text>
+</g>
+<g >
+<title>decltype (10,101,010 samples, 0.19%)</title><rect x="1112.5" y="789" width="2.3" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="1115.55" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::intrusive_ptr_release (10,101,010 samples, 0.19%)</title><rect x="1003.2" y="837" width="2.3" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="1006.20" y="847.5" ></text>
+</g>
+<g >
+<title>io_sendmsg (1,161,616,150 samples, 22.20%)</title><rect x="71.5" y="725" width="262.0" height="15.0" fill="rgb(240,162,38)" rx="2" ry="2" />
+<text  x="74.51" y="735.5" >io_sendmsg</text>
+</g>
+<g >
+<title>io_recv_finish (10,101,010 samples, 0.19%)</title><rect x="41.9" y="693" width="2.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="44.89" y="703.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::RunCallback (1,373,737,360 samples, 26.25%)</title><rect x="426.9" y="741" width="309.8" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="429.87" y="751.5" >dfly::Transaction::RunCallback</text>
+</g>
+<g >
+<title>mi_page_free_list_extend.isra.0 (50,505,050 samples, 0.97%)</title><rect x="928.0" y="709" width="11.4" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="931.03" y="719.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::Scheduler::Preempt (50,505,050 samples, 0.97%)</title><rect x="889.3" y="805" width="11.4" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="892.31" y="815.5" ></text>
+</g>
+<g >
+<title>el0_svc (1,474,747,460 samples, 28.19%)</title><rect x="10.0" y="821" width="332.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="13.00" y="831.5" >el0_svc</text>
+</g>
+<g >
+<title>dfly::acl::IsUserAllowedToInvokeCommand (10,101,010 samples, 0.19%)</title><rect x="773.1" y="789" width="2.3" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="776.13" y="799.5" ></text>
+</g>
+<g >
+<title>el0_da (10,101,010 samples, 0.19%)</title><rect x="939.4" y="645" width="2.3" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="942.42" y="655.5" ></text>
+</g>
+<g >
+<title>tcp_recvmsg (111,111,110 samples, 2.12%)</title><rect x="16.8" y="645" width="25.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="19.83" y="655.5" >t..</text>
+</g>
+<g >
+<title>el0t_64_sync_handler (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="773" width="2.3" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1190.72" y="783.5" ></text>
+</g>
+<g >
+<title>facade::RedisReplyBuilderBase::SendBulkString (60,606,060 samples, 1.16%)</title><rect x="866.5" y="789" width="13.7" height="15.0" fill="rgb(246,192,45)" rx="2" ry="2" />
+<text  x="869.53" y="799.5" ></text>
+</g>
+<g >
+<title>nf_conntrack_in (50,505,050 samples, 0.97%)</title><rect x="108.0" y="469" width="11.3" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="110.95" y="479.5" ></text>
+</g>
+<g >
+<title>void boost::context::detail::fiber_entry&lt;boost::context::detail::fiber_record&lt;boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl&lt;dfly::TaskQueue::Start (2,131,313,110 samples, 40.73%)</title><rect x="354.0" y="901" width="480.6" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="356.98" y="911.5" >void boost::context::detail::fiber_entry&lt;boost::context::detail::..</text>
+</g>
+<g >
+<title>__destroy_inode (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="565" width="2.3" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1190.72" y="575.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::ScheduleInternal (20,202,020 samples, 0.39%)</title><rect x="736.7" y="757" width="4.5" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="739.68" y="767.5" ></text>
+</g>
+<g >
+<title>facade::Connection::ParseRedis (343,434,340 samples, 6.56%)</title><rect x="1110.3" y="821" width="77.4" height="15.0" fill="rgb(221,78,18)" rx="2" ry="2" />
+<text  x="1113.27" y="831.5" >facade::..</text>
+</g>
+<g >
+<title>io_recv_finish (10,101,010 samples, 0.19%)</title><rect x="14.6" y="677" width="2.2" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="17.56" y="687.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::ExecuteSquashed (40,404,040 samples, 0.77%)</title><rect x="846.0" y="805" width="9.1" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="849.02" y="815.5" ></text>
+</g>
+<g >
+<title>util::fb2::UringProactor::GetSubmitEntry (10,101,010 samples, 0.19%)</title><rect x="1089.8" y="757" width="2.2" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1092.77" y="767.5" ></text>
+</g>
+<g >
+<title>skb_copy_datagram_iter (30,303,030 samples, 0.58%)</title><rect x="48.7" y="597" width="6.9" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="51.73" y="607.5" ></text>
+</g>
+<g >
+<title>__skb_datagram_iter (30,303,030 samples, 0.58%)</title><rect x="48.7" y="581" width="6.9" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="51.73" y="591.5" ></text>
+</g>
+<g >
+<title>facade::FillBackedArgs (80,808,080 samples, 1.54%)</title><rect x="1117.1" y="773" width="18.2" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="1120.10" y="783.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::~Transaction (10,101,010 samples, 0.19%)</title><rect x="1003.2" y="805" width="2.3" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1006.20" y="815.5" ></text>
+</g>
+<g >
+<title>mi_os_decommit_ex (20,202,020 samples, 0.39%)</title><rect x="836.9" y="757" width="4.6" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="839.91" y="767.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;facade::ParsedArgs  (10,101,010 samples, 0.19%)</title><rect x="1064.7" y="853" width="2.3" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="1067.71" y="863.5" ></text>
+</g>
+<g >
+<title>dfly::Service::VerifyCommandExecution (10,101,010 samples, 0.19%)</title><rect x="773.1" y="821" width="2.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="776.13" y="831.5" ></text>
+</g>
+<g >
+<title>try_charge_memcg (10,101,010 samples, 0.19%)</title><rect x="1026.0" y="613" width="2.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="1028.98" y="623.5" ></text>
+</g>
+<g >
+<title>tcp_mstamp_refresh (30,303,030 samples, 0.58%)</title><rect x="35.1" y="597" width="6.8" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="38.06" y="607.5" ></text>
+</g>
+<g >
+<title>do_translation_fault (10,101,010 samples, 0.19%)</title><rect x="912.1" y="693" width="2.3" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="915.08" y="703.5" ></text>
+</g>
+<g >
+<title>void std::vector&lt;dfly::MultiCommandSquasher::ShardExecInfo::Command, std::allocator&lt;dfly::MultiCommandSquasher::ShardExecInfo::Command&gt; &gt;::_M_realloc_append&lt;dfly::MultiCommandSquasher::ShardExecInfo::Command&gt; (20,202,020 samples, 0.39%)</title><rect x="985.0" y="805" width="4.5" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="987.98" y="815.5" ></text>
+</g>
+<g >
+<title>void boost::context::detail::fiber_entry&lt;boost::context::detail::fiber_record&lt;boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl&lt;facade::Connection::LaunchAsyncFiberIfNeeded (1,101,010,090 samples, 21.04%)</title><rect x="834.6" y="901" width="248.3" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="837.63" y="911.5" >void boost::context::detail::fibe..</text>
+</g>
+<g >
+<title>io_poll_task_func (60,606,060 samples, 1.16%)</title><rect x="44.2" y="725" width="13.6" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="47.17" y="735.5" ></text>
+</g>
+<g >
+<title>dfly::KeyIndex::operator!= (10,101,010 samples, 0.19%)</title><rect x="905.3" y="805" width="2.2" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="908.25" y="815.5" ></text>
+</g>
+<g >
+<title>____sys_sendmsg (1,131,313,120 samples, 21.62%)</title><rect x="76.1" y="693" width="255.1" height="15.0" fill="rgb(213,38,9)" rx="2" ry="2" />
+<text  x="79.06" y="703.5" >____sys_sendmsg</text>
+</g>
+<g >
+<title>mi_new (10,101,010 samples, 0.19%)</title><rect x="998.6" y="805" width="2.3" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="1001.65" y="815.5" ></text>
+</g>
+<g >
+<title>lock_vma_under_rcu (10,101,010 samples, 0.19%)</title><rect x="937.1" y="613" width="2.3" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="940.14" y="623.5" ></text>
+</g>
+<g >
+<title>clock_gettime (10,101,010 samples, 0.19%)</title><rect x="1055.6" y="725" width="2.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1058.60" y="735.5" ></text>
+</g>
+<g >
+<title>__kernel_clock_gettime (202,020,200 samples, 3.86%)</title><rect x="363.1" y="789" width="45.5" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="366.09" y="799.5" >__ke..</text>
+</g>
+<g >
+<title>ip_queue_xmit (878,787,870 samples, 16.80%)</title><rect x="108.0" y="549" width="198.1" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="110.95" y="559.5" >ip_queue_xmit</text>
+</g>
+<g >
+<title>lock_sock_nested (10,101,010 samples, 0.19%)</title><rect x="16.8" y="629" width="2.3" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="19.83" y="639.5" ></text>
+</g>
+<g >
+<title>ipv4_conntrack_in (20,202,020 samples, 0.39%)</title><rect x="283.4" y="213" width="4.5" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="286.36" y="223.5" ></text>
+</g>
+<g >
+<title>operator new (10,101,010 samples, 0.19%)</title><rect x="752.6" y="773" width="2.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="755.63" y="783.5" ></text>
+</g>
+<g >
+<title>absl::lts_20250512::GetCurrentTimeNanos (10,101,010 samples, 0.19%)</title><rect x="996.4" y="805" width="2.2" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="999.37" y="815.5" ></text>
+</g>
+<g >
+<title>dfly::Service::VerifyCommandState (20,202,020 samples, 0.39%)</title><rect x="780.0" y="837" width="4.5" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="782.96" y="847.5" ></text>
+</g>
+<g >
+<title>facade::Connection::ParseRedis (20,202,020 samples, 0.39%)</title><rect x="1146.7" y="805" width="4.6" height="15.0" fill="rgb(221,78,18)" rx="2" ry="2" />
+<text  x="1149.72" y="815.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::Parse (131,313,130 samples, 2.51%)</title><rect x="1151.3" y="805" width="29.6" height="15.0" fill="rgb(228,108,26)" rx="2" ry="2" />
+<text  x="1154.27" y="815.5" >fa..</text>
+</g>
+<g >
+<title>util::fb2::detail::Scheduler::Preempt (70,707,070 samples, 1.35%)</title><rect x="1067.0" y="869" width="15.9" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1069.99" y="879.5" ></text>
+</g>
+<g >
+<title>clock_gettime (50,505,050 samples, 0.97%)</title><rect x="916.6" y="741" width="11.4" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="919.64" y="751.5" ></text>
+</g>
+<g >
+<title>_mi_page_malloc (10,101,010 samples, 0.19%)</title><rect x="1016.9" y="805" width="2.3" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1019.87" y="815.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::PrepareShardInfo (20,202,020 samples, 0.39%)</title><rect x="909.8" y="789" width="4.6" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="912.81" y="799.5" ></text>
+</g>
+<g >
+<title>raw_local_deliver (10,101,010 samples, 0.19%)</title><rect x="160.3" y="165" width="2.3" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="163.35" y="175.5" ></text>
+</g>
+<g >
+<title>facade::Connection::ParseRedis (10,101,010 samples, 0.19%)</title><rect x="1108.0" y="805" width="2.3" height="15.0" fill="rgb(221,78,18)" rx="2" ry="2" />
+<text  x="1110.99" y="815.5" ></text>
+</g>
+<g >
+<title>invoke_syscall.constprop.0 (1,474,747,460 samples, 28.19%)</title><rect x="10.0" y="789" width="332.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="13.00" y="799.5" >invoke_syscall.constprop.0</text>
+</g>
+<g >
+<title>__mod_timer (20,202,020 samples, 0.39%)</title><rect x="171.7" y="53" width="4.6" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="174.74" y="63.5" ></text>
+</g>
+<g >
+<title>tcp_v4_rcv (474,747,470 samples, 9.07%)</title><rect x="162.6" y="165" width="107.1" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="165.63" y="175.5" >tcp_v4_rcv</text>
+</g>
+<g >
+<title>nf_conntrack_in (20,202,020 samples, 0.39%)</title><rect x="283.4" y="197" width="4.5" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="286.36" y="207.5" ></text>
+</g>
+<g >
+<title>tcp_schedule_loss_probe.part.0 (10,101,010 samples, 0.19%)</title><rect x="199.1" y="85" width="2.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="202.07" y="95.5" ></text>
+</g>
+<g >
+<title>mi_good_size (10,101,010 samples, 0.19%)</title><rect x="1028.3" y="789" width="2.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1031.26" y="799.5" ></text>
+</g>
+<g >
+<title>__slab_free (10,101,010 samples, 0.19%)</title><rect x="10.0" y="709" width="2.3" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="13.00" y="719.5" ></text>
+</g>
+<g >
+<title>security_inode_free (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="549" width="2.3" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1190.72" y="559.5" ></text>
+</g>
+<g >
+<title>mi_free_size (10,101,010 samples, 0.19%)</title><rect x="821.0" y="837" width="2.2" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="823.97" y="847.5" ></text>
+</g>
+<g >
+<title>ip_local_deliver (545,454,540 samples, 10.42%)</title><rect x="146.7" y="213" width="123.0" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="149.68" y="223.5" >ip_local_deliver</text>
+</g>
+<g >
+<title>util::fb2::detail::Scheduler::AddReady (20,202,020 samples, 0.39%)</title><rect x="347.1" y="837" width="4.6" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="350.14" y="847.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (10,101,010 samples, 0.19%)</title><rect x="912.1" y="645" width="2.3" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="915.08" y="655.5" ></text>
+</g>
+<g >
+<title>io_netmsg_recycle (20,202,020 samples, 0.39%)</title><rect x="44.2" y="645" width="4.5" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="47.17" y="655.5" ></text>
+</g>
+<g >
+<title>dfly::(anonymous namespace)::ReadString (1,060,606,050 samples, 20.27%)</title><rect x="433.7" y="709" width="239.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="436.71" y="719.5" >dfly::(anonymous namespace)::Re..</text>
+</g>
+<g >
+<title>facade::Connection::MessageHandle::UsedMemory (20,202,020 samples, 0.39%)</title><rect x="1137.6" y="773" width="4.6" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="1140.61" y="783.5" ></text>
+</g>
+<g >
+<title>facade::Connection::MessageHandle absl::lts_20250512::functional_internal::InvokeObject&lt;facade::Connection::ParseRedis (90,909,090 samples, 1.74%)</title><rect x="1114.8" y="789" width="20.5" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="1117.83" y="799.5" ></text>
+</g>
+<g >
+<title>skb_release_data (50,505,050 samples, 0.97%)</title><rect x="183.1" y="85" width="11.4" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="186.13" y="95.5" ></text>
+</g>
+<g >
+<title>do_page_fault (10,101,010 samples, 0.19%)</title><rect x="912.1" y="677" width="2.3" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="915.08" y="687.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="645" width="6.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1024.43" y="655.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::ExecuteSquashed (10,101,010 samples, 0.19%)</title><rect x="900.7" y="805" width="2.3" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="903.69" y="815.5" ></text>
+</g>
+<g >
+<title>facade::Connection::HandleRecvSocket (111,111,110 samples, 2.12%)</title><rect x="1082.9" y="821" width="25.1" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1085.93" y="831.5" >f..</text>
+</g>
+<g >
+<title>memchr@plt (10,101,010 samples, 0.19%)</title><rect x="1160.4" y="757" width="2.3" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="1163.39" y="767.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::Parse (20,202,020 samples, 0.39%)</title><rect x="1167.2" y="789" width="4.6" height="15.0" fill="rgb(228,108,26)" rx="2" ry="2" />
+<text  x="1170.22" y="799.5" ></text>
+</g>
+<g >
+<title>mem_cgroup_charge_skmem (20,202,020 samples, 0.39%)</title><rect x="315.3" y="597" width="4.5" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="318.25" y="607.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FiberActive (10,101,010 samples, 0.19%)</title><rect x="887.0" y="805" width="2.3" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="890.03" y="815.5" ></text>
+</g>
+<g >
+<title>eth_type_trans (10,101,010 samples, 0.19%)</title><rect x="294.7" y="405" width="2.3" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="297.75" y="415.5" ></text>
+</g>
+<g >
+<title>dfly::CommandRegistry::FindExtended (20,202,020 samples, 0.39%)</title><rect x="841.5" y="837" width="4.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="844.47" y="847.5" ></text>
+</g>
+<g >
+<title>dfly::AllocationTracker::ProcessNew (20,202,020 samples, 0.39%)</title><rect x="980.4" y="773" width="4.6" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="983.42" y="783.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.19%)</title><rect x="492.9" y="661" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="495.93" y="671.5" ></text>
+</g>
+<g >
+<title>loopback_xmit (30,303,030 samples, 0.58%)</title><rect x="290.2" y="421" width="6.8" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="293.19" y="431.5" ></text>
+</g>
+<g >
+<title>mi_segment_span_free_coalesce (20,202,020 samples, 0.39%)</title><rect x="836.9" y="805" width="4.6" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="839.91" y="815.5" ></text>
+</g>
+<g >
+<title>mi_new_aligned (60,606,060 samples, 1.16%)</title><rect x="928.0" y="773" width="13.7" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="931.03" y="783.5" ></text>
+</g>
+<g >
+<title>dfly::AllocationTracker::Get (10,101,010 samples, 0.19%)</title><rect x="1012.3" y="821" width="2.3" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="1015.32" y="831.5" ></text>
+</g>
+<g >
+<title>skb_attempt_defer_free (10,101,010 samples, 0.19%)</title><rect x="23.7" y="613" width="2.2" height="15.0" fill="rgb(254,225,54)" rx="2" ry="2" />
+<text  x="26.67" y="623.5" ></text>
+</g>
+<g >
+<title>__io_run_local_work (60,606,060 samples, 1.16%)</title><rect x="44.2" y="741" width="13.6" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="47.17" y="751.5" ></text>
+</g>
+<g >
+<title>_mi_segment_page_free (20,202,020 samples, 0.39%)</title><rect x="836.9" y="837" width="4.6" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="839.91" y="847.5" ></text>
+</g>
+<g >
+<title>operator delete (10,101,010 samples, 0.19%)</title><rect x="1012.3" y="837" width="2.3" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1015.32" y="847.5" ></text>
+</g>
+<g >
+<title>tcp_check_space (10,101,010 samples, 0.19%)</title><rect x="201.4" y="117" width="2.2" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="204.35" y="127.5" ></text>
+</g>
+<g >
+<title>__sys_sendmsg_sock (1,151,515,140 samples, 22.01%)</title><rect x="73.8" y="709" width="259.7" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="76.78" y="719.5" >__sys_sendmsg_sock</text>
+</g>
+<g >
+<title>facade::RedisParser::ParseLen (20,202,020 samples, 0.39%)</title><rect x="1158.1" y="773" width="4.6" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1161.11" y="783.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="789" width="2.3" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="1190.72" y="799.5" ></text>
+</g>
+<g >
+<title>__el0_irq_handler_common (10,101,010 samples, 0.19%)</title><rect x="823.2" y="789" width="2.3" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="826.24" y="799.5" ></text>
+</g>
+<g >
+<title>_mi_prim_decommit (20,202,020 samples, 0.39%)</title><rect x="836.9" y="741" width="4.6" height="15.0" fill="rgb(206,8,1)" rx="2" ry="2" />
+<text  x="839.91" y="751.5" ></text>
+</g>
+<g >
+<title>clock_gettime (10,101,010 samples, 0.19%)</title><rect x="1087.5" y="789" width="2.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1090.49" y="799.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_replace_aux (20,202,020 samples, 0.39%)</title><rect x="1030.5" y="837" width="4.6" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1033.54" y="847.5" ></text>
+</g>
+<g >
+<title>operator new (20,202,020 samples, 0.39%)</title><rect x="882.5" y="789" width="4.5" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="885.47" y="799.5" ></text>
+</g>
+<g >
+<title>__arch_copy_to_user (40,404,040 samples, 0.77%)</title><rect x="25.9" y="565" width="9.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="28.95" y="575.5" ></text>
+</g>
+<g >
+<title>__sock_sendmsg (10,101,010 samples, 0.19%)</title><rect x="331.2" y="693" width="2.3" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="334.20" y="703.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FiberInterface::SwitchTo (40,404,040 samples, 0.77%)</title><rect x="1096.6" y="757" width="9.1" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="1099.60" y="767.5" ></text>
+</g>
+<g >
+<title>dfly::(anonymous namespace)::CmdGet (1,535,353,520 samples, 29.34%)</title><rect x="408.6" y="821" width="346.3" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="411.65" y="831.5" >dfly::(anonymous namespace)::CmdGet</text>
+</g>
+<g >
+<title>dfly::AllocationTracker::Get (10,101,010 samples, 0.19%)</title><rect x="823.2" y="837" width="2.3" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="826.24" y="847.5" ></text>
+</g>
+<g >
+<title>facade::Connection::SendAsync (20,202,020 samples, 0.39%)</title><rect x="1142.2" y="773" width="4.5" height="15.0" fill="rgb(206,8,1)" rx="2" ry="2" />
+<text  x="1145.16" y="783.5" ></text>
+</g>
+<g >
+<title>__io_submit_flush_completions (10,101,010 samples, 0.19%)</title><rect x="10.0" y="741" width="2.3" height="15.0" fill="rgb(226,99,23)" rx="2" ry="2" />
+<text  x="13.00" y="751.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::SquashedHopCb (2,080,808,060 samples, 39.77%)</title><rect x="354.0" y="853" width="469.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="356.98" y="863.5" >dfly::MultiCommandSquasher::SquashedHopCb</text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.19%)</title><rect x="431.4" y="709" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="434.43" y="719.5" ></text>
+</g>
+<g >
+<title>dfly::AllocationTracker::Get (10,101,010 samples, 0.19%)</title><rect x="978.1" y="773" width="2.3" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="981.15" y="783.5" ></text>
+</g>
+<g >
+<title>clock_gettime (10,101,010 samples, 0.19%)</title><rect x="996.4" y="789" width="2.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="999.37" y="799.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::ConsumeArrayLen (50,505,050 samples, 0.97%)</title><rect x="1151.3" y="789" width="11.4" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1154.27" y="799.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::ConsumeBulk (10,101,010 samples, 0.19%)</title><rect x="1162.7" y="789" width="2.2" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="1165.66" y="799.5" ></text>
+</g>
+<g >
+<title>inet_recvmsg (40,404,040 samples, 0.77%)</title><rect x="48.7" y="645" width="9.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="51.73" y="655.5" ></text>
+</g>
+<g >
+<title>dfly::ServerState::SafeTLocal (20,202,020 samples, 0.39%)</title><rect x="759.5" y="805" width="4.5" height="15.0" fill="rgb(251,216,51)" rx="2" ry="2" />
+<text  x="762.46" y="815.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::Run (636,363,630 samples, 12.16%)</title><rect x="846.0" y="837" width="143.5" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="849.02" y="847.5" >dfly::MultiCommand..</text>
+</g>
+<g >
+<title>mi_segment_purge.part.0 (20,202,020 samples, 0.39%)</title><rect x="836.9" y="789" width="4.6" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="839.91" y="799.5" ></text>
+</g>
+<g >
+<title>mi_new (545,454,540 samples, 10.42%)</title><rect x="543.1" y="629" width="123.0" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="546.05" y="639.5" >mi_new</text>
+</g>
+<g >
+<title>util::fb2::UringProactor::ReapCompletions (50,505,050 samples, 0.97%)</title><rect x="342.6" y="869" width="11.4" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="345.59" y="879.5" ></text>
+</g>
+<g >
+<title>simple_copy_to_iter (30,303,030 samples, 0.58%)</title><rect x="48.7" y="565" width="6.9" height="15.0" fill="rgb(228,110,26)" rx="2" ry="2" />
+<text  x="51.73" y="575.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync (10,101,010 samples, 0.19%)</title><rect x="912.1" y="757" width="2.3" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="915.08" y="767.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync_handler (10,101,010 samples, 0.19%)</title><rect x="912.1" y="741" width="2.3" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="915.08" y="751.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="837" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1190.72" y="847.5" ></text>
+</g>
+<g >
+<title>mi_thread_init (10,101,010 samples, 0.19%)</title><rect x="880.2" y="773" width="2.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="883.19" y="783.5" ></text>
+</g>
+<g >
+<title>__do_softirq (727,272,720 samples, 13.90%)</title><rect x="126.2" y="357" width="164.0" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="129.18" y="367.5" >__do_softirq</text>
+</g>
+<g >
+<title>dfly::UniqueSlotChecker::Add (10,101,010 samples, 0.19%)</title><rect x="811.9" y="805" width="2.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="814.85" y="815.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="741" width="6.9" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="1024.43" y="751.5" ></text>
+</g>
+<g >
+<title>__tcp_push_pending_frames (929,292,920 samples, 17.76%)</title><rect x="105.7" y="597" width="209.6" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="108.68" y="607.5" >__tcp_push_pending_frames</text>
+</g>
+<g >
+<title>invoke_syscall.constprop.0 (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="725" width="2.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1190.72" y="735.5" ></text>
+</g>
+<g >
+<title>ip_finish_output2 (808,080,800 samples, 15.44%)</title><rect x="123.9" y="469" width="182.2" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="126.90" y="479.5" >ip_finish_output2</text>
+</g>
+<g >
+<title>mi_free_size_aligned (10,101,010 samples, 0.19%)</title><rect x="1010.0" y="837" width="2.3" height="15.0" fill="rgb(251,212,50)" rx="2" ry="2" />
+<text  x="1013.04" y="847.5" ></text>
+</g>
+<g >
+<title>util::fb2::FiberCall::Get (10,101,010 samples, 0.19%)</title><rect x="1055.6" y="773" width="2.3" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="1058.60" y="783.5" ></text>
+</g>
+<g >
+<title>mem_cgroup_charge_skmem (30,303,030 samples, 0.58%)</title><rect x="319.8" y="581" width="6.8" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="322.81" y="591.5" ></text>
+</g>
+<g >
+<title>dfly::DbSlice::FindInternal (262,626,260 samples, 5.02%)</title><rect x="675.2" y="693" width="59.2" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="678.17" y="703.5" >dfly::..</text>
+</g>
+<g >
+<title>__handle_mm_fault (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="629" width="6.9" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="1024.43" y="639.5" ></text>
+</g>
+<g >
+<title>try_charge_memcg (10,101,010 samples, 0.19%)</title><rect x="326.6" y="581" width="2.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="329.64" y="591.5" ></text>
+</g>
+<g >
+<title>tcp_recvmsg_locked (40,404,040 samples, 0.77%)</title><rect x="48.7" y="613" width="9.1" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="51.73" y="623.5" ></text>
+</g>
+<g >
+<title>XXH3_64bits_withSeed (10,101,010 samples, 0.19%)</title><rect x="675.2" y="677" width="2.3" height="15.0" fill="rgb(211,27,6)" rx="2" ry="2" />
+<text  x="678.17" y="687.5" ></text>
+</g>
+<g >
+<title>util::fb2::UringProactor::MainLoop (1,525,252,510 samples, 29.15%)</title><rect x="10.0" y="885" width="344.0" height="15.0" fill="rgb(228,110,26)" rx="2" ry="2" />
+<text  x="13.00" y="895.5" >util::fb2::UringProactor::MainLoop</text>
+</g>
+<g >
+<title>nf_hook_slow (30,303,030 samples, 0.58%)</title><rect x="281.1" y="229" width="6.8" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="284.08" y="239.5" ></text>
+</g>
+<g >
+<title>____do_softirq (727,272,720 samples, 13.90%)</title><rect x="126.2" y="373" width="164.0" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="129.18" y="383.5" >____do_softirq</text>
+</g>
+<g >
+<title>facade::Connection::SquashPipeline (1,020,202,010 samples, 19.50%)</title><rect x="836.9" y="869" width="230.1" height="15.0" fill="rgb(223,83,20)" rx="2" ry="2" />
+<text  x="839.91" y="879.5" >facade::Connection::SquashPipe..</text>
+</g>
+<g >
+<title>el0t_64_sync_handler (1,474,747,460 samples, 28.19%)</title><rect x="10.0" y="837" width="332.6" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="13.00" y="847.5" >el0t_64_sync_handler</text>
+</g>
+<g >
+<title>inet_recvmsg (111,111,110 samples, 2.12%)</title><rect x="16.8" y="661" width="25.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="19.83" y="671.5" >i..</text>
+</g>
+<g >
+<title>_mi_stat_counter_increase (20,202,020 samples, 0.39%)</title><rect x="574.9" y="613" width="4.6" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="577.94" y="623.5" ></text>
+</g>
+<g >
+<title>facade::SinkReplyBuilder::FinishScope (40,404,040 samples, 0.77%)</title><rect x="868.8" y="757" width="9.1" height="15.0" fill="rgb(217,58,14)" rx="2" ry="2" />
+<text  x="871.80" y="767.5" ></text>
+</g>
+<g >
+<title>util::ListenerInterface::RunSingleConnection (474,747,470 samples, 9.07%)</title><rect x="1082.9" y="885" width="107.1" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1085.93" y="895.5" >util::Listene..</text>
+</g>
+<g >
+<title>absl::lts_20250512::GetCurrentTimeNanos (10,101,010 samples, 0.19%)</title><rect x="1067.0" y="853" width="2.3" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="1069.99" y="863.5" ></text>
+</g>
+<g >
+<title>strcmp (10,101,010 samples, 0.19%)</title><rect x="862.0" y="757" width="2.2" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="864.97" y="767.5" ></text>
+</g>
+<g >
+<title>io_file_get_normal (40,404,040 samples, 0.77%)</title><rect x="62.4" y="725" width="9.1" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="65.39" y="735.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::IsGlobal (10,101,010 samples, 0.19%)</title><rect x="417.8" y="757" width="2.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="420.76" y="767.5" ></text>
+</g>
+<g >
+<title>dev_hard_start_xmit (30,303,030 samples, 0.58%)</title><rect x="290.2" y="437" width="6.8" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="293.19" y="447.5" ></text>
+</g>
+<g >
+<title>do_translation_fault (10,101,010 samples, 0.19%)</title><rect x="937.1" y="629" width="2.3" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="940.14" y="639.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::StoreKeysInArgs (10,101,010 samples, 0.19%)</title><rect x="814.1" y="821" width="2.3" height="15.0" fill="rgb(250,209,49)" rx="2" ry="2" />
+<text  x="817.13" y="831.5" ></text>
+</g>
+<g >
+<title>__dev_queue_xmit (787,878,780 samples, 15.06%)</title><rect x="123.9" y="453" width="177.7" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="126.90" y="463.5" >__dev_queue_xmit</text>
+</g>
+<g >
+<title>util::fb2::FiberQueue::Run (2,131,313,110 samples, 40.73%)</title><rect x="354.0" y="885" width="480.6" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="356.98" y="895.5" >util::fb2::FiberQueue::Run</text>
+</g>
+<g >
+<title>ontop_fcontext (40,404,040 samples, 0.77%)</title><rect x="1096.6" y="741" width="9.1" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1099.60" y="751.5" ></text>
+</g>
+<g >
+<title>dfly::Service::DispatchManyCommands (30,303,030 samples, 0.58%)</title><rect x="989.5" y="837" width="6.9" height="15.0" fill="rgb(251,213,50)" rx="2" ry="2" />
+<text  x="992.54" y="847.5" ></text>
+</g>
+<g >
+<title>dfly::CompactObj::StrEncoding::DecodedSize (30,303,030 samples, 0.58%)</title><rect x="486.1" y="677" width="6.8" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="489.10" y="687.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::InitStart (10,101,010 samples, 0.19%)</title><rect x="1164.9" y="789" width="2.3" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1167.94" y="799.5" ></text>
+</g>
+<g >
+<title>__kfree_skb (50,505,050 samples, 0.97%)</title><rect x="183.1" y="101" width="11.4" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="186.13" y="111.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::InitTxTime (50,505,050 samples, 0.97%)</title><rect x="916.6" y="773" width="11.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="919.64" y="783.5" ></text>
+</g>
+<g >
+<title>clock_gettime (10,101,010 samples, 0.19%)</title><rect x="891.6" y="773" width="2.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="894.58" y="783.5" ></text>
+</g>
+<g >
+<title>strcmp (10,101,010 samples, 0.19%)</title><rect x="864.2" y="773" width="2.3" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="867.25" y="783.5" ></text>
+</g>
+<g >
+<title>dfly::Shard (30,303,030 samples, 0.58%)</title><rect x="793.6" y="805" width="6.9" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="796.63" y="815.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::Run (10,101,010 samples, 0.19%)</title><rect x="900.7" y="821" width="2.3" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="903.69" y="831.5" ></text>
+</g>
+<g >
+<title>dfly::DbSlice::Acquire (20,202,020 samples, 0.39%)</title><rect x="420.0" y="741" width="4.6" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="423.04" y="751.5" ></text>
+</g>
+<g >
+<title>el0_da (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="709" width="6.9" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="1024.43" y="719.5" ></text>
+</g>
+<g >
+<title>facade::Connection::SendAsync (50,505,050 samples, 0.97%)</title><rect x="1135.3" y="789" width="11.4" height="15.0" fill="rgb(206,8,1)" rx="2" ry="2" />
+<text  x="1138.33" y="799.5" ></text>
+</g>
+<g >
+<title>facade::Connection::SquashPipeline (40,404,040 samples, 0.77%)</title><rect x="1037.4" y="853" width="9.1" height="15.0" fill="rgb(223,83,20)" rx="2" ry="2" />
+<text  x="1040.37" y="863.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::Transaction (20,202,020 samples, 0.39%)</title><rect x="996.4" y="837" width="4.5" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="999.37" y="847.5" ></text>
+</g>
+<g >
+<title>dfly::Service::VerifyCommandState (20,202,020 samples, 0.39%)</title><rect x="358.5" y="821" width="4.6" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="361.53" y="831.5" ></text>
+</g>
+<g >
+<title>io_sendmsg_prep_setup (30,303,030 samples, 0.58%)</title><rect x="335.8" y="725" width="6.8" height="15.0" fill="rgb(252,220,52)" rx="2" ry="2" />
+<text  x="338.75" y="735.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FiberInterface::ActivateOther (10,101,010 samples, 0.19%)</title><rect x="344.9" y="837" width="2.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="347.86" y="847.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_replace_aux (757,575,750 samples, 14.48%)</title><rect x="502.0" y="677" width="170.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="505.05" y="687.5" >std::__cxx11::basic_st..</text>
+</g>
+<g >
+<title>operator delete (10,101,010 samples, 0.19%)</title><rect x="1003.2" y="789" width="2.3" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1006.20" y="799.5" ></text>
+</g>
+<g >
+<title>dst_release (10,101,010 samples, 0.19%)</title><rect x="162.6" y="133" width="2.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="165.63" y="143.5" ></text>
+</g>
+<g >
+<title>io_req_task_submit (141,414,140 samples, 2.70%)</title><rect x="12.3" y="725" width="31.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="15.28" y="735.5" >io..</text>
+</g>
+<g >
+<title>facade::Connection::RecycleMessage (10,101,010 samples, 0.19%)</title><rect x="1035.1" y="853" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1038.10" y="863.5" ></text>
+</g>
+<g >
+<title>__slab_free (10,101,010 samples, 0.19%)</title><rect x="192.2" y="37" width="2.3" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="195.24" y="47.5" ></text>
+</g>
+<g >
+<title>absl::lts_20250512::GetCurrentTimeNanos (10,101,010 samples, 0.19%)</title><rect x="891.6" y="789" width="2.3" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="894.58" y="799.5" ></text>
+</g>
+<g >
+<title>operator new (20,202,020 samples, 0.39%)</title><rect x="980.4" y="789" width="4.6" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="983.42" y="799.5" ></text>
+</g>
+<g >
+<title>operator new[] (10,101,010 samples, 0.19%)</title><rect x="356.3" y="821" width="2.2" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="359.25" y="831.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::InitByArgs (131,313,130 samples, 2.51%)</title><rect x="786.8" y="837" width="29.6" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="789.80" y="847.5" >df..</text>
+</g>
+<g >
+<title>util::fb2::detail::Scheduler::Preempt (60,606,060 samples, 1.16%)</title><rect x="1092.0" y="773" width="13.7" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1095.05" y="783.5" ></text>
+</g>
+<g >
+<title>facade::SinkReplyBuilder::ReplyScope::~ReplyScope (40,404,040 samples, 0.77%)</title><rect x="868.8" y="773" width="9.1" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="871.80" y="783.5" ></text>
+</g>
+<g >
+<title>ip_rcv (626,262,620 samples, 11.97%)</title><rect x="146.7" y="245" width="141.2" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="149.68" y="255.5" >ip_rcv</text>
+</g>
+<g >
+<title>__arch_copy_to_user (30,303,030 samples, 0.58%)</title><rect x="48.7" y="549" width="6.9" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="51.73" y="559.5" ></text>
+</g>
+<g >
+<title>sk_reset_timer (30,303,030 samples, 0.58%)</title><rect x="169.5" y="85" width="6.8" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="172.46" y="95.5" ></text>
+</g>
+<g >
+<title>dfly::CompactObj::StrEncoding::DecodedSize (20,202,020 samples, 0.39%)</title><rect x="438.3" y="661" width="4.5" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="441.26" y="671.5" ></text>
+</g>
+<g >
+<title>util::fb2::UringSocket::WriteSome (10,101,010 samples, 0.19%)</title><rect x="1057.9" y="773" width="2.3" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1060.88" y="783.5" ></text>
+</g>
+<g >
+<title>operator new (70,707,070 samples, 1.35%)</title><rect x="1014.6" y="837" width="15.9" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1017.59" y="847.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync_handler (10,101,010 samples, 0.19%)</title><rect x="939.4" y="661" width="2.3" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="942.42" y="671.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::RunnableResult absl::lts_20250512::functional_internal::InvokeObject&lt;dfly::Transaction::ScheduleSingleHopT&lt;dfly::(anonymous namespace)::CmdGet (1,373,737,360 samples, 26.25%)</title><rect x="426.9" y="725" width="309.8" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="429.87" y="735.5" >dfly::Transaction::RunnableResult absl::l..</text>
+</g>
+<g >
+<title>dfly::(anonymous namespace)::CmdGet (20,202,020 samples, 0.39%)</title><rect x="408.6" y="805" width="4.6" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="411.65" y="815.5" ></text>
+</g>
+<g >
+<title>__local_bh_enable_ip (10,101,010 samples, 0.19%)</title><rect x="301.6" y="453" width="2.3" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="304.58" y="463.5" ></text>
+</g>
+<g >
+<title>sock_def_readable (10,101,010 samples, 0.19%)</title><rect x="249.2" y="101" width="2.3" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="252.19" y="111.5" ></text>
+</g>
+<g >
+<title>dentry_unlink_inode (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="629" width="2.3" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="1190.72" y="639.5" ></text>
+</g>
+<g >
+<title>tcp_rcv_established (454,545,450 samples, 8.69%)</title><rect x="167.2" y="133" width="102.5" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="170.18" y="143.5" >tcp_rcv_esta..</text>
+</g>
+<g >
+<title>__fput_sync (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="693" width="2.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1190.72" y="703.5" ></text>
+</g>
+<g >
+<title>io_issue_sqe (1,202,020,190 samples, 22.97%)</title><rect x="62.4" y="741" width="271.1" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="65.39" y="751.5" >io_issue_sqe</text>
+</g>
+<g >
+<title>dfly::Transaction::Execute (1,454,545,440 samples, 27.80%)</title><rect x="413.2" y="789" width="328.0" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="416.20" y="799.5" >dfly::Transaction::Execute</text>
+</g>
+<g >
+<title>ktime_get (20,202,020 samples, 0.39%)</title><rect x="308.4" y="565" width="4.6" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="311.42" y="575.5" ></text>
+</g>
+<g >
+<title>dfly::CommandId::Validate (10,101,010 samples, 0.19%)</title><rect x="780.0" y="821" width="2.2" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="782.96" y="831.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::Scheduler::Preempt (10,101,010 samples, 0.19%)</title><rect x="1055.6" y="757" width="2.3" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1058.60" y="767.5" ></text>
+</g>
+<g >
+<title>facade::Listener::IsPrivilegedInterface (10,101,010 samples, 0.19%)</title><rect x="818.7" y="837" width="2.3" height="15.0" fill="rgb(253,221,52)" rx="2" ry="2" />
+<text  x="821.69" y="847.5" ></text>
+</g>
+<g >
+<title>dfly::SmallString::Get (40,404,040 samples, 0.77%)</title><rect x="492.9" y="677" width="9.1" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="495.93" y="687.5" ></text>
+</g>
+<g >
+<title>io_issue_sqe (141,414,140 samples, 2.70%)</title><rect x="12.3" y="709" width="31.9" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="15.28" y="719.5" >io..</text>
+</g>
+<g >
+<title>dfly::AllocationTracker::ProcessNew (10,101,010 samples, 0.19%)</title><rect x="356.3" y="789" width="2.2" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="359.25" y="799.5" ></text>
+</g>
+<g >
+<title>operator new (10,101,010 samples, 0.19%)</title><rect x="998.6" y="821" width="2.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1001.65" y="831.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FiberInterface::SwitchTo (20,202,020 samples, 0.39%)</title><rect x="827.8" y="853" width="4.6" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="830.80" y="863.5" ></text>
+</g>
+<g >
+<title>__sock_sendmsg (1,131,313,120 samples, 21.62%)</title><rect x="76.1" y="677" width="255.1" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="79.06" y="687.5" >__sock_sendmsg</text>
+</g>
+<g >
+<title>el0t_64_sync (1,474,747,460 samples, 28.19%)</title><rect x="10.0" y="853" width="332.6" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" >el0t_64_sync</text>
+</g>
+<g >
+<title>mi_page_free_list_extend.isra.0 (10,101,010 samples, 0.19%)</title><rect x="939.4" y="693" width="2.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="942.42" y="703.5" ></text>
+</g>
+<g >
+<title>mi_new_aligned (60,606,060 samples, 1.16%)</title><rect x="1016.9" y="821" width="13.6" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1019.87" y="831.5" ></text>
+</g>
+<g >
+<title>io::Sink::Write (40,404,040 samples, 0.77%)</title><rect x="1051.0" y="821" width="9.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1054.04" y="831.5" ></text>
+</g>
+<g >
+<title>boost::context::detail::transfer_t boost::context::detail::fiber_ontop&lt;boost::context::fiber, util::fb2::detail::FiberInterface::SwitchTo (10,101,010 samples, 0.19%)</title><rect x="1069.3" y="837" width="2.2" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="1072.27" y="847.5" ></text>
+</g>
+<g >
+<title>unmap_single_vma.isra.0 (20,202,020 samples, 0.39%)</title><rect x="836.9" y="581" width="4.6" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="839.91" y="591.5" ></text>
+</g>
+<g >
+<title>operator new (60,606,060 samples, 1.16%)</title><rect x="928.0" y="789" width="13.7" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="931.03" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::CompactObj::ObjType (60,606,060 samples, 1.16%)</title><rect x="720.7" y="661" width="13.7" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="723.73" y="671.5" ></text>
+</g>
+<g >
+<title>void boost::context::detail::fiber_entry&lt;boost::context::detail::fiber_record&lt;boost::context::fiber, boost::context::basic_fixedsize_stack&lt;boost::context::stack_traits&gt;, util::fb2::detail::(anonymous namespace)::DispatcherImpl::DispatcherImpl (1,525,252,510 samples, 29.15%)</title><rect x="10.0" y="901" width="344.0" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" >void boost::context::detail::fiber_entry&lt;boost..</text>
+</g>
+<g >
+<title>dfly::DbSlice::FindReadOnly (272,727,270 samples, 5.21%)</title><rect x="672.9" y="709" width="61.5" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="675.90" y="719.5" >dfly::..</text>
+</g>
+<g >
+<title>fu2::abi_400::detail::type_erasure::invocation_table::function_trait&lt;void  (10,101,010 samples, 0.19%)</title><rect x="342.6" y="837" width="2.3" height="15.0" fill="rgb(213,37,9)" rx="2" ry="2" />
+<text  x="345.59" y="847.5" ></text>
+</g>
+<g >
+<title>_copy_from_iter (10,101,010 samples, 0.19%)</title><rect x="76.1" y="629" width="2.2" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="79.06" y="639.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync (10,101,010 samples, 0.19%)</title><rect x="939.4" y="677" width="2.3" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="942.42" y="687.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::InitBase (10,101,010 samples, 0.19%)</title><rect x="786.8" y="821" width="2.3" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="789.80" y="831.5" ></text>
+</g>
+<g >
+<title>tcp_ack (10,101,010 samples, 0.19%)</title><rect x="164.9" y="133" width="2.3" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="167.90" y="143.5" ></text>
+</g>
+<g >
+<title>__madvise (20,202,020 samples, 0.39%)</title><rect x="836.9" y="725" width="4.6" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="839.91" y="735.5" ></text>
+</g>
+<g >
+<title>mi_free_size (10,101,010 samples, 0.19%)</title><rect x="1000.9" y="821" width="2.3" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1003.93" y="831.5" ></text>
+</g>
+<g >
+<title>_mi_malloc_generic (10,101,010 samples, 0.19%)</title><rect x="998.6" y="789" width="2.3" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="1001.65" y="799.5" ></text>
+</g>
+<g >
+<title>[unknown] (10,101,010 samples, 0.19%)</title><rect x="1087.5" y="805" width="2.3" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="1090.49" y="815.5" ></text>
+</g>
+<g >
+<title>util::fb2::UringProactor::GetSubmitEntry (10,101,010 samples, 0.19%)</title><rect x="1089.8" y="773" width="2.2" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1092.77" y="783.5" ></text>
+</g>
+<g >
+<title>absl::lts_20250512::GetCurrentTimeNanos (20,202,020 samples, 0.39%)</title><rect x="1092.0" y="757" width="4.6" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="1095.05" y="767.5" ></text>
+</g>
+<g >
+<title>dfly::Service::DispatchManyCommands (10,101,010 samples, 0.19%)</title><rect x="1044.2" y="837" width="2.3" height="15.0" fill="rgb(251,213,50)" rx="2" ry="2" />
+<text  x="1047.21" y="847.5" ></text>
+</g>
+<g >
+<title>facade::CapturingReplyBuilder::Apply (111,111,110 samples, 2.12%)</title><rect x="855.1" y="805" width="25.1" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="858.14" y="815.5" >f..</text>
+</g>
+<g >
+<title>util::fb2::FiberCall::FiberCall (10,101,010 samples, 0.19%)</title><rect x="1089.8" y="789" width="2.2" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1092.77" y="799.5" ></text>
+</g>
+<g >
+<title>operator new[] (10,101,010 samples, 0.19%)</title><rect x="356.3" y="805" width="2.2" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="359.25" y="815.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::ParseArg (40,404,040 samples, 0.77%)</title><rect x="1171.8" y="789" width="9.1" height="15.0" fill="rgb(206,9,2)" rx="2" ry="2" />
+<text  x="1174.78" y="799.5" ></text>
+</g>
+<g >
+<title>io_req_task_submit (60,606,060 samples, 1.16%)</title><rect x="44.2" y="709" width="13.6" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="47.17" y="719.5" ></text>
+</g>
+<g >
+<title>kmem_cache_free (10,101,010 samples, 0.19%)</title><rect x="192.2" y="53" width="2.3" height="15.0" fill="rgb(254,225,53)" rx="2" ry="2" />
+<text  x="195.24" y="63.5" ></text>
+</g>
+<g >
+<title>tcp_schedule_loss_probe (10,101,010 samples, 0.19%)</title><rect x="199.1" y="101" width="2.3" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="202.07" y="111.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.19%)</title><rect x="743.5" y="789" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="746.51" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::LockTagOptions::instance (10,101,010 samples, 0.19%)</title><rect x="798.2" y="773" width="2.3" height="15.0" fill="rgb(215,46,11)" rx="2" ry="2" />
+<text  x="801.19" y="783.5" ></text>
+</g>
+<g >
+<title>process_backlog (666,666,660 samples, 12.74%)</title><rect x="139.8" y="293" width="150.4" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="142.85" y="303.5" >process_backlog</text>
+</g>
+<g >
+<title>tcp_write_xmit (919,191,910 samples, 17.57%)</title><rect x="108.0" y="581" width="207.3" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="110.95" y="591.5" >tcp_write_xmit</text>
+</g>
+<g >
+<title>clock_gettime (10,101,010 samples, 0.19%)</title><rect x="1067.0" y="837" width="2.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1069.99" y="847.5" ></text>
+</g>
+<g >
+<title>facade::Connection::AsyncFiber (10,101,010 samples, 0.19%)</title><rect x="834.6" y="869" width="2.3" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="837.63" y="879.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::~Transaction (10,101,010 samples, 0.19%)</title><rect x="1000.9" y="837" width="2.3" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1003.93" y="847.5" ></text>
+</g>
+<g >
+<title>el0_svc (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="757" width="2.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="1190.72" y="767.5" ></text>
+</g>
+<g >
+<title>ipv4_conntrack_local (50,505,050 samples, 0.97%)</title><rect x="108.0" y="485" width="11.3" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="110.95" y="495.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::CanRunInlined (10,101,010 samples, 0.19%)</title><rect x="415.5" y="757" width="2.3" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="418.48" y="767.5" ></text>
+</g>
+<g >
+<title>mi_free_size (20,202,020 samples, 0.39%)</title><rect x="1060.2" y="853" width="4.5" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1063.15" y="863.5" ></text>
+</g>
+<g >
+<title>dfly::Service::VerifyCommandState (10,101,010 samples, 0.19%)</title><rect x="782.2" y="821" width="2.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="785.24" y="831.5" ></text>
+</g>
+<g >
+<title>memset@plt (10,101,010 samples, 0.19%)</title><rect x="536.2" y="661" width="2.3" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="539.22" y="671.5" ></text>
+</g>
+<g >
+<title>__arm64_sys_madvise (20,202,020 samples, 0.39%)</title><rect x="836.9" y="629" width="4.6" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="839.91" y="639.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync (40,404,040 samples, 0.77%)</title><rect x="930.3" y="693" width="9.1" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="933.31" y="703.5" ></text>
+</g>
+<g >
+<title>do_softirq_own_stack (727,272,720 samples, 13.90%)</title><rect x="126.2" y="405" width="164.0" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="129.18" y="415.5" >do_softirq_own_stack</text>
+</g>
+<g >
+<title>ipv4_conntrack_defrag (10,101,010 samples, 0.19%)</title><rect x="276.5" y="229" width="2.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="279.53" y="239.5" ></text>
+</g>
+<g >
+<title>clock_gettime (20,202,020 samples, 0.39%)</title><rect x="1092.0" y="741" width="4.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="1095.05" y="751.5" ></text>
+</g>
+<g >
+<title>dfly::KeyIndex::operator!= (40,404,040 samples, 0.77%)</title><rect x="802.7" y="789" width="9.2" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="805.74" y="799.5" ></text>
+</g>
+<g >
+<title>arch_counter_get_cntvct (60,606,060 samples, 1.16%)</title><rect x="256.0" y="85" width="13.7" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="259.02" y="95.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FiberActive (20,202,020 samples, 0.39%)</title><rect x="1180.9" y="805" width="4.5" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="1183.89" y="815.5" ></text>
+</g>
+<g >
+<title>facade::Connection::IoLoop (464,646,460 samples, 8.88%)</title><rect x="1082.9" y="837" width="104.8" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1085.93" y="847.5" >facade::Conn..</text>
+</g>
+<g >
+<title>el0t_64_irq (10,101,010 samples, 0.19%)</title><rect x="823.2" y="821" width="2.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="826.24" y="831.5" ></text>
+</g>
+<g >
+<title>io_recv (60,606,060 samples, 1.16%)</title><rect x="44.2" y="677" width="13.6" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="47.17" y="687.5" ></text>
+</g>
+<g >
+<title>__usecs_to_jiffies (10,101,010 samples, 0.19%)</title><rect x="306.1" y="565" width="2.3" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="309.14" y="575.5" ></text>
+</g>
+<g >
+<title>do_mem_abort (10,101,010 samples, 0.19%)</title><rect x="937.1" y="645" width="2.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="940.14" y="655.5" ></text>
+</g>
+<g >
+<title>facade::Connection::HandleRequests (464,646,460 samples, 8.88%)</title><rect x="1082.9" y="869" width="104.8" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="1085.93" y="879.5" >facade::Conn..</text>
+</g>
+<g >
+<title>kfree (10,101,010 samples, 0.19%)</title><rect x="10.0" y="725" width="2.3" height="15.0" fill="rgb(222,78,18)" rx="2" ry="2" />
+<text  x="13.00" y="735.5" ></text>
+</g>
+<g >
+<title>__kernel_clock_gettime (10,101,010 samples, 0.19%)</title><rect x="996.4" y="773" width="2.2" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="999.37" y="783.5" ></text>
+</g>
+<g >
+<title>ip_rcv_finish (575,757,570 samples, 11.00%)</title><rect x="146.7" y="229" width="129.8" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="149.68" y="239.5" >ip_rcv_finish</text>
+</g>
+<g >
+<title>tcp_rcv_space_adjust (30,303,030 samples, 0.58%)</title><rect x="35.1" y="613" width="6.8" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="38.06" y="623.5" ></text>
+</g>
+<g >
+<title>mi_heap_malloc_zero_aligned_at_generic (50,505,050 samples, 0.97%)</title><rect x="1019.2" y="805" width="11.3" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1022.15" y="815.5" ></text>
+</g>
+<g >
+<title>mi_new (10,101,010 samples, 0.19%)</title><rect x="1014.6" y="821" width="2.3" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="1017.59" y="831.5" ></text>
+</g>
+<g >
+<title>__mod_timer (10,101,010 samples, 0.19%)</title><rect x="169.5" y="69" width="2.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="172.46" y="79.5" ></text>
+</g>
+<g >
+<title>operator new (40,404,040 samples, 0.77%)</title><rect x="745.8" y="789" width="9.1" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="748.79" y="799.5" ></text>
+</g>
+<g >
+<title>facade::Connection::DispatchSingle (10,101,010 samples, 0.19%)</title><rect x="1149.0" y="789" width="2.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="1152.00" y="799.5" ></text>
+</g>
+<g >
+<title>tcp_stream_memory_free (10,101,010 samples, 0.19%)</title><rect x="328.9" y="629" width="2.3" height="15.0" fill="rgb(252,217,51)" rx="2" ry="2" />
+<text  x="331.92" y="639.5" ></text>
+</g>
+<g >
+<title>dfly::Service::InvokeCmd (1,848,484,830 samples, 35.33%)</title><rect x="363.1" y="837" width="416.9" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="366.09" y="847.5" >dfly::Service::InvokeCmd</text>
+</g>
+<g >
+<title>tlb_flush (10,101,010 samples, 0.19%)</title><rect x="839.2" y="549" width="2.3" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="842.19" y="559.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (10,101,010 samples, 0.19%)</title><rect x="912.1" y="661" width="2.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="915.08" y="671.5" ></text>
+</g>
+<g >
+<title>__arm64_sys_close (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="709" width="2.3" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="1190.72" y="719.5" ></text>
+</g>
+<g >
+<title>_mi_stat_decrease (10,101,010 samples, 0.19%)</title><rect x="1000.9" y="805" width="2.3" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="1003.93" y="815.5" ></text>
+</g>
+<g >
+<title>io_uring_submit_and_get_events (1,474,747,460 samples, 28.19%)</title><rect x="10.0" y="869" width="332.6" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" >io_uring_submit_and_get_events</text>
+</g>
+<g >
+<title>facade::SinkReplyBuilder::Send (50,505,050 samples, 0.97%)</title><rect x="1048.8" y="837" width="11.4" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1051.76" y="847.5" ></text>
+</g>
+<g >
+<title>inet_sendmsg (1,131,313,120 samples, 21.62%)</title><rect x="76.1" y="661" width="255.1" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="79.06" y="671.5" >inet_sendmsg</text>
+</g>
+<g >
+<title>dfly::Transaction::GetLockArgs (10,101,010 samples, 0.19%)</title><rect x="424.6" y="741" width="2.3" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="427.59" y="751.5" ></text>
+</g>
+<g >
+<title>dfly::detail::ascii_unpack (191,919,190 samples, 3.67%)</title><rect x="442.8" y="661" width="43.3" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="445.82" y="671.5" >dfly..</text>
+</g>
+<g >
+<title>el0t_64_sync_handler (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="725" width="6.9" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="1024.43" y="735.5" ></text>
+</g>
+<g >
+<title>__kernel_clock_gettime (20,202,020 samples, 0.39%)</title><rect x="754.9" y="773" width="4.6" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="757.90" y="783.5" ></text>
+</g>
+<g >
+<title>do_translation_fault (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="677" width="6.9" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="1024.43" y="687.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::ParseArg (10,101,010 samples, 0.19%)</title><rect x="1171.8" y="773" width="2.3" height="15.0" fill="rgb(206,9,2)" rx="2" ry="2" />
+<text  x="1174.78" y="783.5" ></text>
+</g>
+<g >
+<title>dput (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="661" width="2.3" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="1190.72" y="671.5" ></text>
+</g>
+<g >
+<title>__kernel_clock_gettime (10,101,010 samples, 0.19%)</title><rect x="891.6" y="757" width="2.3" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="894.58" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.19%)</title><rect x="1158.1" y="757" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1161.11" y="767.5" ></text>
+</g>
+<g >
+<title>_mi_malloc_generic (60,606,060 samples, 1.16%)</title><rect x="928.0" y="741" width="13.7" height="15.0" fill="rgb(222,79,19)" rx="2" ry="2" />
+<text  x="931.03" y="751.5" ></text>
+</g>
+<g >
+<title>clock_gettime (20,202,020 samples, 0.39%)</title><rect x="754.9" y="789" width="4.6" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="757.90" y="799.5" ></text>
+</g>
+<g >
+<title>TLS init function for facade::Connection::pipeline_req_pool_ (10,101,010 samples, 0.19%)</title><rect x="1114.8" y="757" width="2.3" height="15.0" fill="rgb(218,64,15)" rx="2" ry="2" />
+<text  x="1117.83" y="767.5" ></text>
+</g>
+<g >
+<title>mi_new (20,202,020 samples, 0.39%)</title><rect x="882.5" y="773" width="4.5" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="885.47" y="783.5" ></text>
+</g>
+<g >
+<title>absl::lts_20250512::GetCurrentTimeNanos (20,202,020 samples, 0.39%)</title><rect x="754.9" y="805" width="4.6" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="757.90" y="815.5" ></text>
+</g>
+<g >
+<title>tcp_data_ready (212,121,210 samples, 4.05%)</title><rect x="203.6" y="117" width="47.9" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="206.63" y="127.5" >tcp_..</text>
+</g>
+<g >
+<title>__kernel_clock_gettime (20,202,020 samples, 0.39%)</title><rect x="1092.0" y="725" width="4.6" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1095.05" y="735.5" ></text>
+</g>
+<g >
+<title>copy_iovec_from_user (10,101,010 samples, 0.19%)</title><rect x="340.3" y="677" width="2.3" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="343.31" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (151,515,150 samples, 2.90%)</title><rect x="502.0" y="661" width="34.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="505.05" y="671.5" >[l..</text>
+</g>
+<g >
+<title>facade::Connection::MessageHandle&amp; std::deque&lt;facade::Connection::MessageHandle, std::allocator&lt;facade::Connection::MessageHandle&gt; &gt;::emplace_back&lt;facade::Connection::MessageHandle&gt; (10,101,010 samples, 0.19%)</title><rect x="1135.3" y="773" width="2.3" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1138.33" y="783.5" ></text>
+</g>
+<g >
+<title>el0_da (10,101,010 samples, 0.19%)</title><rect x="912.1" y="725" width="2.3" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="915.08" y="735.5" ></text>
+</g>
+<g >
+<title>dfly::StoredCmd::ArgList (10,101,010 samples, 0.19%)</title><rect x="784.5" y="837" width="2.3" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="787.52" y="847.5" ></text>
+</g>
+<g >
+<title>__tcp_transmit_skb (878,787,870 samples, 16.80%)</title><rect x="108.0" y="565" width="198.1" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="110.95" y="575.5" >__tcp_transmit_skb</text>
+</g>
+<g >
+<title>_copy_from_iter (20,202,020 samples, 0.39%)</title><rect x="96.6" y="613" width="4.5" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="99.56" y="623.5" ></text>
+</g>
+<g >
+<title>netdev_core_pick_tx (20,202,020 samples, 0.39%)</title><rect x="297.0" y="437" width="4.6" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="300.03" y="447.5" ></text>
+</g>
+<g >
+<title>ontop_fcontext (40,404,040 samples, 0.77%)</title><rect x="1071.5" y="837" width="9.2" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="1074.54" y="847.5" ></text>
+</g>
+<g >
+<title>facade::Connection::AsyncFiber (1,101,010,090 samples, 21.04%)</title><rect x="834.6" y="885" width="248.3" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="837.63" y="895.5" >facade::Connection::AsyncFiber</text>
+</g>
+<g >
+<title>std::vector&lt;dfly::MultiCommandSquasher::ShardExecInfo, std::allocator&lt;dfly::MultiCommandSquasher::ShardExecInfo&gt; &gt;::_M_default_append (20,202,020 samples, 0.39%)</title><rect x="941.7" y="789" width="4.6" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="944.70" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::~Transaction (10,101,010 samples, 0.19%)</title><rect x="1003.2" y="821" width="2.3" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1006.20" y="831.5" ></text>
+</g>
+<g >
+<title>skb_copy_datagram_iter (40,404,040 samples, 0.77%)</title><rect x="25.9" y="613" width="9.2" height="15.0" fill="rgb(245,188,45)" rx="2" ry="2" />
+<text  x="28.95" y="623.5" ></text>
+</g>
+<g >
+<title>io::(anonymous namespace)::WriteSomeBytes (40,404,040 samples, 0.77%)</title><rect x="1051.0" y="805" width="9.2" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="1054.04" y="815.5" ></text>
+</g>
+<g >
+<title>__skb_datagram_iter (40,404,040 samples, 0.77%)</title><rect x="25.9" y="597" width="9.2" height="15.0" fill="rgb(244,179,42)" rx="2" ry="2" />
+<text  x="28.95" y="607.5" ></text>
+</g>
+<g >
+<title>tcp_stream_alloc_skb (60,606,060 samples, 1.16%)</title><rect x="315.3" y="613" width="13.6" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="318.25" y="623.5" ></text>
+</g>
+<g >
+<title>mod_timer (20,202,020 samples, 0.39%)</title><rect x="171.7" y="69" width="4.6" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="174.74" y="79.5" ></text>
+</g>
+<g >
+<title>net_rx_action (696,969,690 samples, 13.32%)</title><rect x="133.0" y="325" width="157.2" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="136.01" y="335.5" >net_rx_action</text>
+</g>
+<g >
+<title>dfly::SmallString::Get (30,303,030 samples, 0.58%)</title><rect x="495.2" y="661" width="6.8" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="498.21" y="671.5" ></text>
+</g>
+<g >
+<title>tcp_mstamp_refresh (60,606,060 samples, 1.16%)</title><rect x="256.0" y="117" width="13.7" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="259.02" y="127.5" ></text>
+</g>
+<g >
+<title>tcp_mstamp_refresh (10,101,010 samples, 0.19%)</title><rect x="55.6" y="597" width="2.2" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="58.56" y="607.5" ></text>
+</g>
+<g >
+<title>_mi_os_purge (20,202,020 samples, 0.39%)</title><rect x="836.9" y="773" width="4.6" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="839.91" y="783.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync (20,202,020 samples, 0.39%)</title><rect x="836.9" y="709" width="4.6" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="839.91" y="719.5" ></text>
+</g>
+<g >
+<title>dfly::Service::DispatchManyCommands (878,787,870 samples, 16.80%)</title><rect x="836.9" y="853" width="198.2" height="15.0" fill="rgb(251,213,50)" rx="2" ry="2" />
+<text  x="839.91" y="863.5" >dfly::Service::DispatchMa..</text>
+</g>
+<g >
+<title>invoke_syscall.constprop.0 (20,202,020 samples, 0.39%)</title><rect x="836.9" y="645" width="4.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="839.91" y="655.5" ></text>
+</g>
+<g >
+<title>XXH64 (30,303,030 samples, 0.58%)</title><rect x="971.3" y="789" width="6.8" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="974.31" y="799.5" ></text>
+</g>
+<g >
+<title>mi_thread_init (10,101,010 samples, 0.19%)</title><rect x="1062.4" y="821" width="2.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1065.43" y="831.5" ></text>
+</g>
+<g >
+<title>__napi_poll (666,666,660 samples, 12.74%)</title><rect x="139.8" y="309" width="150.4" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="142.85" y="319.5" >__napi_poll</text>
+</g>
+<g >
+<title>clock_gettime (202,020,200 samples, 3.86%)</title><rect x="363.1" y="805" width="45.5" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="366.09" y="815.5" >cloc..</text>
+</g>
+<g >
+<title>io_submit_sqes (1,242,424,230 samples, 23.75%)</title><rect x="62.4" y="757" width="280.2" height="15.0" fill="rgb(209,18,4)" rx="2" ry="2" />
+<text  x="65.39" y="767.5" >io_submit_sqes</text>
+</g>
+<g >
+<title>__cxxabiv1::__si_class_type_info::__do_dyncast (10,101,010 samples, 0.19%)</title><rect x="862.0" y="773" width="2.2" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="864.97" y="783.5" ></text>
+</g>
+<g >
+<title>__kernel_clock_gettime (10,101,010 samples, 0.19%)</title><rect x="1067.0" y="821" width="2.3" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1069.99" y="831.5" ></text>
+</g>
+<g >
+<title>XXH64 (10,101,010 samples, 0.19%)</title><rect x="793.6" y="789" width="2.3" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="796.63" y="799.5" ></text>
+</g>
+<g >
+<title>destroy_inode (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="581" width="2.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1190.72" y="591.5" ></text>
+</g>
+<g >
+<title>io_cqring_wait (60,606,060 samples, 1.16%)</title><rect x="44.2" y="757" width="13.6" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="47.17" y="767.5" ></text>
+</g>
+<g >
+<title>__ip_local_out (50,505,050 samples, 0.97%)</title><rect x="108.0" y="517" width="11.3" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="110.95" y="527.5" ></text>
+</g>
+<g >
+<title>operator delete (10,101,010 samples, 0.19%)</title><rect x="987.3" y="773" width="2.2" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="990.26" y="783.5" ></text>
+</g>
+<g >
+<title>dfly::ServerState::ShouldLogSlowCmd (10,101,010 samples, 0.19%)</title><rect x="764.0" y="805" width="2.3" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="767.02" y="815.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FiberInterface::SwitchTo (30,303,030 samples, 0.58%)</title><rect x="893.9" y="789" width="6.8" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="896.86" y="799.5" ></text>
+</g>
+<g >
+<title>ipv4_conntrack_in (10,101,010 samples, 0.19%)</title><rect x="278.8" y="229" width="2.3" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="281.80" y="239.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,202,020 samples, 0.39%)</title><rect x="433.7" y="677" width="4.6" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="436.71" y="687.5" ></text>
+</g>
+<g >
+<title>time (20,202,020 samples, 0.39%)</title><rect x="775.4" y="821" width="4.6" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="778.41" y="831.5" ></text>
+</g>
+<g >
+<title>all (5,232,323,180 samples, 100%)</title><rect x="10.0" y="949" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="959.5" ></text>
+</g>
+<g >
+<title>operator delete (10,101,010 samples, 0.19%)</title><rect x="823.2" y="853" width="2.3" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="826.24" y="863.5" ></text>
+</g>
+<g >
+<title>util::fb2::UringSocket::Close (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="869" width="2.3" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1190.72" y="879.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FiberInterface::SwitchTo (50,505,050 samples, 0.97%)</title><rect x="1069.3" y="853" width="11.4" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="1072.27" y="863.5" ></text>
+</g>
+<g >
+<title>dfly::CommandRegistry::FindExtended (20,202,020 samples, 0.39%)</title><rect x="841.5" y="821" width="4.5" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="844.47" y="831.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_mutate (595,959,590 samples, 11.39%)</title><rect x="538.5" y="661" width="134.4" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="541.49" y="671.5" >std::__cxx11::ba..</text>
+</g>
+<g >
+<title>tcp_recvmsg_locked (101,010,100 samples, 1.93%)</title><rect x="19.1" y="629" width="22.8" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="22.11" y="639.5" >t..</text>
+</g>
+<g >
+<title>util::fb2::UringSocket::WriteSome (20,202,020 samples, 0.39%)</title><rect x="1055.6" y="789" width="4.6" height="15.0" fill="rgb(205,2,0)" rx="2" ry="2" />
+<text  x="1058.60" y="799.5" ></text>
+</g>
+<g >
+<title>base::IoBuf::Reserve (20,202,020 samples, 0.39%)</title><rect x="354.0" y="837" width="4.5" height="15.0" fill="rgb(251,213,51)" rx="2" ry="2" />
+<text  x="356.98" y="847.5" ></text>
+</g>
+<g >
+<title>ktime_get (30,303,030 samples, 0.58%)</title><rect x="35.1" y="581" width="6.8" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="38.06" y="591.5" ></text>
+</g>
+<g >
+<title>dfly::CompactObj::CmpNonInline (20,202,020 samples, 0.39%)</title><rect x="716.2" y="645" width="4.5" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="719.18" y="655.5" ></text>
+</g>
+<g >
+<title>tcp_recvmsg (40,404,040 samples, 0.77%)</title><rect x="48.7" y="629" width="9.1" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="51.73" y="639.5" ></text>
+</g>
+<g >
+<title>mod_timer (10,101,010 samples, 0.19%)</title><rect x="313.0" y="501" width="2.3" height="15.0" fill="rgb(212,32,7)" rx="2" ry="2" />
+<text  x="315.97" y="511.5" ></text>
+</g>
+<g >
+<title>__schedule (10,101,010 samples, 0.19%)</title><rect x="823.2" y="741" width="2.3" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="826.24" y="751.5" ></text>
+</g>
+<g >
+<title>mi_free_size (20,202,020 samples, 0.39%)</title><rect x="1005.5" y="837" width="4.5" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1008.48" y="847.5" ></text>
+</g>
+<g >
+<title>__tcp_ack_snd_check (40,404,040 samples, 0.77%)</title><rect x="167.2" y="117" width="9.1" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="170.18" y="127.5" ></text>
+</g>
+<g >
+<title>sock_recvmsg (40,404,040 samples, 0.77%)</title><rect x="48.7" y="661" width="9.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="51.73" y="671.5" ></text>
+</g>
+<g >
+<title>sk_forced_mem_schedule (40,404,040 samples, 0.77%)</title><rect x="319.8" y="597" width="9.1" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="322.81" y="607.5" ></text>
+</g>
+<g >
+<title>_mi_stat_decrease (10,101,010 samples, 0.19%)</title><rect x="821.0" y="821" width="2.2" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="823.97" y="831.5" ></text>
+</g>
+<g >
+<title>dfly::Service::VerifyCommandExecution (10,101,010 samples, 0.19%)</title><rect x="773.1" y="805" width="2.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="776.13" y="815.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::ScheduleInternal (1,444,444,430 samples, 27.61%)</title><rect x="415.5" y="773" width="325.7" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="418.48" y="783.5" >dfly::Transaction::ScheduleInternal</text>
+</g>
+<g >
+<title>skb_free_head (10,101,010 samples, 0.19%)</title><rect x="192.2" y="69" width="2.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="195.24" y="79.5" ></text>
+</g>
+<g >
+<title>el0_svc (20,202,020 samples, 0.39%)</title><rect x="836.9" y="677" width="4.6" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="839.91" y="687.5" ></text>
+</g>
+<g >
+<title>unmap_page_range (20,202,020 samples, 0.39%)</title><rect x="836.9" y="565" width="4.6" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="839.91" y="575.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::Transaction (60,606,060 samples, 1.16%)</title><rect x="914.4" y="789" width="13.6" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="917.36" y="799.5" ></text>
+</g>
+<g >
+<title>mi_segment_page_clear (20,202,020 samples, 0.39%)</title><rect x="836.9" y="821" width="4.6" height="15.0" fill="rgb(242,171,40)" rx="2" ry="2" />
+<text  x="839.91" y="831.5" ></text>
+</g>
+<g >
+<title>dfly::DashTable&lt;dfly::CompactKey, dfly::CompactValue, dfly::detail::PrimeTablePolicy&gt;::Iterator&lt;false, false&gt; dfly::DashTable&lt;dfly::CompactKey, dfly::CompactValue, dfly::detail::PrimeTablePolicy&gt;::FindFirst&lt;dfly::DashTable&lt;dfly::CompactKey, dfly::CompactValue, dfly::detail::PrimeTablePolicy&gt;::EqPred&lt;std::basic_string_view&lt;char, std::char_traits&lt;char&gt; &gt; &gt; (191,919,190 samples, 3.67%)</title><rect x="677.5" y="677" width="43.2" height="15.0" fill="rgb(213,37,9)" rx="2" ry="2" />
+<text  x="680.45" y="687.5" >dfly..</text>
+</g>
+<g >
+<title>dfly::DetermineKeys (10,101,010 samples, 0.19%)</title><rect x="903.0" y="805" width="2.3" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="905.97" y="815.5" ></text>
+</g>
+<g >
+<title>tcp_rearm_rto (10,101,010 samples, 0.19%)</title><rect x="313.0" y="549" width="2.3" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="315.97" y="559.5" ></text>
+</g>
+<g >
+<title>dfly::Namespace::GetDbSlice (10,101,010 samples, 0.19%)</title><rect x="734.4" y="693" width="2.3" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="737.40" y="703.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (727,272,720 samples, 13.90%)</title><rect x="126.2" y="341" width="164.0" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="129.18" y="351.5" >handle_softirqs</text>
+</g>
+<g >
+<title>dfly::Transaction::RunnableResult absl::lts_20250512::functional_internal::InvokeObject&lt;dfly::Transaction::ScheduleSingleHopT&lt;dfly::(anonymous namespace)::CmdGet (10,101,010 samples, 0.19%)</title><rect x="734.4" y="709" width="2.3" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="737.40" y="719.5" ></text>
+</g>
+<g >
+<title>operator new (10,101,010 samples, 0.19%)</title><rect x="978.1" y="789" width="2.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="981.15" y="799.5" ></text>
+</g>
+<g >
+<title>__arm64_sys_io_uring_enter (1,474,747,460 samples, 28.19%)</title><rect x="10.0" y="773" width="332.6" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="13.00" y="783.5" >__arm64_sys_io_uring_enter</text>
+</g>
+<g >
+<title>void boost::context::detail::fiber_entry&lt;boost::context::detail::fiber_record&lt;boost::context::fiber, util::fb2::FixedStackAllocator, util::fb2::detail::WorkerFiberImpl&lt;util::ListenerInterface::RunAcceptLoop (474,747,470 samples, 9.07%)</title><rect x="1082.9" y="901" width="107.1" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="1085.93" y="911.5" >void boost::c..</text>
+</g>
+<g >
+<title>tcp_sendmsg_locked (1,111,111,100 samples, 21.24%)</title><rect x="78.3" y="629" width="250.6" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="81.34" y="639.5" >tcp_sendmsg_locked</text>
+</g>
+<g >
+<title>do_mem_abort (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="693" width="6.9" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="1024.43" y="703.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,202,020 samples, 0.39%)</title><rect x="1130.8" y="757" width="4.5" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1133.77" y="767.5" ></text>
+</g>
+<g >
+<title>absl::lts_20250512::GetCurrentTimeNanos (50,505,050 samples, 0.97%)</title><rect x="916.6" y="757" width="11.4" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="919.64" y="767.5" ></text>
+</g>
+<g >
+<title>do_el0_svc (1,474,747,460 samples, 28.19%)</title><rect x="10.0" y="805" width="332.6" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="13.00" y="815.5" >do_el0_svc</text>
+</g>
+<g >
+<title>do_madvise (20,202,020 samples, 0.39%)</title><rect x="836.9" y="613" width="4.6" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="839.91" y="623.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::ParseLen (30,303,030 samples, 0.58%)</title><rect x="1174.1" y="773" width="6.8" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1177.05" y="783.5" ></text>
+</g>
+<g >
+<title>ontop_fcontext (10,101,010 samples, 0.19%)</title><rect x="830.1" y="837" width="2.3" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="833.08" y="847.5" ></text>
+</g>
+<g >
+<title>facade::Connection::IoLoop (10,101,010 samples, 0.19%)</title><rect x="1108.0" y="821" width="2.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="1110.99" y="831.5" ></text>
+</g>
+<g >
+<title>dfly::Shard (30,303,030 samples, 0.58%)</title><rect x="971.3" y="805" width="6.8" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="974.31" y="815.5" ></text>
+</g>
+<g >
+<title>std::_Function_handler&lt;void  (2,090,909,070 samples, 39.96%)</title><rect x="354.0" y="869" width="471.5" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="356.98" y="879.5" >std::_Function_handler&lt;void </text>
+</g>
+<g >
+<title>__netif_receive_skb_one_core (626,262,620 samples, 11.97%)</title><rect x="146.7" y="261" width="141.2" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="149.68" y="271.5" >__netif_receive_s..</text>
+</g>
+<g >
+<title>dfly::Service::InvokeCmd (30,303,030 samples, 0.58%)</title><rect x="766.3" y="821" width="6.8" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="769.29" y="831.5" ></text>
+</g>
+<g >
+<title>ip_rcv_finish_core.isra.0 (20,202,020 samples, 0.39%)</title><rect x="269.7" y="213" width="4.5" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="272.69" y="223.5" ></text>
+</g>
+<g >
+<title>__close (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="853" width="2.3" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="1190.72" y="863.5" ></text>
+</g>
+<g >
+<title>facade::CapturingReplyBuilder::~CapturingReplyBuilder (10,101,010 samples, 0.19%)</title><rect x="816.4" y="837" width="2.3" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="819.41" y="847.5" ></text>
+</g>
+<g >
+<title>sk_reset_timer (10,101,010 samples, 0.19%)</title><rect x="313.0" y="517" width="2.3" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="315.97" y="527.5" ></text>
+</g>
+<g >
+<title>el0_interrupt (10,101,010 samples, 0.19%)</title><rect x="823.2" y="773" width="2.3" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="826.24" y="783.5" ></text>
+</g>
+<g >
+<title>io_sendmsg_prep (30,303,030 samples, 0.58%)</title><rect x="335.8" y="741" width="6.8" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="338.75" y="751.5" ></text>
+</g>
+<g >
+<title>__dynamic_cast (40,404,040 samples, 0.77%)</title><rect x="857.4" y="789" width="9.1" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="860.41" y="799.5" ></text>
+</g>
+<g >
+<title>dst_release (10,101,010 samples, 0.19%)</title><rect x="176.3" y="117" width="2.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="179.29" y="127.5" ></text>
+</g>
+<g >
+<title>__wake_up_sync_key (10,101,010 samples, 0.19%)</title><rect x="249.2" y="85" width="2.3" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="252.19" y="95.5" ></text>
+</g>
+<g >
+<title>call_on_irq_stack (727,272,720 samples, 13.90%)</title><rect x="126.2" y="389" width="164.0" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="129.18" y="399.5" >call_on_irq_stack</text>
+</g>
+<g >
+<title>util::fb2::UringSocket::Recv (80,808,080 samples, 1.54%)</title><rect x="1089.8" y="805" width="18.2" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="1092.77" y="815.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_create (30,303,030 samples, 0.58%)</title><rect x="666.1" y="645" width="6.8" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="669.06" y="655.5" ></text>
+</g>
+<g >
+<title>io_issue_sqe (10,101,010 samples, 0.19%)</title><rect x="57.8" y="757" width="2.3" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="60.84" y="767.5" ></text>
+</g>
+<g >
+<title>el0t_64_sync_handler (20,202,020 samples, 0.39%)</title><rect x="836.9" y="693" width="4.6" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="839.91" y="703.5" ></text>
+</g>
+<g >
+<title>finish (5,232,323,180 samples, 100.00%)</title><rect x="10.0" y="917" width="1180.0" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" >finish</text>
+</g>
+<g >
+<title>__mem_cgroup_charge (20,202,020 samples, 0.39%)</title><rect x="1021.4" y="613" width="4.6" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="1024.43" y="623.5" ></text>
+</g>
+<g >
+<title>tcp_v4_do_rcv (474,747,470 samples, 9.07%)</title><rect x="162.6" y="149" width="107.1" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="165.63" y="159.5" >tcp_v4_do_rcv</text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::TrySquash (383,838,380 samples, 7.34%)</title><rect x="903.0" y="821" width="86.5" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="905.97" y="831.5" >dfly::Mult..</text>
+</g>
+<g >
+<title>tcp_rearm_rto.part.0 (10,101,010 samples, 0.19%)</title><rect x="313.0" y="533" width="2.3" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="315.97" y="543.5" ></text>
+</g>
+<g >
+<title>dfly::CommandId::Validate (40,404,040 samples, 0.77%)</title><rect x="962.2" y="789" width="9.1" height="15.0" fill="rgb(239,157,37)" rx="2" ry="2" />
+<text  x="965.20" y="799.5" ></text>
+</g>
+<g >
+<title>_mi_stat_increase (10,101,010 samples, 0.19%)</title><rect x="750.3" y="757" width="2.3" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="753.35" y="767.5" ></text>
+</g>
+<g >
+<title>mi_heap_get_default (10,101,010 samples, 0.19%)</title><rect x="880.2" y="789" width="2.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="883.19" y="799.5" ></text>
+</g>
+<g >
+<title>mi_page_fresh_alloc (10,101,010 samples, 0.19%)</title><rect x="939.4" y="709" width="2.3" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="942.42" y="719.5" ></text>
+</g>
+<g >
+<title>unsigned char dfly::detail::Segment&lt;dfly::CompactKey, dfly::CompactValue, dfly::detail::PrimeTablePolicy&gt;::Bucket::FindByFp&lt;dfly::DashTable&lt;dfly::CompactKey, dfly::CompactValue, dfly::detail::PrimeTablePolicy&gt;::EqPred&lt;std::basic_string_view&lt;char, std::char_traits&lt;char&gt; &gt; &gt; (191,919,190 samples, 3.67%)</title><rect x="677.5" y="661" width="43.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="680.45" y="671.5" >unsi..</text>
+</g>
+<g >
+<title>dfly::CompactObj::StrEncoding::Decode (212,121,210 samples, 4.05%)</title><rect x="438.3" y="677" width="47.8" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="441.26" y="687.5" >dfly..</text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::TrySquash (111,111,110 samples, 2.12%)</title><rect x="946.3" y="805" width="25.0" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="949.25" y="815.5" >d..</text>
+</g>
+<g >
+<title>__cxxabiv1::__class_type_info::__do_dyncast (20,202,020 samples, 0.39%)</title><rect x="857.4" y="773" width="4.6" height="15.0" fill="rgb(253,225,53)" rx="2" ry="2" />
+<text  x="860.41" y="783.5" ></text>
+</g>
+<g >
+<title>do_softirq (737,373,730 samples, 14.09%)</title><rect x="123.9" y="421" width="166.3" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="126.90" y="431.5" >do_softirq</text>
+</g>
+<g >
+<title>el0t_64_sync_handler (40,404,040 samples, 0.77%)</title><rect x="930.3" y="677" width="9.1" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="933.31" y="687.5" ></text>
+</g>
+<g >
+<title>void facade::SinkReplyBuilder::WritePieces&lt;char const  (10,101,010 samples, 0.19%)</title><rect x="877.9" y="773" width="2.3" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="880.92" y="783.5" ></text>
+</g>
+<g >
+<title>dfly::AllocationTracker::ProcessNew (10,101,010 samples, 0.19%)</title><rect x="752.6" y="757" width="2.3" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="755.63" y="767.5" ></text>
+</g>
+<g >
+<title>__arch_copy_from_user (60,606,060 samples, 1.16%)</title><rect x="82.9" y="613" width="13.7" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="85.90" y="623.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::ScheduleSingleHop (1,454,545,440 samples, 27.80%)</title><rect x="413.2" y="805" width="328.0" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="416.20" y="815.5" >dfly::Transaction::ScheduleSingleHop</text>
+</g>
+<g >
+<title>tcp_ack_update_rtt (10,101,010 samples, 0.19%)</title><rect x="196.8" y="101" width="2.3" height="15.0" fill="rgb(213,41,9)" rx="2" ry="2" />
+<text  x="199.80" y="111.5" ></text>
+</g>
+<g >
+<title>boost::context::detail::transfer_t boost::context::detail::fiber_ontop&lt;boost::context::fiber, util::fb2::detail::FiberInterface::SwitchTo (10,101,010 samples, 0.19%)</title><rect x="827.8" y="837" width="2.3" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="830.80" y="847.5" ></text>
+</g>
+<g >
+<title>iput (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="613" width="2.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="1190.72" y="623.5" ></text>
+</g>
+<g >
+<title>nf_conntrack_tcp_packet (20,202,020 samples, 0.39%)</title><rect x="114.8" y="453" width="4.5" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="117.79" y="463.5" ></text>
+</g>
+<g >
+<title>tcp_push (939,393,930 samples, 17.95%)</title><rect x="103.4" y="613" width="211.9" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="106.40" y="623.5" >tcp_push</text>
+</g>
+<g >
+<title>absl::lts_20250512::GetCurrentTimeNanos (202,020,200 samples, 3.86%)</title><rect x="363.1" y="821" width="45.5" height="15.0" fill="rgb(207,12,3)" rx="2" ry="2" />
+<text  x="366.09" y="831.5" >absl..</text>
+</g>
+<g >
+<title>ip_protocol_deliver_rcu (494,949,490 samples, 9.46%)</title><rect x="158.1" y="181" width="111.6" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="161.07" y="191.5" >ip_protocol_d..</text>
+</g>
+<g >
+<title>el0t_64_irq_handler (10,101,010 samples, 0.19%)</title><rect x="823.2" y="805" width="2.3" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="826.24" y="815.5" ></text>
+</g>
+<g >
+<title>evict (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="597" width="2.3" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="1190.72" y="607.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb (626,262,620 samples, 11.97%)</title><rect x="146.7" y="277" width="141.2" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="149.68" y="287.5" >__netif_receive_skb</text>
+</g>
+<g >
+<title>__ip_finish_output (10,101,010 samples, 0.19%)</title><rect x="119.3" y="501" width="2.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="122.34" y="511.5" ></text>
+</g>
+<g >
+<title>tcp_send_delayed_ack (40,404,040 samples, 0.77%)</title><rect x="167.2" y="101" width="9.1" height="15.0" fill="rgb(248,197,47)" rx="2" ry="2" />
+<text  x="170.18" y="111.5" ></text>
+</g>
+<g >
+<title>clock_gettime (10,101,010 samples, 0.19%)</title><rect x="777.7" y="805" width="2.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="780.68" y="815.5" ></text>
+</g>
+<g >
+<title>mi_find_page (60,606,060 samples, 1.16%)</title><rect x="928.0" y="725" width="13.7" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="931.03" y="735.5" ></text>
+</g>
+<g >
+<title>io_recv_finish (20,202,020 samples, 0.39%)</title><rect x="44.2" y="661" width="4.5" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="47.17" y="671.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::InitTxTime (10,101,010 samples, 0.19%)</title><rect x="996.4" y="821" width="2.2" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="999.37" y="831.5" ></text>
+</g>
+<g >
+<title>__fput (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="677" width="2.3" height="15.0" fill="rgb(248,200,47)" rx="2" ry="2" />
+<text  x="1190.72" y="687.5" ></text>
+</g>
+<g >
+<title>__kernel_clock_gettime (50,505,050 samples, 0.97%)</title><rect x="916.6" y="725" width="11.4" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="919.64" y="735.5" ></text>
+</g>
+<g >
+<title>__mod_timer (10,101,010 samples, 0.19%)</title><rect x="313.0" y="485" width="2.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="315.97" y="495.5" ></text>
+</g>
+<g >
+<title>ontop_fcontext (30,303,030 samples, 0.58%)</title><rect x="893.9" y="773" width="6.8" height="15.0" fill="rgb(229,114,27)" rx="2" ry="2" />
+<text  x="896.86" y="783.5" ></text>
+</g>
+<g >
+<title>do_mem_abort (10,101,010 samples, 0.19%)</title><rect x="912.1" y="709" width="2.3" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="915.08" y="719.5" ></text>
+</g>
+<g >
+<title>memcpy@plt (10,101,010 samples, 0.19%)</title><rect x="875.6" y="741" width="2.3" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="878.64" y="751.5" ></text>
+</g>
+<g >
+<title>zap_page_range_single (20,202,020 samples, 0.39%)</title><rect x="836.9" y="597" width="4.6" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="839.91" y="607.5" ></text>
+</g>
+<g >
+<title>__local_bh_enable_ip (737,373,730 samples, 14.09%)</title><rect x="123.9" y="437" width="166.3" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="126.90" y="447.5" >__local_bh_enable_ip</text>
+</g>
+<g >
+<title>tcp_event_data_recv (20,202,020 samples, 0.39%)</title><rect x="251.5" y="117" width="4.5" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="254.47" y="127.5" ></text>
+</g>
+<g >
+<title>mi_free_size (10,101,010 samples, 0.19%)</title><rect x="816.4" y="821" width="2.3" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="819.41" y="831.5" ></text>
+</g>
+<g >
+<title>simple_copy_to_iter (40,404,040 samples, 0.77%)</title><rect x="25.9" y="581" width="9.2" height="15.0" fill="rgb(228,110,26)" rx="2" ry="2" />
+<text  x="28.95" y="591.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::ScheduleInShard (1,404,040,390 samples, 26.83%)</title><rect x="420.0" y="757" width="316.7" height="15.0" fill="rgb(249,202,48)" rx="2" ry="2" />
+<text  x="423.04" y="767.5" >dfly::Transaction::ScheduleInShard</text>
+</g>
+<g >
+<title>util::fb2::detail::FiberInterface::GetRunningTimeCycles (10,101,010 samples, 0.19%)</title><rect x="1185.4" y="805" width="2.3" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="1188.44" y="815.5" ></text>
+</g>
+<g >
+<title>__wake_up_sync_key (202,020,200 samples, 3.86%)</title><rect x="203.6" y="101" width="45.6" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="206.63" y="111.5" >__wa..</text>
+</g>
+<g >
+<title>sock_recvmsg (111,111,110 samples, 2.12%)</title><rect x="16.8" y="677" width="25.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="19.83" y="687.5" >s..</text>
+</g>
+<g >
+<title>__import_iovec (20,202,020 samples, 0.39%)</title><rect x="338.0" y="693" width="4.6" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="341.03" y="703.5" ></text>
+</g>
+<g >
+<title>mi_new (30,303,030 samples, 0.58%)</title><rect x="745.8" y="773" width="6.8" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="748.79" y="783.5" ></text>
+</g>
+<g >
+<title>operator delete (10,101,010 samples, 0.19%)</title><rect x="987.3" y="789" width="2.2" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="990.26" y="799.5" ></text>
+</g>
+<g >
+<title>facade::Connection::GetFromPoolOrCreate (10,101,010 samples, 0.19%)</title><rect x="1114.8" y="773" width="2.3" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="1117.83" y="783.5" ></text>
+</g>
+<g >
+<title>mi_heap_get_default (10,101,010 samples, 0.19%)</title><rect x="1062.4" y="837" width="2.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1065.43" y="847.5" ></text>
+</g>
+<g >
+<title>tcp_sendmsg (1,131,313,120 samples, 21.62%)</title><rect x="76.1" y="645" width="255.1" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="79.06" y="655.5" >tcp_sendmsg</text>
+</g>
+<g >
+<title>dfly::Transaction::StoreKeysInArgs (50,505,050 samples, 0.97%)</title><rect x="800.5" y="805" width="11.4" height="15.0" fill="rgb(250,209,49)" rx="2" ry="2" />
+<text  x="803.46" y="815.5" ></text>
+</g>
+<g >
+<title>util::fb2::FiberQueue::Run (10,101,010 samples, 0.19%)</title><rect x="825.5" y="869" width="2.3" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="828.52" y="879.5" ></text>
+</g>
+<g >
+<title>dfly::AllocationTracker::ProcessDelete (10,101,010 samples, 0.19%)</title><rect x="987.3" y="757" width="2.2" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="990.26" y="767.5" ></text>
+</g>
+<g >
+<title>tcp_event_new_data_sent (10,101,010 samples, 0.19%)</title><rect x="313.0" y="565" width="2.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="315.97" y="575.5" ></text>
+</g>
+<g >
+<title>operator new (545,454,540 samples, 10.42%)</title><rect x="543.1" y="645" width="123.0" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="546.05" y="655.5" >operator new</text>
+</g>
+<g >
+<title>do_page_fault (30,303,030 samples, 0.58%)</title><rect x="1021.4" y="661" width="6.9" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="1024.43" y="671.5" ></text>
+</g>
+<g >
+<title>facade::SinkReplyBuilder::Flush (60,606,060 samples, 1.16%)</title><rect x="1046.5" y="853" width="13.7" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="1049.49" y="863.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::Scheduler::Preempt (10,101,010 samples, 0.19%)</title><rect x="1080.7" y="853" width="2.2" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1083.66" y="863.5" ></text>
+</g>
+<g >
+<title>do_notify_resume (10,101,010 samples, 0.19%)</title><rect x="823.2" y="757" width="2.3" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="826.24" y="767.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb_one_core (10,101,010 samples, 0.19%)</title><rect x="287.9" y="277" width="2.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="290.92" y="287.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::ParseLen (10,101,010 samples, 0.19%)</title><rect x="1171.8" y="757" width="2.3" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="1174.78" y="767.5" ></text>
+</g>
+<g >
+<title>dfly::MultiCommandSquasher::PrepareShardInfo (171,717,170 samples, 3.28%)</title><rect x="907.5" y="805" width="38.8" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="910.53" y="815.5" >dfl..</text>
+</g>
+<g >
+<title>Proactor0 (5,232,323,180 samples, 100.00%)</title><rect x="10.0" y="933" width="1180.0" height="15.0" fill="rgb(214,42,10)" rx="2" ry="2" />
+<text  x="13.00" y="943.5" >Proactor0</text>
+</g>
+<g >
+<title>ktime_get (60,606,060 samples, 1.16%)</title><rect x="256.0" y="101" width="13.7" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="259.02" y="111.5" ></text>
+</g>
+<g >
+<title>cubictcp_cong_avoid (10,101,010 samples, 0.19%)</title><rect x="194.5" y="101" width="2.3" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="197.52" y="111.5" ></text>
+</g>
+<g >
+<title>io_msg_copy_hdr.constprop.0 (30,303,030 samples, 0.58%)</title><rect x="335.8" y="709" width="6.8" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="338.75" y="719.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::InitByKeys (111,111,110 samples, 2.12%)</title><rect x="789.1" y="821" width="25.0" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="792.07" y="831.5" >d..</text>
+</g>
+<g >
+<title>mi_free_size (10,101,010 samples, 0.19%)</title><rect x="985.0" y="789" width="2.3" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="987.98" y="799.5" ></text>
+</g>
+<g >
+<title>io_issue_sqe (60,606,060 samples, 1.16%)</title><rect x="44.2" y="693" width="13.6" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="47.17" y="703.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::Scheduler::Preempt (10,101,010 samples, 0.19%)</title><rect x="832.4" y="853" width="2.2" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="835.36" y="863.5" ></text>
+</g>
+<g >
+<title>mi_heap_malloc_zero_aligned_at_generic (60,606,060 samples, 1.16%)</title><rect x="928.0" y="757" width="13.7" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="931.03" y="767.5" ></text>
+</g>
+<g >
+<title>io_recvmsg_prep (10,101,010 samples, 0.19%)</title><rect x="333.5" y="741" width="2.3" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="336.47" y="751.5" ></text>
+</g>
+<g >
+<title>util::fb2::detail::FbInitializer (20,202,020 samples, 0.39%)</title><rect x="1180.9" y="789" width="4.5" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="1183.89" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::Transaction::Transaction (10,101,010 samples, 0.19%)</title><rect x="912.1" y="773" width="2.3" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="915.08" y="783.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (20,202,020 samples, 0.39%)</title><rect x="1176.3" y="757" width="4.6" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1179.33" y="767.5" ></text>
+</g>
+<g >
+<title>do_el0_svc (20,202,020 samples, 0.39%)</title><rect x="836.9" y="661" width="4.6" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="839.91" y="671.5" ></text>
+</g>
+<g >
+<title>void fu2::abi_400::detail::type_erasure::tables::vtable&lt;fu2::abi_400::detail::property&lt;false, false, void  (10,101,010 samples, 0.19%)</title><rect x="351.7" y="837" width="2.3" height="15.0" fill="rgb(225,92,22)" rx="2" ry="2" />
+<text  x="354.70" y="847.5" ></text>
+</g>
+<g >
+<title>util::fb2::FiberCall::Get (60,606,060 samples, 1.16%)</title><rect x="1092.0" y="789" width="13.7" height="15.0" fill="rgb(251,215,51)" rx="2" ry="2" />
+<text  x="1095.05" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::IsClusterShardedByTag (20,202,020 samples, 0.39%)</title><rect x="795.9" y="789" width="4.6" height="15.0" fill="rgb(240,161,38)" rx="2" ry="2" />
+<text  x="798.91" y="799.5" ></text>
+</g>
+<g >
+<title>dfly::CompactObj::GetString (1,060,606,050 samples, 20.27%)</title><rect x="433.7" y="693" width="239.2" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="436.71" y="703.5" >dfly::CompactObj::GetString</text>
+</g>
+<g >
+<title>absl::lts_20250512::numbers_internal::FastIntToBuffer (10,101,010 samples, 0.19%)</title><rect x="866.5" y="773" width="2.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="869.53" y="783.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,101,010 samples, 0.19%)</title><rect x="1187.7" y="805" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1190.72" y="815.5" ></text>
+</g>
+<g >
+<title>facade::RedisParser::ConsumeArrayLen (20,202,020 samples, 0.39%)</title><rect x="1153.6" y="773" width="4.5" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1156.55" y="783.5" ></text>
+</g>
+</g>
+</svg>

@@ -1,0 +1,13 @@
+Matched Docker/Linux rerun after cached request clock
+Single-lane server, multi-threaded client, PIPELINE=4
+
+- SET ops/sec: 229134.67 vs 453371.05  (-49.46%)
+- GET ops/sec: 337783.99 vs 481831.29  (-29.90%)
+- SET p99 ms:  2.23404 vs 1.12855  (+97.96%)
+- GET p99 ms:  1.51505 vs 1.06109  (+42.78%)
+
+Compared to 11.592:
+- Garnet SET improved from 195492.64 to 229134.67.
+- Garnet GET improved from 271013.64 to 337783.99.
+- The Dragonfly gap narrowed on both throughput and p99.
+- The old Garnet GET `__kernel_clock_gettime` hotspot is no longer the top sampled symbol.

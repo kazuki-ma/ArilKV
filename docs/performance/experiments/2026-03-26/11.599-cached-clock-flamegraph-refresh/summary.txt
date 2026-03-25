@@ -1,0 +1,29 @@
+11.599 cached request clock flamegraph refresh
+
+status=measurement-only
+before_commit=e455417dfe
+after_commit=f268e91b24
+
+shape=THREADS=8 CONNS=16 PIPELINE=4 single-lane server
+
+garnet.set_ops=229134.67
+garnet.get_ops=337783.99
+garnet.set_p99_ms=2.23404
+garnet.get_p99_ms=1.51505
+
+dragonfly.set_ops=453371.05
+dragonfly.get_ops=481831.29
+dragonfly.set_p99_ms=1.12855
+dragonfly.get_p99_ms=1.06109
+
+delta.set_ops_pct=-49.46
+delta.get_ops_pct=-29.90
+delta.set_p99_pct=+97.96
+delta.get_p99_pct=+42.78
+
+garnet.set.top=13.06% __wake_up_sync_key
+garnet.get.top=14.71% __wake_up_sync_key
+garnet.get.clock_gettime=0.54%
+garnet.set.clock_gettime=0.27%
+dragonfly.set.top=8.70% dfly::DbSlice::AutoUpdater::AutoUpdater(...)
+dragonfly.get.top=7.53% _mi_stat_increase
