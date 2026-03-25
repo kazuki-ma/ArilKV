@@ -1,0 +1,26 @@
+accepted
+
+before_commit=9687b2a7f8
+after_commit=pending
+
+validated:
+- cargo test -p garnet-server slowlog_threshold_and_entry_shape_match_external_scenarios -- --nocapture
+- cargo test -p garnet-server slowlog_rewritten_and_blocking_commands_match_external_scenarios -- --nocapture
+- cargo test -p garnet-server executes_set_then_get_roundtrip -- --nocapture
+- make fmt
+- make fmt-check
+- make test-server
+- verified counts: 716 passed; 0 failed; 16 ignored; plus 26 passed; plus 1 passed
+
+benchmarks:
+- owner-inline p1: SET +1.65%, GET +1.63%, SET p99 flat, GET p99 +10.13%
+- owner-inline p4 multithread client: SET +6.43%, GET +2.24%, SET p99 -8.70%, GET p99 -2.06%
+
+linux perf shift:
+- before: __kernel_clock_gettime 20.50%, Instant::elapsed 16.03%
+- after: cfree 16.89%, __wake_up_sync_key 15.82%, HashIndex::find_tag_address 13.00%
+
+notes:
+- only the non-blocking slowlog duration path moved to cached monotonic micros
+- blocking slowlog timing stayed on exact Instant::elapsed
+- next likely target is allocator churn on the GET path

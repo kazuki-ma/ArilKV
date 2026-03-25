@@ -157,6 +157,61 @@ const INLINE_COMMAND_STATS_NAME_CAPACITY: usize = 64;
 const TRACKING_INVALIDATE_CHANNEL: &[u8] = b"__redis__:invalidate";
 const SET_OBJECT_HOT_STATE_CAPACITY: usize = 8;
 const SET_DEBUG_HT_MIN_TABLE_SIZE: usize = 4;
+const CACHED_MONOTONIC_CLOCK_REFRESH_INTERVAL: Duration = Duration::from_millis(1);
+
+struct CachedMonotonicClock {
+    base_instant: Instant,
+    elapsed_micros: AtomicU64,
+}
+
+impl CachedMonotonicClock {
+    fn global() -> &'static Self {
+        static CLOCK: OnceLock<&'static CachedMonotonicClock> = OnceLock::new();
+        CLOCK.get_or_init(|| {
+            let clock: &'static CachedMonotonicClock = Box::leak(Box::new(CachedMonotonicClock {
+                base_instant: Instant::now(),
+                elapsed_micros: AtomicU64::new(0),
+            }));
+            clock.refresh_exact();
+            std::thread::Builder::new()
+                .name("garnet-cached-clock".to_string())
+                .spawn({
+                    let clock = clock;
+                    move || loop {
+                        clock.refresh_exact();
+                        std::thread::sleep(CACHED_MONOTONIC_CLOCK_REFRESH_INTERVAL);
+                    }
+                })
+                .expect("cached monotonic clock thread must start");
+            clock
+        })
+    }
+
+    #[inline]
+    fn elapsed_micros_exact(&self) -> u64 {
+        self.base_instant
+            .elapsed()
+            .as_micros()
+            .min(u64::MAX as u128) as u64
+    }
+
+    #[inline]
+    fn refresh_exact(&self) -> u64 {
+        let micros = self.elapsed_micros_exact();
+        self.elapsed_micros.store(micros, Ordering::Relaxed);
+        micros
+    }
+
+    #[inline]
+    fn micros(&self) -> u64 {
+        self.elapsed_micros.load(Ordering::Relaxed)
+    }
+}
+
+#[inline]
+fn cached_monotonic_micros() -> u64 {
+    CachedMonotonicClock::global().micros()
+}
 
 thread_local! {
     static REQUEST_EXECUTION_CONTEXT: Cell<RequestExecutionContext> = const {
@@ -5712,6 +5767,17 @@ impl RequestProcessor {
         duration: Duration,
         client_id: Option<ClientId>,
     ) {
+        let duration_micros = duration.as_micros().min(i64::MAX as u128) as u64;
+        self.record_slowlog_command_duration_micros(args, command, duration_micros, client_id);
+    }
+
+    fn record_slowlog_command_duration_micros(
+        &self,
+        args: &[&[u8]],
+        command: CommandId,
+        duration_micros: u64,
+        client_id: Option<ClientId>,
+    ) {
         let threshold_micros = self.slowlog_threshold_micros();
         if threshold_micros < 0 {
             return;
@@ -5723,7 +5789,7 @@ impl RequestProcessor {
         if should_skip_slowlog_for_command(command, args) {
             return;
         }
-        let duration_micros = duration.as_micros().min(i64::MAX as u128) as i64;
+        let duration_micros = duration_micros.min(i64::MAX as u64) as i64;
         if duration_micros < threshold_micros {
             return;
         }
@@ -7583,7 +7649,7 @@ impl RequestProcessor {
         let command = dispatch_command_name(args[0]);
         let subcommand = args.get(1).copied();
         let command_mutating = command_is_effectively_mutating(command, subcommand);
-        let slowlog_started_at = Instant::now();
+        let slowlog_started_at_micros = cached_monotonic_micros();
         if self.command_rejected_while_script_busy(command, subcommand)? {
             return Err(RequestExecutionError::BusyScript);
         }
@@ -7897,10 +7963,10 @@ impl RequestProcessor {
             self.emit_tracking_invalidations_for_keys(&invalidated_keys);
         }
         if !is_slowlog_blocking_command(command) {
-            self.record_slowlog_command(
+            self.record_slowlog_command_duration_micros(
                 args,
                 command,
-                slowlog_started_at.elapsed(),
+                cached_monotonic_micros().saturating_sub(slowlog_started_at_micros),
                 current_request_client_id(),
             );
         }

@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=head
+new_label=cached_slowlog
+head.median_set_ops=244760.000
+head.median_get_ops=337316.000
+head.median_set_p99_ms=4.41500
+head.median_get_p99_ms=3.10300
+cached_slowlog.median_set_ops=260505.000
+cached_slowlog.median_get_ops=344879.000
+cached_slowlog.median_set_p99_ms=4.03100
+cached_slowlog.median_get_p99_ms=3.03900
+delta.set_ops_pct=6.43
+delta.get_ops_pct=2.24
+delta.set_p99_ms_pct=-8.70
+delta.get_p99_ms_pct=-2.06
