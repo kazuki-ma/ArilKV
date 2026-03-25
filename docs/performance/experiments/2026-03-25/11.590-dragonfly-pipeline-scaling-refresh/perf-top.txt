@@ -1,0 +1,39 @@
+Primary sweep
+
+PIPELINE=1
+- Garnet SET: `19.77% __wake_up_sync_key`
+- Garnet GET: `9.86% __wake_up_sync_key`
+- Dragonfly SET: `19.19% __wake_up_sync_key`
+- Dragonfly GET: `21.21% __wake_up_sync_key`
+
+PIPELINE=4
+- Garnet SET: `7.32% __kernel_clock_gettime`
+- Garnet GET: `22.22% __kernel_clock_gettime`
+- Dragonfly SET: `7.50% __wake_up_sync_key`
+- Dragonfly GET: `10.26% __kernel_clock_gettime`
+
+PIPELINE=16
+- Garnet SET: `22.58% __kernel_clock_gettime`
+- Garnet GET: `25.00% __kernel_clock_gettime`
+- Dragonfly SET: `11.11% dfly::LockTagOptions::instance()`
+- Dragonfly GET: `11.76% __wake_up_sync_key`
+
+PIPELINE=64
+- Garnet SET: `18.18% malloc`
+- Garnet GET: `27.27% __kernel_clock_gettime`
+- Dragonfly SET: `25.00% dfly::DbSlice::AddOrFindInternal(...)`
+- Dragonfly GET: `15.38% __kernel_clock_gettime`
+
+Tie-break reruns
+
+PIPELINE=16 rerun
+- Garnet SET: `13.33% tsavorite::hash_index::HashIndex::find_tag_entry`
+- Garnet GET: `22.22% __wake_up_sync_key`
+- Dragonfly SET: `22.22% __kernel_clock_gettime`
+- Dragonfly GET: `11.76% __kernel_clock_gettime`
+
+PIPELINE=64 rerun
+- Garnet SET: `13.04% core::ops::function::FnOnce::call_once`
+- Garnet GET: `25.00% __kernel_clock_gettime`
+- Dragonfly SET: `8.33% __wake_up_sync_key`
+- Dragonfly GET: `16.67% dfly::MultiCommandSquasher::TrySquash(...)`

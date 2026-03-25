@@ -1,0 +1,17 @@
+Pipeline sweep, Garnet vs Dragonfly
+
+Primary sweep:
+- PIPELINE=1:  SET +91.01%, GET +103.23%, SET p99 -31.07%, GET p99 -25.26%
+- PIPELINE=4:  SET +84.36%, GET +134.29%, SET p99 -44.76%, GET p99 -44.76%
+- PIPELINE=16: SET -2.05%, GET +41.30%, SET p99 +30.92%, GET p99 -5.03%
+- PIPELINE=64: SET -30.58%, GET +5.80%, SET p99 +29.91%, GET p99 -21.36%
+
+Tie-break reruns:
+- PIPELINE=16: SET -4.46%, GET +37.67%, SET p99 +16.08%, GET p99 -20.78%
+- PIPELINE=64: SET -36.94%, GET -3.02%, SET p99 +118.67%, GET p99 +1.86%
+
+Trend:
+- Garnet clearly leads at low pipeline.
+- GET keeps an advantage longer than SET.
+- SET reaches parity around PIPELINE=16, then Dragonfly leads at PIPELINE=64.
+- GET is roughly parity by PIPELINE=64.
