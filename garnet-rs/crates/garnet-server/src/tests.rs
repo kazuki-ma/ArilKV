@@ -1,4 +1,5 @@
 use super::*;
+use crate::RequestTimeSnapshot;
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::RespProtocolVersion;
 use crate::server_runtime::apply_startup_config_overrides_to_processor;
@@ -20319,6 +20320,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
     let routed_set = execute_owned_frame_args_via_processor(
         &processor,
         &set_owned_args,
+        RequestTimeSnapshot::capture(),
         false,
         false,
         None,
@@ -20333,6 +20335,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
     let routed_get = execute_owned_frame_args_via_processor(
         &processor,
         &get_owned_args,
+        RequestTimeSnapshot::capture(),
         false,
         false,
         None,

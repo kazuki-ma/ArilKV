@@ -32,6 +32,7 @@ use crate::ClientKillFilter;
 use crate::ClientTypeFilter;
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
+use crate::RequestTimeSnapshot;
 use crate::ServerMetrics;
 use crate::ShardOwnerThreadPool;
 use crate::command_dispatch::dispatch_from_arg_slices;
@@ -2676,6 +2677,7 @@ async fn execute_frame_on_owner_thread_async(
     args: &[ArgSlice],
     command: CommandId,
     frame: &[u8],
+    request_time_snapshot: RequestTimeSnapshot,
     client_no_touch: bool,
     client_tracks_reads: bool,
     client_id: Option<ClientId>,
@@ -2689,6 +2691,7 @@ async fn execute_frame_on_owner_thread_async(
             execute_owned_frame_args_via_processor(
                 &task_processor,
                 &owned_args,
+                request_time_snapshot,
                 client_no_touch,
                 client_tracks_reads,
                 client_id,
@@ -2706,6 +2709,7 @@ async fn execute_frame_on_owner_thread_async(
         args,
         command,
         frame,
+        request_time_snapshot,
         client_no_touch,
         client_tracks_reads,
         client_id,
@@ -2954,12 +2958,14 @@ async fn execute_blocking_frame_on_owner_thread(
 
         let pre_string_len =
             pre_string_len_for_mutation_detection(processor, command, args, selected_db);
+        let request_time_snapshot = RequestTimeSnapshot::capture();
         let owned_execution = match execute_frame_on_owner_thread_async(
             processor,
             owner_thread_pool,
             args,
             command,
             frame,
+            request_time_snapshot,
             client_no_touch,
             client_tracks_reads,
             Some(client_id),

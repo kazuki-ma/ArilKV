@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::CommandId;
+use crate::RequestTimeSnapshot;
 use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_is_write_pause_affected;
 use crate::command_spec::eval_script_shebang_flags;
@@ -842,15 +843,8 @@ impl RequestProcessor {
         if running_script.is_some() {
             return Err(RequestExecutionError::BusyScript);
         }
-        let frozen_unix_micros = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_micros()).ok())
-            .unwrap_or(0);
-        let frozen_time = ScriptTimeSnapshot {
-            unix_micros: frozen_unix_micros,
-            instant: Instant::now(),
-        };
+        let frozen_time =
+            current_request_time_snapshot().unwrap_or_else(RequestTimeSnapshot::capture);
         // TLA+ : BeginScriptCriticalSection
         self.script_kill_requested.store(false, Ordering::Release);
         self.function_kill_requested.store(false, Ordering::Release);
@@ -858,7 +852,7 @@ impl RequestProcessor {
             kind,
             name: name.to_string(),
             command,
-            started_at: Instant::now(),
+            started_at: frozen_time.instant,
             frozen_time,
             thread_id: std::thread::current().id(),
         });

@@ -100,9 +100,12 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tokio::sync::broadcast;
 
 use crate::request_lifecycle::DbName;
+use crate::request_lifecycle::current_request_instant;
 
 #[cfg(test)]
 use garnet_common::ArgSlice;
@@ -123,6 +126,33 @@ pub struct ServerConfig {
     pub bind_addr: SocketAddr,
     pub read_buffer_size: usize,
     pub startup_config_overrides: StartupConfigOverrides,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestTimeSnapshot {
+    pub(crate) unix_micros: u64,
+    pub(crate) instant: Instant,
+}
+
+impl RequestTimeSnapshot {
+    #[inline]
+    pub(crate) fn capture() -> Self {
+        let instant = Instant::now();
+        let unix_micros = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_micros()).ok())
+            .unwrap_or(0);
+        Self {
+            unix_micros,
+            instant,
+        }
+    }
+}
+
+#[inline]
+fn current_request_activity_instant() -> Instant {
+    current_request_instant().unwrap_or_else(Instant::now)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -706,7 +736,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.name = name;
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -760,7 +790,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.blocked = blocked;
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -777,7 +807,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.user = user;
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -786,7 +816,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.authenticated = authenticated;
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -854,7 +884,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.library_name = value;
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -863,7 +893,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.library_version = value;
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -872,7 +902,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.total_input_bytes = client.total_input_bytes.saturating_add(bytes);
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -883,11 +913,12 @@ impl ServerMetrics {
         command_name: &[u8],
         subcommand_name: Option<&[u8]>,
     ) {
+        let now = current_request_activity_instant();
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.total_input_bytes = client.total_input_bytes.saturating_add(bytes);
-            client.last_activity = Instant::now();
+            client.last_activity = now;
 
             let subcommand = subcommand_name.filter(|value| !value.is_empty());
             let required_len = command_name.len() + subcommand.map_or(0, |value| value.len() + 1);
@@ -914,7 +945,7 @@ impl ServerMetrics {
         if bytes == 0 {
             return;
         }
-        let now = Instant::now();
+        let now = current_request_activity_instant();
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
         {
@@ -963,7 +994,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.selected_db = selected_db;
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -1008,7 +1039,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.replica_listen_port = Some(port);
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -1025,7 +1056,7 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.client_type = client_type;
-            client.last_activity = Instant::now();
+            client.last_activity = current_request_activity_instant();
         }
     }
 
@@ -1085,7 +1116,7 @@ impl ServerMetrics {
         let Ok(mut clients) = self.clients.lock() else {
             return Vec::new();
         };
-        let now = Instant::now();
+        let now = current_request_activity_instant();
         let mut killed = Vec::new();
         for (client_id, client) in clients.iter_mut() {
             if client.killed {
@@ -1147,7 +1178,7 @@ impl ServerMetrics {
         let Ok(mut clients) = self.clients.lock() else {
             return None;
         };
-        let now = Instant::now();
+        let now = current_request_activity_instant();
         let settings = self.reply_buffer_settings_snapshot();
         let client = clients.get_mut(&client_id)?;
         if client.killed {
@@ -1169,7 +1200,7 @@ impl ServerMetrics {
             return Vec::new();
         };
         let mut out = Vec::new();
-        let now = Instant::now();
+        let now = current_request_activity_instant();
         let settings = self.reply_buffer_settings_snapshot();
         for (id, client) in clients.iter_mut() {
             if client.killed {

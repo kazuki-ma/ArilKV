@@ -15,6 +15,7 @@ use crate::AclSelectorProfile;
 use crate::AclUserProfile;
 use crate::ClientId;
 use crate::CommandId;
+use crate::RequestTimeSnapshot;
 use crate::aof_durability::AppendFsyncPolicy;
 use crate::aof_durability::LiveAofDurabilityConfig;
 use crate::aof_durability::LiveAofDurabilityRuntime;
@@ -185,6 +186,9 @@ thread_local! {
     static EXPIRED_DATA_ACCESS_OVERRIDE: Cell<bool> = const {
         Cell::new(false)
     };
+    static REQUEST_TIME_SNAPSHOT: Cell<Option<RequestTimeSnapshot>> = const {
+        Cell::new(None)
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,12 +270,6 @@ struct RequestExecutionContext {
     connection_effects: RequestConnectionEffects,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ScriptTimeSnapshot {
-    unix_micros: u64,
-    instant: Instant,
-}
-
 #[derive(Default, Clone, Copy)]
 struct ExpirationStats {
     expired_keys: u64,
@@ -284,6 +282,10 @@ struct RequestExecutionContextScope {
 
 struct CurrentProcessorScope {
     previous: *const RequestProcessor,
+}
+
+pub(crate) struct RequestTimeSnapshotScope {
+    previous: Option<RequestTimeSnapshot>,
 }
 
 impl RequestExecutionContextScope {
@@ -310,9 +312,39 @@ impl CurrentProcessorScope {
     }
 }
 
+impl RequestTimeSnapshotScope {
+    #[inline]
+    pub(crate) fn enter(snapshot: RequestTimeSnapshot) -> Self {
+        let previous = REQUEST_TIME_SNAPSHOT.with(|state| {
+            let previous = state.get();
+            state.set(Some(snapshot));
+            previous
+        });
+        Self { previous }
+    }
+
+    #[inline]
+    pub(crate) fn enter_if_missing_with(capture: impl FnOnce() -> RequestTimeSnapshot) -> Self {
+        let previous = REQUEST_TIME_SNAPSHOT.with(|state| {
+            let previous = state.get();
+            if previous.is_none() {
+                state.set(Some(capture()));
+            }
+            previous
+        });
+        Self { previous }
+    }
+}
+
 impl Drop for CurrentProcessorScope {
     fn drop(&mut self) {
         CURRENT_PROCESSOR_PTR.with(|state| state.set(self.previous));
+    }
+}
+
+impl Drop for RequestTimeSnapshotScope {
+    fn drop(&mut self) {
+        REQUEST_TIME_SNAPSHOT.with(|state| state.set(self.previous));
     }
 }
 
@@ -350,6 +382,18 @@ fn current_request_tracking_reads_enabled() -> bool {
 #[inline]
 fn current_request_connection_effects() -> RequestConnectionEffects {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().connection_effects)
+}
+
+#[inline]
+pub(crate) fn current_request_instant() -> Option<Instant> {
+    REQUEST_TIME_SNAPSHOT
+        .with(|state| state.get())
+        .map(|snapshot| snapshot.instant)
+}
+
+#[inline]
+pub(crate) fn current_request_time_snapshot() -> Option<RequestTimeSnapshot> {
+    REQUEST_TIME_SNAPSHOT.with(|state| state.get())
 }
 
 #[inline]
@@ -1751,7 +1795,7 @@ struct RunningScriptState {
     name: String,
     command: String,
     started_at: Instant,
-    frozen_time: ScriptTimeSnapshot,
+    frozen_time: RequestTimeSnapshot,
     thread_id: std::thread::ThreadId,
 }
 
@@ -6318,7 +6362,7 @@ impl RequestProcessor {
         Some(state.kind)
     }
 
-    fn current_script_time_snapshot(&self) -> Option<ScriptTimeSnapshot> {
+    fn current_script_time_snapshot(&self) -> Option<RequestTimeSnapshot> {
         let running_script = self.running_script.lock().ok()?;
         let state = running_script.as_ref()?;
         if state.thread_id != std::thread::current().id() {
@@ -7407,6 +7451,8 @@ impl RequestProcessor {
         in_transaction: bool,
         selected_db: DbName,
     ) -> Result<RequestExecutionEffects, RequestExecutionError> {
+        let _request_time_scope =
+            RequestTimeSnapshotScope::enter_if_missing_with(RequestTimeSnapshot::capture);
         let scope = RequestExecutionContextScope::enter(RequestExecutionContext {
             client_no_touch,
             client_id,
@@ -9723,17 +9769,20 @@ fn current_unix_time_micros() -> Option<u64> {
     if let Some(snapshot) = current_script_time_snapshot() {
         return Some(snapshot.unix_micros);
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
-    u64::try_from(now.as_micros()).ok()
+    if let Some(snapshot) = current_request_time_snapshot() {
+        return Some(snapshot.unix_micros);
+    }
+    Some(RequestTimeSnapshot::capture().unix_micros)
 }
 
 fn current_instant() -> Instant {
     current_script_time_snapshot()
+        .or_else(current_request_time_snapshot)
         .map(|snapshot| snapshot.instant)
         .unwrap_or_else(Instant::now)
 }
 
-fn current_script_time_snapshot() -> Option<ScriptTimeSnapshot> {
+fn current_script_time_snapshot() -> Option<RequestTimeSnapshot> {
     let processor_ptr = CURRENT_PROCESSOR_PTR.with(|state| state.get());
     if processor_ptr.is_null() {
         return None;

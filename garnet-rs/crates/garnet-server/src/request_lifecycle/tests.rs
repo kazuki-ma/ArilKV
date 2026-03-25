@@ -1,4 +1,5 @@
 use super::*;
+use crate::RequestTimeSnapshot;
 use crate::aof_durability::AppendFsyncPolicy;
 use crate::debug_concurrency;
 use crate::testkit::CommandHarnessError;
@@ -16,10 +17,12 @@ use garnet_cluster::Worker;
 use garnet_cluster::WorkerRole;
 use garnet_common::parse_resp_command_arg_slices;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use std::time::Instant;
 use tsavorite::DeleteOperationError;
 use tsavorite::ISessionFunctions;
 use tsavorite::PageManagerError;
@@ -56,6 +59,39 @@ fn configure_test_aof_path(processor: &RequestProcessor, prefix: &str) -> PathBu
     processor.set_config_value(b"dir", dir.to_string_lossy().into_owned().into_bytes());
     processor.set_config_value(b"appendfilename", format!("{prefix}.aof").into_bytes());
     dir
+}
+
+#[test]
+fn request_time_snapshot_scope_reuses_fixed_time_within_request_helpers() {
+    let fixed_snapshot = RequestTimeSnapshot {
+        unix_micros: 123_456_789,
+        instant: Instant::now(),
+    };
+    let _scope = RequestTimeSnapshotScope::enter(fixed_snapshot);
+
+    assert_eq!(current_request_time_snapshot(), Some(fixed_snapshot));
+    assert_eq!(current_unix_time_micros(), Some(fixed_snapshot.unix_micros));
+    assert_eq!(current_instant(), fixed_snapshot.instant);
+}
+
+#[test]
+fn request_time_snapshot_scope_enter_if_missing_with_is_lazy_when_scope_exists() {
+    let fixed_snapshot = RequestTimeSnapshot {
+        unix_micros: 123_456_789,
+        instant: Instant::now(),
+    };
+    let _scope = RequestTimeSnapshotScope::enter(fixed_snapshot);
+    let captured = Cell::new(false);
+    let _nested_scope = RequestTimeSnapshotScope::enter_if_missing_with(|| {
+        captured.set(true);
+        RequestTimeSnapshot {
+            unix_micros: 987_654_321,
+            instant: Instant::now(),
+        }
+    });
+
+    assert!(!captured.get());
+    assert_eq!(current_request_time_snapshot(), Some(fixed_snapshot));
 }
 
 fn parse_integer_array_response(response: &[u8]) -> Vec<i64> {

@@ -6,6 +6,7 @@ mod protocol;
 
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
+use crate::RequestTimeSnapshot;
 use crate::ServerMetrics;
 use crate::ShardOwnerThreadPool;
 use crate::command_spec::command_is_effectively_mutating;
@@ -1418,6 +1419,7 @@ async fn process_upstream_frame(
         args,
         command_id,
         frame,
+        RequestTimeSnapshot::capture(),
         false,
         false,
         None,

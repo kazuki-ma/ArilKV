@@ -7,11 +7,13 @@ use crate::ClientId;
 use crate::CommandId;
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
+use crate::RequestTimeSnapshot;
 use crate::ShardOwnerThreadPool;
 use crate::connection_routing::owner_shard_for_command;
 use crate::request_lifecycle::DbName;
 use crate::request_lifecycle::DeferredReplicationFrame;
 use crate::request_lifecycle::RequestConnectionEffects;
+use crate::request_lifecycle::RequestTimeSnapshotScope;
 #[cfg(test)]
 const TEST_MAX_ROUTED_ARGUMENTS: usize = 1_048_576;
 
@@ -118,12 +120,14 @@ pub(crate) fn capture_owned_frame_args(
 pub(crate) fn execute_owned_frame_args_via_processor(
     processor: &RequestProcessor,
     owned_args: &OwnedFrameArgs,
+    request_time_snapshot: RequestTimeSnapshot,
     client_no_touch: bool,
     client_tracks_reads: bool,
     client_id: Option<ClientId>,
     selected_db: DbName,
 ) -> Result<OwnedExecutionOutcome, RoutedExecutionError> {
     let args = parse_owned_frame_args(owned_args)?;
+    let _request_time_scope = RequestTimeSnapshotScope::enter(request_time_snapshot);
 
     let mut response = Vec::new();
     let execution_effects = processor
@@ -150,12 +154,14 @@ pub(crate) fn execute_frame_on_owner_thread(
     args: &[ArgSlice],
     command: CommandId,
     frame: &[u8],
+    request_time_snapshot: RequestTimeSnapshot,
     client_no_touch: bool,
     client_tracks_reads: bool,
     client_id: Option<ClientId>,
     selected_db: DbName,
 ) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
     if owner_thread_pool.is_inline_execution() {
+        let _request_time_scope = RequestTimeSnapshotScope::enter(request_time_snapshot);
         let mut response = Vec::new();
         let execution_effects = processor
             .execute_with_client_tracking_context_and_effects_in_db(
@@ -183,6 +189,7 @@ pub(crate) fn execute_frame_on_owner_thread(
             execute_owned_frame_args_via_processor(
                 &routed_processor,
                 &owned_args,
+                request_time_snapshot,
                 client_no_touch,
                 client_tracks_reads,
                 client_id,
