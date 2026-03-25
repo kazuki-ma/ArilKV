@@ -1,0 +1,22 @@
+11.591 Dragonfly multithread client pipeline-4 refresh
+
+Question:
+- What happens if the client is multi-threaded while PIPELINE=4, keeping the
+  server on the same owner-inline single-thread shape?
+
+Answer:
+- Dragonfly wins clearly in this shape.
+- Garnet SET: 139981.45 ops/sec, p99 8.767 ms
+- Garnet GET: 285733.77 ops/sec, p99 2.991 ms
+- Dragonfly SET: 393218.88 ops/sec, p99 2.767 ms
+- Dragonfly GET: 435444.43 ops/sec, p99 1.895 ms
+
+Relative:
+- SET -64.40%
+- GET -34.38%
+- SET p99 +216.84%
+- GET p99 +57.84%
+
+Interpretation:
+- The earlier low-parallelism lead does not hold once the client becomes highly
+  parallel while the server remains single-lane owner-inline.

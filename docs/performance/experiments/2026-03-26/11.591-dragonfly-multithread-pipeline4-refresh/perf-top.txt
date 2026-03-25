@@ -1,0 +1,6 @@
+Matched Docker/Linux, multi-thread client, PIPELINE=4
+
+- Garnet SET: `14.12% __wake_up_sync_key`
+- Garnet GET: `18.09% __wake_up_sync_key`
+- Dragonfly SET: `8.50% dfly::DbSlice::AutoUpdater::AutoUpdater(...)`
+- Dragonfly GET: `7.85% _mi_stat_increase`
