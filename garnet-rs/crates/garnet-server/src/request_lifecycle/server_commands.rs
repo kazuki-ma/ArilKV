@@ -1314,6 +1314,7 @@ fn append_info_sections_from_token(sections: &mut Vec<InfoSection>, token: &[u8]
 impl RequestProcessor {
     pub(super) fn handle_quit(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1324,6 +1325,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_time(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1338,6 +1340,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_ping(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1362,6 +1365,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_echo(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1372,6 +1376,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hello(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1476,6 +1481,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_info(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1644,6 +1650,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lastsave(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1654,6 +1661,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_auth(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1682,6 +1690,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_select(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1693,6 +1702,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_move(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1730,6 +1740,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_swapdb(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1796,6 +1807,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_migrate(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1971,6 +1983,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_client(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2277,6 +2290,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_role(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2290,6 +2304,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_wait(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2336,6 +2351,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_waitaof(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2407,6 +2423,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_save(
         &self,
+        _ctx: CommandContext,
         _selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2421,6 +2438,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bgsave(
         &self,
+        _ctx: CommandContext,
         _selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2442,6 +2460,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bgrewriteaof(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2460,6 +2479,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_readonly(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2474,6 +2494,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_readwrite(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2488,6 +2509,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_reset(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2499,6 +2521,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lolwut(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2516,6 +2539,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_memory(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2606,6 +2630,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_dbsize(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2617,6 +2642,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_debug(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -3123,6 +3149,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_object(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -3257,6 +3284,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_keys(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -3306,6 +3334,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_randomkey(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -3360,6 +3389,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_scan(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -3495,6 +3525,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_command(
         &self,
+        ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -3518,10 +3549,10 @@ impl RequestProcessor {
             return Ok(());
         }
         if ascii_eq_ignore_case(args[1], b"LIST") {
-            return self.handle_command_list(args, response_out);
+            return self.handle_command_list(ctx, args, response_out);
         }
         if ascii_eq_ignore_case(args[1], b"INFO") {
-            return self.handle_command_info(args, response_out);
+            return self.handle_command_info(ctx, args, response_out);
         }
         if ascii_eq_ignore_case(args[1], b"DOCS") {
             // An empty COMMAND DOCS table is treated as authoritative by redis-cli
@@ -3530,10 +3561,10 @@ impl RequestProcessor {
             return Err(RequestExecutionError::UnknownSubcommand);
         }
         if ascii_eq_ignore_case(args[1], b"GETKEYS") {
-            return self.handle_command_getkeys(args, response_out);
+            return self.handle_command_getkeys(ctx, args, response_out);
         }
         if ascii_eq_ignore_case(args[1], b"GETKEYSANDFLAGS") {
-            return self.handle_command_getkeysandflags(args, response_out);
+            return self.handle_command_getkeysandflags(ctx, args, response_out);
         }
 
         Err(RequestExecutionError::UnknownSubcommand)
@@ -3541,6 +3572,7 @@ impl RequestProcessor {
 
     fn handle_command_list(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -3595,6 +3627,7 @@ impl RequestProcessor {
 
     fn handle_command_info(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -3676,6 +3709,7 @@ impl RequestProcessor {
 
     fn handle_command_getkeys(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -3789,6 +3823,7 @@ impl RequestProcessor {
 
     fn handle_command_getkeysandflags(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -3986,6 +4021,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_dump(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -4013,6 +4049,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_restore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -4022,6 +4059,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_restore_asking(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -4031,6 +4069,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_latency(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4190,6 +4229,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_module(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4228,6 +4268,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_slowlog(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4292,6 +4333,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_acl(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -4578,6 +4620,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_cluster(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -4730,6 +4773,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_failover(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4839,6 +4883,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_subscribe(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4855,6 +4900,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_psubscribe(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4871,6 +4917,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_ssubscribe(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4892,6 +4939,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_unsubscribe(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4913,6 +4961,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_punsubscribe(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4934,6 +4983,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sunsubscribe(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4955,6 +5005,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_publish(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4966,6 +5017,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_spublish(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4976,6 +5028,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pubsub(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -5031,6 +5084,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_monitor(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -5041,6 +5095,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_shutdown(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -5069,6 +5124,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_config(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -5876,6 +5932,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_flushdb(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -5893,6 +5950,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_flushall(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {

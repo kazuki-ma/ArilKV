@@ -129,6 +129,7 @@ impl Default for GeoRadiusOptions {
 impl RequestProcessor {
     pub(super) fn handle_geoadd(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -218,6 +219,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_geopos(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -265,6 +267,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_geodist(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -345,6 +348,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_geohash(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -383,11 +387,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_georadius(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_georadius_common(
+            ctx,
             selected_db,
             args,
             response_out,
@@ -399,11 +405,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_georadius_ro(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_georadius_common(
+            ctx,
             selected_db,
             args,
             response_out,
@@ -415,11 +423,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_georadiusbymember(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_georadiusbymember_common(
+            ctx,
             selected_db,
             args,
             response_out,
@@ -431,11 +441,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_georadiusbymember_ro(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_georadiusbymember_common(
+            ctx,
             selected_db,
             args,
             response_out,
@@ -447,6 +459,7 @@ impl RequestProcessor {
 
     fn handle_georadius_common(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -500,6 +513,7 @@ impl RequestProcessor {
 
     fn handle_georadiusbymember_common(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -546,6 +560,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_geosearch(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -567,6 +582,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_geosearchstore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,

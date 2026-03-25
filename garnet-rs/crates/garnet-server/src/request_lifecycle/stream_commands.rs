@@ -40,6 +40,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xadd(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -119,6 +120,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xdel(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -154,6 +156,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xdelex(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -217,6 +220,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xgroup(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -400,6 +404,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xreadgroup(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -570,6 +575,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xread(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -706,6 +712,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xack(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -740,6 +747,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xackdel(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -823,6 +831,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xpending(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -955,6 +964,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xclaim(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1147,6 +1157,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xautoclaim(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1313,6 +1324,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xsetid(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1364,6 +1376,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xinfo(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1392,11 +1405,11 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"GROUPS") {
             require_exact_arity(args, 3, "XINFO", "XINFO GROUPS key")?;
-            return self.handle_xinfo_groups(selected_db, args, response_out);
+            return self.handle_xinfo_groups(ctx, selected_db, args, response_out);
         }
         if ascii_eq_ignore_case(subcommand, b"CONSUMERS") {
             require_exact_arity(args, 4, "XINFO", "XINFO CONSUMERS key group")?;
-            return self.handle_xinfo_consumers(selected_db, args, response_out);
+            return self.handle_xinfo_consumers(ctx, selected_db, args, response_out);
         }
 
         if !ascii_eq_ignore_case(subcommand, b"STREAM") {
@@ -1475,6 +1488,7 @@ impl RequestProcessor {
 
     fn handle_xinfo_groups(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1516,6 +1530,7 @@ impl RequestProcessor {
 
     fn handle_xinfo_consumers(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1557,6 +1572,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xlen(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1572,6 +1588,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xrange(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1609,6 +1626,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xrevrange(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1646,6 +1664,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xtrim(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1682,6 +1701,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xcfgset(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,

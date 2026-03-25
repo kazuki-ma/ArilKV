@@ -6,6 +6,7 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_lpush(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -26,6 +27,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpush(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -46,24 +48,34 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpop(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_pop_like(selected_db, args, response_out, ListSide::Left, "LPOP")
+        self.handle_pop_like(ctx, selected_db, args, response_out, ListSide::Left, "LPOP")
     }
 
     pub(super) fn handle_rpop(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_pop_like(selected_db, args, response_out, ListSide::Right, "RPOP")
+        self.handle_pop_like(
+            ctx,
+            selected_db,
+            args,
+            response_out,
+            ListSide::Right,
+            "RPOP",
+        )
     }
 
     fn handle_pop_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -184,6 +196,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lrange(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -235,6 +248,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_llen(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -252,6 +266,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lindex(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -286,6 +301,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpos(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -375,6 +391,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lset(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -417,6 +434,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_ltrim(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -477,6 +495,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpushx(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -499,6 +518,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpushx(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -521,6 +541,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lrem(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -587,6 +608,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_linsert(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -624,6 +646,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lmove(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -641,6 +664,7 @@ impl RequestProcessor {
             parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
 
         self.handle_lmove_like(
+            ctx,
             selected_db,
             &source,
             &destination,
@@ -652,6 +676,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpoplpush(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -661,6 +686,7 @@ impl RequestProcessor {
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
         self.handle_lmove_like(
+            ctx,
             selected_db,
             &source,
             &destination,
@@ -672,6 +698,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lmpop(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -689,11 +716,19 @@ impl RequestProcessor {
         let side = parse_list_side(args[parsed_keys.option_start])
             .ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, parsed_keys.option_start + 1)?;
-        self.handle_lmpop_like(selected_db, &parsed_keys.keys, side, count, response_out)
+        self.handle_lmpop_like(
+            ctx,
+            selected_db,
+            &parsed_keys.keys,
+            side,
+            count,
+            response_out,
+        )
     }
 
     pub(super) fn handle_blmpop(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -712,11 +747,19 @@ impl RequestProcessor {
         let side = parse_list_side(args[parsed_keys.option_start])
             .ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, parsed_keys.option_start + 1)?;
-        self.handle_lmpop_like(selected_db, &parsed_keys.keys, side, count, response_out)
+        self.handle_lmpop_like(
+            ctx,
+            selected_db,
+            &parsed_keys.keys,
+            side,
+            count,
+            response_out,
+        )
     }
 
     pub(super) fn handle_blpop(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -728,11 +771,12 @@ impl RequestProcessor {
             .iter()
             .map(|key| key.to_vec())
             .collect::<Vec<_>>();
-        self.handle_blocking_pop_like(selected_db, &keys, ListSide::Left, response_out)
+        self.handle_blocking_pop_like(ctx, selected_db, &keys, ListSide::Left, response_out)
     }
 
     pub(super) fn handle_brpop(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -744,11 +788,12 @@ impl RequestProcessor {
             .iter()
             .map(|key| key.to_vec())
             .collect::<Vec<_>>();
-        self.handle_blocking_pop_like(selected_db, &keys, ListSide::Right, response_out)
+        self.handle_blocking_pop_like(ctx, selected_db, &keys, ListSide::Right, response_out)
     }
 
     pub(super) fn handle_blmove(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -766,6 +811,7 @@ impl RequestProcessor {
             parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
         parse_blocking_timeout_seconds(args, 5)?;
         self.handle_lmove_like(
+            ctx,
             selected_db,
             &source,
             &destination,
@@ -777,6 +823,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_brpoplpush(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -791,6 +838,7 @@ impl RequestProcessor {
         let destination = RedisKey::from(args[2]);
         parse_blocking_timeout_seconds(args, 3)?;
         self.handle_lmove_like(
+            ctx,
             selected_db,
             &source,
             &destination,
@@ -802,6 +850,7 @@ impl RequestProcessor {
 
     fn handle_lmove_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         source: &[u8],
         destination: &[u8],
@@ -867,6 +916,7 @@ impl RequestProcessor {
 
     fn handle_blocking_pop_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         keys: &[Vec<u8>],
         side: ListSide,
@@ -891,6 +941,7 @@ impl RequestProcessor {
 
     fn handle_lmpop_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         keys: &[Vec<u8>],
         side: ListSide,

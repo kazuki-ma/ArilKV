@@ -4,6 +4,7 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_zadd(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -112,6 +113,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrem(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -152,6 +154,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrange(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -188,6 +191,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrevrange(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -241,24 +245,27 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangebyscore(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrangebyscore_like(selected_db, args, response_out, false)
+        self.handle_zrangebyscore_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_zrevrangebyscore(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrangebyscore_like(selected_db, args, response_out, true)
+        self.handle_zrangebyscore_like(ctx, selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_zscore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -302,6 +309,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zcard(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -319,6 +327,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zcount(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -347,6 +356,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zlexcount(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -370,24 +380,27 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangebylex(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrangebylex_like(selected_db, args, response_out, false)
+        self.handle_zrangebylex_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_zrevrangebylex(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrangebylex_like(selected_db, args, response_out, true)
+        self.handle_zrangebylex_like(ctx, selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_zremrangebylex(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -430,6 +443,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zintercard(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -486,6 +500,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zdiff(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -506,6 +521,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zdiffstore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -529,6 +545,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zinter(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -565,6 +582,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zinterstore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -597,6 +615,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zunion(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -633,6 +652,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zunionstore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -665,6 +685,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zmpop(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -678,6 +699,7 @@ impl RequestProcessor {
         let parsed_keys = parse_zmpop_numkeys_and_keys(args, 1)?;
         let pop_options = parse_zmpop_direction_and_count(args, parsed_keys.option_start)?;
         self.handle_zmpop_like(
+            ctx,
             selected_db,
             &parsed_keys.keys,
             pop_options.pop_max,
@@ -688,6 +710,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bzmpop(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -702,6 +725,7 @@ impl RequestProcessor {
         let parsed_keys = parse_zmpop_numkeys_and_keys(args, 2)?;
         let pop_options = parse_zmpop_direction_and_count(args, parsed_keys.option_start)?;
         self.handle_zmpop_like(
+            ctx,
             selected_db,
             &parsed_keys.keys,
             pop_options.pop_max,
@@ -712,6 +736,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangestore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -742,6 +767,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zscan(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -784,24 +810,27 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrank(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrank_like(selected_db, args, response_out, false)
+        self.handle_zrank_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_zrevrank(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrank_like(selected_db, args, response_out, true)
+        self.handle_zrank_like(ctx, selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_zincrby(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -833,6 +862,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zremrangebyrank(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -876,6 +906,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zremrangebyscore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -918,6 +949,7 @@ impl RequestProcessor {
 
     fn handle_zrangebyscore_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -988,6 +1020,7 @@ impl RequestProcessor {
 
     fn handle_zrangebylex_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1062,6 +1095,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zmscore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1098,6 +1132,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrandmember(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1207,42 +1242,47 @@ impl RequestProcessor {
 
     pub(super) fn handle_zpopmin(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zpop_like(selected_db, args, response_out, false)
+        self.handle_zpop_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_zpopmax(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zpop_like(selected_db, args, response_out, true)
+        self.handle_zpop_like(ctx, selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_bzpopmin(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_bzpop_like(selected_db, args, response_out, false)
+        self.handle_bzpop_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_bzpopmax(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_bzpop_like(selected_db, args, response_out, true)
+        self.handle_bzpop_like(ctx, selected_db, args, response_out, true)
     }
 
     fn handle_zrank_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1321,6 +1361,7 @@ impl RequestProcessor {
 
     fn handle_zpop_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1392,6 +1433,7 @@ impl RequestProcessor {
 
     fn handle_bzpop_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1435,6 +1477,7 @@ impl RequestProcessor {
 
     fn handle_zmpop_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         keys: &[Vec<u8>],
         pop_max: bool,

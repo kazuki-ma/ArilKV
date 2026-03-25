@@ -3,6 +3,7 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_sadd(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -50,6 +51,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_srem(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -97,6 +99,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_smembers(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -132,6 +135,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sismember(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -155,6 +159,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_scard(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -177,6 +182,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sscan(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -254,6 +260,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_smismember(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -277,6 +284,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_srandmember(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -376,6 +384,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_spop(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -470,6 +479,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_smove(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -527,6 +537,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sunion(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -541,6 +552,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sinter(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -555,6 +567,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sintercard(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -611,6 +624,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sdiff(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -625,6 +639,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sunionstore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -645,6 +660,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sinterstore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -665,6 +681,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sdiffstore(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,

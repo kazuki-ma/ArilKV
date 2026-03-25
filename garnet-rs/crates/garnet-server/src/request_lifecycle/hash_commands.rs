@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 impl RequestProcessor {
     pub(super) fn handle_hset(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -23,9 +24,9 @@ impl RequestProcessor {
         let key = DbKeyRef::new(selected_db, args[1]);
         if !self.has_hash_field_expirations_for_key(key) {
             if args.len() == 4 {
-                self.handle_hset_single_field_fast_path(key, args[2], args[3], response_out)?;
+                self.handle_hset_single_field_fast_path(ctx, key, args[2], args[3], response_out)?;
             } else {
-                self.handle_hset_batch_fast_path(key, &args[2..], response_out)?;
+                self.handle_hset_batch_fast_path(ctx, key, &args[2..], response_out)?;
             }
             return Ok(());
         }
@@ -56,6 +57,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hget(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -104,6 +106,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hdel(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -113,9 +116,9 @@ impl RequestProcessor {
         let key = DbKeyRef::new(selected_db, args[1]);
         if !self.has_hash_field_expirations_for_key(key) {
             if args.len() == 3 {
-                self.handle_hdel_single_field_fast_path(key, args[2], response_out)?;
+                self.handle_hdel_single_field_fast_path(ctx, key, args[2], response_out)?;
             } else {
-                self.handle_hdel_batch_fast_path(key, &args[2..], response_out)?;
+                self.handle_hdel_batch_fast_path(ctx, key, &args[2..], response_out)?;
             }
             return Ok(());
         }
@@ -153,6 +156,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hgetall(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -221,6 +225,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hlen(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -238,6 +243,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hmget(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -272,6 +278,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hmset(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -286,7 +293,7 @@ impl RequestProcessor {
 
         let key = DbKeyRef::new(selected_db, args[1]);
         if !self.has_hash_field_expirations_for_key(key) {
-            self.handle_hmset_batch_fast_path(key, &args[2..], response_out)?;
+            self.handle_hmset_batch_fast_path(ctx, key, &args[2..], response_out)?;
             return Ok(());
         }
         let mut hash = self.load_hash_object(key)?.unwrap_or_default();
@@ -311,6 +318,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hsetnx(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -336,6 +344,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hexists(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -362,6 +371,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hkeys(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -385,6 +395,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hvals(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -408,6 +419,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hstrlen(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -434,6 +446,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hscan(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -513,6 +526,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hincrby(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -541,6 +555,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hincrbyfloat(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -575,6 +590,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hrandfield(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -714,6 +730,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hsetex(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -809,6 +826,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hgetex(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -910,6 +928,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hgetdel(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -974,6 +993,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hexpire(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1004,6 +1024,7 @@ impl RequestProcessor {
         )?;
         let key = DbKeyRef::new(selected_db, args[1]);
         self.handle_hash_field_expire_common(
+            ctx,
             key,
             parsed.fields,
             expiration_unix_millis,
@@ -1015,6 +1036,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hpexpire(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1042,6 +1064,7 @@ impl RequestProcessor {
         )?;
         let key = DbKeyRef::new(selected_db, args[1]);
         self.handle_hash_field_expire_common(
+            ctx,
             key,
             parsed.fields,
             expiration_unix_millis,
@@ -1053,6 +1076,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hpexpireat(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1073,6 +1097,7 @@ impl RequestProcessor {
         )?;
         let key = DbKeyRef::new(selected_db, args[1]);
         self.handle_hash_field_expire_common(
+            ctx,
             key,
             parsed.fields,
             expiration_unix_millis,
@@ -1084,6 +1109,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hexpireat(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1110,6 +1136,7 @@ impl RequestProcessor {
         )?;
         let key = DbKeyRef::new(selected_db, args[1]);
         self.handle_hash_field_expire_common(
+            ctx,
             key,
             parsed.fields,
             expiration_unix_millis,
@@ -1121,6 +1148,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hpersist(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1176,12 +1204,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_hpttl(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, "HPTTL", "HPTTL key FIELDS num field [field ...]")?;
         self.handle_hash_field_ttl_query(
+            ctx,
             selected_db,
             args,
             true,
@@ -1193,12 +1223,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_httl(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, "HTTL", "HTTL key FIELDS num field [field ...]")?;
         self.handle_hash_field_ttl_query(
+            ctx,
             selected_db,
             args,
             false,
@@ -1210,6 +1242,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hpexpiretime(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1221,6 +1254,7 @@ impl RequestProcessor {
             "HPEXPIRETIME key FIELDS num field [field ...]",
         )?;
         self.handle_hash_field_expiretime_query(
+            ctx,
             selected_db,
             args,
             true,
@@ -1232,6 +1266,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hexpiretime(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1243,6 +1278,7 @@ impl RequestProcessor {
             "HEXPIRETIME key FIELDS num field [field ...]",
         )?;
         self.handle_hash_field_expiretime_query(
+            ctx,
             selected_db,
             args,
             false,
@@ -1254,6 +1290,7 @@ impl RequestProcessor {
 
     fn handle_hash_field_ttl_query(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         as_millis: bool,
@@ -1302,6 +1339,7 @@ impl RequestProcessor {
 
     fn handle_hash_field_expiretime_query(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         as_millis: bool,
@@ -1430,6 +1468,7 @@ impl RequestProcessor {
     #[allow(clippy::too_many_arguments)]
     fn handle_hash_field_expire_common(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         fields: Vec<&[u8]>,
         expiration_unix_millis: u64,
@@ -1503,6 +1542,7 @@ impl RequestProcessor {
 
     fn handle_hset_batch_fast_path(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         field_values: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1545,6 +1585,7 @@ impl RequestProcessor {
 
     fn handle_hmset_batch_fast_path(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         field_values: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1587,6 +1628,7 @@ impl RequestProcessor {
 
     fn handle_hset_single_field_fast_path(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         field: &[u8],
         value: &[u8],
@@ -1624,6 +1666,7 @@ impl RequestProcessor {
 
     fn handle_hsetex_batch_fast_path(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         field_values: &[(&[u8], &[u8])],
         expire_options: &ParsedHashExpireOptions,
@@ -1702,6 +1745,7 @@ impl RequestProcessor {
 
     fn handle_hgetex_batch_fast_path(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         fields: &[&[u8]],
         expire_options: &ParsedHashExpireOptions,
@@ -1806,6 +1850,7 @@ impl RequestProcessor {
 
     fn handle_hdel_batch_fast_path(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         fields: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1860,6 +1905,7 @@ impl RequestProcessor {
 
     fn handle_hdel_single_field_fast_path(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         field: &[u8],
         response_out: &mut Vec<u8>,
@@ -1908,6 +1954,7 @@ impl RequestProcessor {
 
     fn handle_hgetdel_batch_fast_path(
         &self,
+        _ctx: CommandContext,
         key: DbKeyRef<'_>,
         fields: &[&[u8]],
         response_out: &mut Vec<u8>,

@@ -225,6 +225,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_strlen(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -278,24 +279,27 @@ impl RequestProcessor {
 
     pub(super) fn handle_getrange(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_getrange_like(selected_db, args, response_out, false)
+        self.handle_getrange_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_substr(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_getrange_like(selected_db, args, response_out, true)
+        self.handle_getrange_like(ctx, selected_db, args, response_out, true)
     }
 
     fn handle_getrange_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -359,6 +363,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_getbit(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -393,6 +398,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_setbit(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -463,6 +469,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_setrange(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -520,6 +527,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitcount(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -603,6 +611,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitpos(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -728,6 +737,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitop(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -800,24 +810,27 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitfield(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_bitfield_impl(selected_db, args, response_out, false)
+        self.handle_bitfield_impl(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_bitfield_ro(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_bitfield_impl(selected_db, args, response_out, true)
+        self.handle_bitfield_impl(ctx, selected_db, args, response_out, true)
     }
 
     fn handle_bitfield_impl(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1059,6 +1072,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lcs(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1122,24 +1136,27 @@ impl RequestProcessor {
 
     pub(super) fn handle_sort(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_sort_impl(selected_db, args, response_out, false)
+        self.handle_sort_impl(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_sort_ro(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_sort_impl(selected_db, args, response_out, true)
+        self.handle_sort_impl(ctx, selected_db, args, response_out, true)
     }
 
     fn handle_sort_impl(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1346,6 +1363,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_append(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1394,6 +1412,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_getex(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1461,6 +1480,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_incrbyfloat(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1890,13 +1910,14 @@ impl RequestProcessor {
 
         let mut del_response = Vec::new();
         let del_args: [&[u8]; 2] = [b"DEL", args[1]];
-        self.handle_del(selected_db, &del_args, &mut del_response)?;
+        self.handle_del(ctx, selected_db, &del_args, &mut del_response)?;
         response_out.extend_from_slice(&previous_value_response);
         Ok(())
     }
 
     pub(super) fn handle_digest(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -1935,13 +1956,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_delex(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         if args.len() == 2 {
             let translated = [b"DEL".as_slice(), args[1]];
-            return self.handle_del(selected_db, &translated, response_out);
+            return self.handle_del(ctx, selected_db, &translated, response_out);
         }
         if args.len() != 4 {
             return Err(RequestExecutionError::WrongArity {
@@ -1962,7 +1984,7 @@ impl RequestProcessor {
                 return Ok(());
             }
             let translated = [b"DEL".as_slice(), args[1]];
-            self.handle_del(selected_db, &translated, response_out)?;
+            self.handle_del(ctx, selected_db, &translated, response_out)?;
             return Ok(());
         }
         if self.object_key_exists(db_key)? {
@@ -1975,6 +1997,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_msetex(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2032,6 +2055,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_del(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2070,6 +2094,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_touch(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2092,6 +2117,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_unlink(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2155,24 +2181,27 @@ impl RequestProcessor {
 
     pub(super) fn handle_rename(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_rename_internal(selected_db, args, false, response_out)
+        self.handle_rename_internal(ctx, selected_db, args, false, response_out)
     }
 
     pub(super) fn handle_renamenx(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_rename_internal(selected_db, args, true, response_out)
+        self.handle_rename_internal(ctx, selected_db, args, true, response_out)
     }
 
     fn handle_rename_internal(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         only_if_absent: bool,
@@ -2241,6 +2270,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_copy(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2331,6 +2361,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_incr_decr(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         delta: i64,
@@ -2349,6 +2380,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_incrby_decrby(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         decrement: bool,
@@ -2462,6 +2494,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_exists(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2484,6 +2517,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_type(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2508,6 +2542,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_mget(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2533,6 +2568,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_mset(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2551,6 +2587,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_msetnx(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2580,6 +2617,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfadd(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2621,6 +2659,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfcount(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2652,6 +2691,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfmerge(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2687,6 +2727,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfdebug(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2751,6 +2792,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfselftest(
         &self,
+        _ctx: CommandContext,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -2863,42 +2905,47 @@ impl RequestProcessor {
 
     pub(super) fn handle_expire(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_expire_like(selected_db, args, response_out, false)
+        self.handle_expire_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_pexpire(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_expire_like(selected_db, args, response_out, true)
+        self.handle_expire_like(ctx, selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_expireat(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_expireat_like(selected_db, args, response_out, false)
+        self.handle_expireat_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_pexpireat(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_expireat_like(selected_db, args, response_out, true)
+        self.handle_expireat_like(ctx, selected_db, args, response_out, true)
     }
 
     fn handle_expire_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -2988,6 +3035,7 @@ impl RequestProcessor {
 
     fn handle_expireat_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -3099,42 +3147,47 @@ impl RequestProcessor {
 
     pub(super) fn handle_ttl(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_ttl_like(selected_db, args, response_out, false)
+        self.handle_ttl_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_pttl(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_ttl_like(selected_db, args, response_out, true)
+        self.handle_ttl_like(ctx, selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_expiretime(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_expiretime_like(selected_db, args, response_out, false)
+        self.handle_expiretime_like(ctx, selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_pexpiretime(
         &self,
+        ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_expiretime_like(selected_db, args, response_out, true)
+        self.handle_expiretime_like(ctx, selected_db, args, response_out, true)
     }
 
     fn handle_ttl_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -3202,6 +3255,7 @@ impl RequestProcessor {
 
     fn handle_expiretime_like(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
@@ -3264,6 +3318,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_persist(
         &self,
+        _ctx: CommandContext,
         selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
