@@ -95,6 +95,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -134,25 +135,100 @@ pub(crate) struct RequestTimeSnapshot {
     pub(crate) instant: Instant,
 }
 
-impl RequestTimeSnapshot {
+const CACHED_REQUEST_CLOCK_REFRESH_INTERVAL: Duration = Duration::from_millis(1);
+
+struct CachedRequestClock {
+    base_instant: Instant,
+    base_unix_micros: u64,
+    elapsed_micros: AtomicU64,
+}
+
+impl CachedRequestClock {
+    fn global() -> &'static Self {
+        static CLOCK: OnceLock<&'static CachedRequestClock> = OnceLock::new();
+        CLOCK.get_or_init(|| {
+            let base_instant = Instant::now();
+            let base_unix_micros = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| u64::try_from(duration.as_micros()).ok())
+                .unwrap_or(0);
+            let clock: &'static CachedRequestClock = Box::leak(Box::new(CachedRequestClock {
+                base_instant,
+                base_unix_micros,
+                elapsed_micros: AtomicU64::new(0),
+            }));
+            clock.refresh_exact();
+            std::thread::Builder::new()
+                .name("garnet-cached-clock".to_string())
+                .spawn({
+                    let clock = clock;
+                    move || loop {
+                        clock.refresh_exact();
+                        std::thread::sleep(CACHED_REQUEST_CLOCK_REFRESH_INTERVAL);
+                    }
+                })
+                .expect("cached request clock thread must start");
+            clock
+        })
+    }
+
     #[inline]
-    pub(crate) fn capture() -> Self {
-        let instant = Instant::now();
-        let unix_micros = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|duration| u64::try_from(duration.as_micros()).ok())
-            .unwrap_or(0);
-        Self {
+    fn elapsed_micros_exact(&self) -> u64 {
+        self.base_instant
+            .elapsed()
+            .as_micros()
+            .min(u64::MAX as u128) as u64
+    }
+
+    #[inline]
+    fn refresh_exact(&self) -> u64 {
+        let micros = self.elapsed_micros_exact();
+        self.elapsed_micros.store(micros, Ordering::Release);
+        micros
+    }
+
+    #[inline]
+    fn elapsed_micros(&self) -> u64 {
+        self.elapsed_micros.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn capture_snapshot(&self) -> RequestTimeSnapshot {
+        let elapsed_micros = self.elapsed_micros();
+        let elapsed = Duration::from_micros(elapsed_micros);
+        let instant = self
+            .base_instant
+            .checked_add(elapsed)
+            .unwrap_or(self.base_instant);
+        let unix_micros = self.base_unix_micros.saturating_add(elapsed_micros);
+        RequestTimeSnapshot {
             unix_micros,
             instant,
         }
     }
 }
 
+impl RequestTimeSnapshot {
+    #[inline]
+    pub(crate) fn capture() -> Self {
+        CachedRequestClock::global().capture_snapshot()
+    }
+}
+
+#[inline]
+pub(crate) fn cached_monotonic_micros() -> u64 {
+    CachedRequestClock::global().elapsed_micros()
+}
+
+#[inline]
+fn cached_request_instant() -> Instant {
+    CachedRequestClock::global().capture_snapshot().instant
+}
+
 #[inline]
 fn current_request_activity_instant() -> Instant {
-    current_request_instant().unwrap_or_else(Instant::now)
+    current_request_instant().unwrap_or_else(cached_request_instant)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -1,0 +1,248 @@
+diff --git a/TODO_AND_STATUS.md b/TODO_AND_STATUS.md
+index d3ed401a46..0978f281f9 100644
+--- a/TODO_AND_STATUS.md
++++ b/TODO_AND_STATUS.md
+@@ -624,6 +624,7 @@
+ | 11.595 | Replace non-blocking slowlog `Instant::elapsed()` timing with cached monotonic micros | DONE | 11.593 | Took the next evidence-backed clock cut after `11.593`. Fresh Linux perf on the multithread-client `PIPELINE=4` owner-inline shape still showed `__kernel_clock_gettime` as the top GET hotspot, and the stack pointed directly at `std::time::Instant::elapsed()` inside `RequestProcessor::execute_bytes_in_db(...)` for non-blocking slowlog timing. Added a process-global `CachedMonotonicClock` refreshed by a lightweight background thread, switched the non-blocking slowlog path to `cached_monotonic_micros()` start/end deltas via `record_slowlog_command_duration_micros(...)`, and kept the blocking/unblock slowlog path on the existing exact `Instant::elapsed()` code so the compatibility-sensitive blocking tests stay on the precise path. Validation: targeted Rust PASS (`slowlog_threshold_and_entry_shape_match_external_scenarios`, `slowlog_rewritten_and_blocking_commands_match_external_scenarios`, `executes_set_then_get_roundtrip`); `make fmt` PASS; `make fmt-check` PASS; `make test-server` PASS with verified counts (`716 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`). Benchmark acceptance bar under `docs/performance/experiments/2026-03-26/11.595-cached-slowlog-duration-clock/`: owner-inline `PIPELINE=1` was a small throughput win but slightly worse `GET p99` (`SET +1.65%`, `GET +1.63%`, flat `SET p99`, `GET p99 +10.13%`), while the pressure shape that motivated the slice improved cleanly (`THREADS=8 CONNS=16 PIPELINE=4`: `SET +6.43%`, `GET +2.24%`, `SET p99 -8.70%`, `GET p99 -2.06%`). The confirming Linux perf refresh also showed the hotspot shift we wanted: pre-change GET topped at `__kernel_clock_gettime 20.50%` with `Instant::elapsed 16.03%`, while post-change GET no longer had `Instant::elapsed` near the top and instead shifted to `cfree 16.89%`, `__wake_up_sync_key 15.82%`, and `HashIndex::find_tag_address 13.00%`. |
+ | 11.596 | Introduce explicit `CommandContext` for hot string commands and scripting entry time | DONE | 11.595 | Took the next step after `11.595`: move from ambient request-time access toward explicit command-scoped time. Added `CommandContext { time_snapshot }` at the dispatch boundary, threaded it through hot string command handlers (`GET`, `SET`, `SETEX`, `SETNX`, `PSETEX`, `GETSET`, `GETDEL`), routed `record_key_access(...)` through `ctx.instant`, and passed the same `ctx.time_snapshot` into scripting entry so script frozen time uses the command context instead of re-reading ambient request time. Validation: targeted Rust PASS (`request_time_snapshot_scope_reuses_fixed_time_within_request_helpers`, `scripting_time_command_uses_cached_time_like_external_scenario`, `sync_replication_stream_exec_preserves_expire_then_del_for_expired_blocked_list_key`, `executes_set_then_get_roundtrip`); `make fmt` PASS; `make fmt-check` PASS; `make test-server` PASS with verified counts (`716 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`). Benchmark evidence under `docs/performance/experiments/2026-03-26/11.596-command-context-hot-path-first-slice/`: owner-inline `PIPELINE=1` was effectively flat to slightly worse on GET (`SET +0.84%`, `GET -1.75%`, flat `SET p99`, `GET p99 +10.13%`), but the multithread-client pressure shape improved (`THREADS=8 CONNS=16 PIPELINE=4`: `SET +1.05%`, `GET +3.58%`, `SET p99 +0.76%`, `GET p99 -3.08%`). Kept because the shape we are actively chasing stayed positive and the code path is cleaner: command start time is now explicit in the hot dispatch and scripting entry path. |
+ | 11.597 | Finish `CommandContext` rollout across the full request-lifecycle command surface | DONE | 11.596 | Completed the structural follow-up requested after `11.596`: every `handle_*` command method in `request_lifecycle.rs` and `request_lifecycle/*_commands.rs` now takes an explicit `ctx`, dispatch passes `ctx` to the full command surface, and internal command-to-command calls carry the same `ctx`. The hot string paths and scripting entry still use `ctx` for real time-sensitive work, while leaf handlers that do not need request time yet take `_ctx` explicitly so the surface is uniform. Validation: `make fmt` PASS; targeted Rust PASS (`executes_set_then_get_roundtrip`); `make test-server` PASS with verified counts (`716 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`). Surface audit under `docs/performance/experiments/2026-03-26/11.597-full-command-context-surface/` confirms `dispatch_missing_ctx=0`. Benchmark evidence was mixed on the narrow shape but positive on the pressure shape: owner-inline `PIPELINE=1` first run `SET -6.25%`, `GET +3.60%`, `GET p99 -9.20%`; rerun `SET -1.32%`, `GET +2.42%`, `SET p99 +10.13%`; multithread-client `THREADS=8 CONNS=16 PIPELINE=4` improved to `SET +6.67%`, `GET +2.68%`, `SET p99 -7.43%`, `GET p99 -1.44%`. Kept because the rollout objective is structural, the pressure shape improved clearly, and the narrow shape did not show a stable cliff on rerun. |
++| 11.598 | Route `RequestTimeSnapshot` capture through the cached request clock and remove per-request hot-path clock syscalls | DONE | 11.597 | The code already had a 1ms `garnet-cached-clock`, but it only fed slowlog-style monotonic accounting while `RequestTimeSnapshot::capture()` still called `Instant::now()` and `SystemTime::now()` for each request. Promoted that clock into a shared `CachedRequestClock` in `lib.rs`, so `RequestTimeSnapshot::capture()` now returns a cached `{ instant, unix_micros }` snapshot, `current_request_activity_instant()` uses the same source when no request scope is present, and `current_instant()` falls back to the cached request snapshot instead of a fresh syscall. Added an exact regression `command_context_reuses_request_time_snapshot_when_present` to pin the command/request-time contract. Validation: targeted Rust PASS (`command_context_reuses_request_time_snapshot_when_present`); `make fmt` PASS; `make fmt-check` PASS; `make test-server` PASS with verified counts (`717 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`). Benchmark evidence under `docs/performance/experiments/2026-03-26/11.598-cached-request-clock-for-command-context/` stayed mixed on the narrow owner-inline shape but positive on the multithread pressure shape: `PIPELINE=1` run 1 `SET +0.52%`, `GET -2.84%`, `SET p99 -7.77%`, `GET p99 +16.84%`; rerun `SET +6.93%`, `GET -3.57%`, `SET p99 -7.77%`, `GET p99 -7.77%`; `THREADS=8 CONNS=16 PIPELINE=4` improved to `SET +5.68%`, `GET +2.98%`, `SET p99 -9.40%`, `GET p99 -3.92%`. Kept because the hot pressure path improved, the narrow shape did not show a stable SET cliff, and command-scoped time no longer pays two fresh clock syscalls at request entry. |
+ | 11.419 | Triage post-commit full compatibility residuals (`err=66`, `ignore=306`) into actionable backlog | DONE | 11.418 / 615 | Analyzed `docs/compatibility/compatibility-report.md` and raw external logs from `garnet-rs/tests/interop/results/compatibility-report-20260310-075152/redis-runtest-external-full`. Collapsed the remaining `err=66` into 11 actionable buckets: `zset` parser/algebra/routing (`27` total), `slowlog` (`14`), `hash-field-expire` error-text/parser (`10`), `hash` encoding/admin (`4`), `string` LCS + `MEMORY USAGE` (`4`), plus `replybufsize`, `scan`, `sort`, `list-3`, and `list` residuals. Also classified `ignore=306` into `Not supported on external server` (`257`), `Not supported on singledb` (`21`), `large memory flag not provided` (`19`), and a small tail of special harness skips. Added dedicated TODO tables below for both `err` and `ignore` lanes, plus explicit note that isolated `unit/scripting` (`94`) and `unit/querybuf` (`4`) remain out-of-band from the `err=66` full-run count. Docs-only iteration; no new validation rerun. |
+ | 11.438 / 11.439 | Close isolated scripting `unpack` and `min-replicas` residuals with exact regressions and targeted isolated rerun | DONE | 11.437 | Bundled these two residuals intentionally because both live in the same isolated `unit/scripting` lane and share the expensive Lua/runtime rebuild, isolated rerun, and smoke benchmark cycle. Patched vendored `lua-src` through workspace `[patch.crates-io]` and raised `LUAI_MAXCSTACK` from `8000` to `32768`, which makes Redis' `redis.call('lpush', 'l', unpack(a))` workload with `7999` arguments succeed instead of failing on Lua's C stack ceiling. Added exact regression `scripting_massive_unpack_arguments_match_external_scenario_for_eval_and_function` for both `EVAL` and `FCALL`, keeping the existing safe-range `unpack` guard for invalid-index overflow protection. In parallel, wired direct-command `min-replicas-to-write` gating into `connection_handler` and aligned scripting-specific behavior: shebang scripts require good replicas unless flagged `no-writes`, non-shebang `EVAL` only gates on mutating bodies, and `FCALL` consults loaded function read-only metadata. Added exact TCP regression `scripting_min_replicas_gate_matches_external_scenario`. Validation: targeted Rust PASS; targeted external PASS for `Script check unpack with massive arguments` and `not enough good replicas`; `make fmt`; `make test-server` PASS (`532 + 23 + 1`); isolated `unit/scripting` rerun improved from `ok=292 err=18 ignore=26` to `ok=295 err=15 ignore=26` at `/tmp/garnet-scripting-isolated-1773152536`. Smoke benchmark artifacts are recorded under `docs/performance/experiments/2026-03-10/11.438-439-scripting-unpack-min-replicas/`; results were mixed/noisy across `RUNS=1`, `RUNS=3`, and `RUNS=3 REQUESTS=5000`, with no stable hot-path regression signal. |
+ | 11.440 | Close isolated scripting argv-rewrite replication residuals with exact regressions and targeted external probes | DONE | 11.438 / 11.439 | Ported the remaining Redis `tests/unit/scripting.tcl` argv-rewrite replication cases into exact TCP regressions first: `sync_replication_stream_rewrites_script_spop_commands_like_external_scenario` and `sync_replication_stream_rewrites_script_expire_and_argv_expansion_like_external_scenarios`. Replaced top-level script replication fallback for `EVAL*`/`FCALL*` with a per-request `ScriptReplicationEffect` queue on `RequestProcessor`: each successful non-error inner `redis.call`/`redis.pcall` records the original command id, encoded argv, and RESP reply, and the connection path now emits replicated effects from that queue instead of replicating the outer script command. Added script-specific rewrite semantics so Redis scripting matches exactly: script `SPOP` replicates lowercase `srem` without collapsing the last removal into `DEL`, script expire-family commands rewrite to lowercase `pexpireat` or `del` based on post-command key existence, and script `INCRBYFLOAT` rewrites to lowercase `set key <value> KEEPTTL`. Also kept `FUNCTION LOAD` on the existing top-level path by narrowing effect-based replication to `EVAL*`/`FCALL*` only. Validation: targeted Rust PASS (`cargo test -p garnet-server sync_replication_stream_rewrites_script_ -- --nocapture`, `cargo test -p garnet-server replicaof_replication_propagates_function_load_and_fcall -- --nocapture`); `make fmt`; `make test-server` PASS (`534 + 23 + 1`); targeted external PASS for `SPOP: We can call scripts rewriting client->argv from Lua`, `EXPIRE: We can call scripts rewriting client->argv from Lua`, and `INCRBYFLOAT: We can call scripts expanding client->argv from Lua` at `garnet-rs/tests/interop/results/redis-runtest-scripting-argv-rewrite-20260310-235339/`; smoke benchmark artifacts under `docs/performance/experiments/2026-03-10/11.440-scripting-argv-rewrite/` show no regression signal (`SET ops +5.78%`, `GET ops +9.92%`, `SET p99 -13.45%`, `GET p99 -11.19%` in the `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64` smoke profile). |
+@@ -1837,3 +1838,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
+ | 875 | 2026-03-26 | 11.595 cached slowlog duration clock | DONE | Replaced the non-blocking slowlog `Instant::elapsed()` timing path with cached monotonic micros after `11.594` confirmed that `__kernel_clock_gettime` still dominated GET in the multithread-client `PIPELINE=4` owner-inline shape. Added a process-global `CachedMonotonicClock`, routed non-blocking `execute_bytes_in_db(...)` slowlog timing through `cached_monotonic_micros()` deltas and `record_slowlog_command_duration_micros(...)`, and intentionally left the blocking slowlog path on the exact `Instant::elapsed()` code. Validation: targeted Rust PASS (`slowlog_threshold_and_entry_shape_match_external_scenarios`, `slowlog_rewritten_and_blocking_commands_match_external_scenarios`, `executes_set_then_get_roundtrip`); `make fmt`; `make fmt-check`; `make test-server` PASS with verified counts (`716 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`). Local owner-inline A/B accepted on the pressure shape: `PIPELINE=1` landed at `SET +1.65%`, `GET +1.63%`, flat `SET p99`, `GET p99 +10.13%`; `THREADS=8 CONNS=16 PIPELINE=4` improved to `SET +6.43%`, `GET +2.24%`, `SET p99 -8.70%`, `GET p99 -2.06%`. The follow-up Linux perf refresh showed the intended hotspot shift: `__kernel_clock_gettime` dropped out of the top GET symbol, replaced by `cfree 16.89%`, `__wake_up_sync_key 15.82%`, and `HashIndex::find_tag_address 13.00%`, while the pre-change internal refresh had `__kernel_clock_gettime 20.50%` with `Instant::elapsed 16.03%`. |
+ | 876 | 2026-03-26 | 11.596 explicit command context first slice | DONE | Introduced `CommandContext { time_snapshot }` at the dispatch boundary and threaded it through the hot string command handlers plus scripting entry time capture. `GET`/`SET`-family hot paths now feed `ctx.instant` into `record_key_access(...)`, and scripting frozen time now comes from the same command-scoped snapshot. Validation: targeted Rust PASS (`request_time_snapshot_scope_reuses_fixed_time_within_request_helpers`, `scripting_time_command_uses_cached_time_like_external_scenario`, `sync_replication_stream_exec_preserves_expire_then_del_for_expired_blocked_list_key`, `executes_set_then_get_roundtrip`); `make fmt`; `make fmt-check`; `make test-server` PASS with verified counts (`716 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`). Benchmarks in `docs/performance/experiments/2026-03-26/11.596-command-context-hot-path-first-slice/` were mixed on the narrow shape (`PIPELINE=1`: `SET +0.84%`, `GET -1.75%`, flat `SET p99`, `GET p99 +10.13%`) but positive on the pressure shape we are chasing (`THREADS=8 CONNS=16 PIPELINE=4`: `SET +1.05%`, `GET +3.58%`, `SET p99 +0.76%`, `GET p99 -3.08%`). Kept because the pressure path improved and the code now makes command-scoped time explicit instead of hiding it behind ambient lookup. |
+ | 877 | 2026-03-26 | 11.597 full command context surface | DONE | Finished the explicit `CommandContext` rollout across the full request-lifecycle command surface. Every `handle_*` command method in `request_lifecycle.rs` and `request_lifecycle/*_commands.rs` now takes `ctx`, dispatch passes it everywhere, and internal command-to-command calls preserve it. Added a surface audit to confirm there are no remaining dispatch arms calling `handle_*` without `ctx` (`dispatch_missing_ctx=0`). Validation: `make fmt`; targeted Rust PASS (`executes_set_then_get_roundtrip`); `make test-server` PASS with verified counts (`716 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`). Benchmark results under `docs/performance/experiments/2026-03-26/11.597-full-command-context-surface/` were mixed but acceptable for a structural completion slice: owner-inline `PIPELINE=1` first run `SET -6.25%`, `GET +3.60%`, `GET p99 -9.20%`; rerun `SET -1.32%`, `GET +2.42%`, `SET p99 +10.13%`; multithread-client `THREADS=8 CONNS=16 PIPELINE=4` improved to `SET +6.67%`, `GET +2.68%`, `SET p99 -7.43%`, `GET p99 -1.44%`. Kept because the rollout objective is now complete, the pressure shape improved clearly, and the narrow-shape regression did not reproduce as a stable cliff. |
++| 878 | 2026-03-26 | 11.598 cached request clock for command context | DONE | Promoted the existing 1ms cached clock from slowlog-only monotonic timing into the source of `RequestTimeSnapshot::capture()`. `RequestTimeSnapshot` now comes from a shared `CachedRequestClock` in `lib.rs`, `current_request_activity_instant()` uses the same clock when no request scope is present, and `current_instant()` falls back to that cached request snapshot instead of a fresh `Instant::now()`. Added the exact regression `command_context_reuses_request_time_snapshot_when_present`. Validation: targeted Rust PASS; `make fmt`; `make fmt-check`; `make test-server` PASS with verified counts (`717 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`). Benchmarks in `docs/performance/experiments/2026-03-26/11.598-cached-request-clock-for-command-context/` were mixed on owner-inline `PIPELINE=1` (`SET +0.52%` then `+6.93%`, `GET -2.84%` then `-3.57%`) but clearly positive on the pressure shape we are actively chasing (`THREADS=8 CONNS=16 PIPELINE=4`: `SET +5.68%`, `GET +2.98%`, `SET p99 -9.40%`, `GET p99 -3.92%`). Kept because the hot pressure path improved and request entry no longer pays two fresh clock syscalls for the command snapshot. |
+diff --git a/garnet-rs/crates/garnet-server/src/lib.rs b/garnet-rs/crates/garnet-server/src/lib.rs
+index 5d7fa99803..acd17f8301 100644
+--- a/garnet-rs/crates/garnet-server/src/lib.rs
++++ b/garnet-rs/crates/garnet-server/src/lib.rs
+@@ -95,6 +95,7 @@ use std::fmt;
+ use std::net::SocketAddr;
+ use std::path::PathBuf;
+ use std::sync::Mutex;
++use std::sync::OnceLock;
+ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::AtomicU64;
+ use std::sync::atomic::Ordering;
+@@ -134,25 +135,100 @@ pub(crate) struct RequestTimeSnapshot {
+     pub(crate) instant: Instant,
+ }
+ 
+-impl RequestTimeSnapshot {
++const CACHED_REQUEST_CLOCK_REFRESH_INTERVAL: Duration = Duration::from_millis(1);
++
++struct CachedRequestClock {
++    base_instant: Instant,
++    base_unix_micros: u64,
++    elapsed_micros: AtomicU64,
++}
++
++impl CachedRequestClock {
++    fn global() -> &'static Self {
++        static CLOCK: OnceLock<&'static CachedRequestClock> = OnceLock::new();
++        CLOCK.get_or_init(|| {
++            let base_instant = Instant::now();
++            let base_unix_micros = SystemTime::now()
++                .duration_since(UNIX_EPOCH)
++                .ok()
++                .and_then(|duration| u64::try_from(duration.as_micros()).ok())
++                .unwrap_or(0);
++            let clock: &'static CachedRequestClock = Box::leak(Box::new(CachedRequestClock {
++                base_instant,
++                base_unix_micros,
++                elapsed_micros: AtomicU64::new(0),
++            }));
++            clock.refresh_exact();
++            std::thread::Builder::new()
++                .name("garnet-cached-clock".to_string())
++                .spawn({
++                    let clock = clock;
++                    move || loop {
++                        clock.refresh_exact();
++                        std::thread::sleep(CACHED_REQUEST_CLOCK_REFRESH_INTERVAL);
++                    }
++                })
++                .expect("cached request clock thread must start");
++            clock
++        })
++    }
++
+     #[inline]
+-    pub(crate) fn capture() -> Self {
+-        let instant = Instant::now();
+-        let unix_micros = SystemTime::now()
+-            .duration_since(UNIX_EPOCH)
+-            .ok()
+-            .and_then(|duration| u64::try_from(duration.as_micros()).ok())
+-            .unwrap_or(0);
+-        Self {
++    fn elapsed_micros_exact(&self) -> u64 {
++        self.base_instant
++            .elapsed()
++            .as_micros()
++            .min(u64::MAX as u128) as u64
++    }
++
++    #[inline]
++    fn refresh_exact(&self) -> u64 {
++        let micros = self.elapsed_micros_exact();
++        self.elapsed_micros.store(micros, Ordering::Release);
++        micros
++    }
++
++    #[inline]
++    fn elapsed_micros(&self) -> u64 {
++        self.elapsed_micros.load(Ordering::Acquire)
++    }
++
++    #[inline]
++    fn capture_snapshot(&self) -> RequestTimeSnapshot {
++        let elapsed_micros = self.elapsed_micros();
++        let elapsed = Duration::from_micros(elapsed_micros);
++        let instant = self
++            .base_instant
++            .checked_add(elapsed)
++            .unwrap_or(self.base_instant);
++        let unix_micros = self.base_unix_micros.saturating_add(elapsed_micros);
++        RequestTimeSnapshot {
+             unix_micros,
+             instant,
+         }
+     }
+ }
+ 
++impl RequestTimeSnapshot {
++    #[inline]
++    pub(crate) fn capture() -> Self {
++        CachedRequestClock::global().capture_snapshot()
++    }
++}
++
++#[inline]
++pub(crate) fn cached_monotonic_micros() -> u64 {
++    CachedRequestClock::global().elapsed_micros()
++}
++
++#[inline]
++fn cached_request_instant() -> Instant {
++    CachedRequestClock::global().capture_snapshot().instant
++}
++
+ #[inline]
+ fn current_request_activity_instant() -> Instant {
+-    current_request_instant().unwrap_or_else(Instant::now)
++    current_request_instant().unwrap_or_else(cached_request_instant)
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Default)]
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+index 5abf138a66..39f2ab93b1 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+@@ -20,6 +20,7 @@ use crate::aof_durability::AppendFsyncPolicy;
+ use crate::aof_durability::LiveAofDurabilityConfig;
+ use crate::aof_durability::LiveAofDurabilityRuntime;
+ use crate::aof_durability::LocalAofFrontiersSnapshot;
++use crate::cached_monotonic_micros;
+ use crate::command_spec::KeyAccessPattern;
+ use crate::command_spec::command_allowed_while_script_busy;
+ use crate::command_spec::command_is_effectively_mutating;
+@@ -157,61 +158,6 @@ const INLINE_COMMAND_STATS_NAME_CAPACITY: usize = 64;
+ const TRACKING_INVALIDATE_CHANNEL: &[u8] = b"__redis__:invalidate";
+ const SET_OBJECT_HOT_STATE_CAPACITY: usize = 8;
+ const SET_DEBUG_HT_MIN_TABLE_SIZE: usize = 4;
+-const CACHED_MONOTONIC_CLOCK_REFRESH_INTERVAL: Duration = Duration::from_millis(1);
+-
+-struct CachedMonotonicClock {
+-    base_instant: Instant,
+-    elapsed_micros: AtomicU64,
+-}
+-
+-impl CachedMonotonicClock {
+-    fn global() -> &'static Self {
+-        static CLOCK: OnceLock<&'static CachedMonotonicClock> = OnceLock::new();
+-        CLOCK.get_or_init(|| {
+-            let clock: &'static CachedMonotonicClock = Box::leak(Box::new(CachedMonotonicClock {
+-                base_instant: Instant::now(),
+-                elapsed_micros: AtomicU64::new(0),
+-            }));
+-            clock.refresh_exact();
+-            std::thread::Builder::new()
+-                .name("garnet-cached-clock".to_string())
+-                .spawn({
+-                    let clock = clock;
+-                    move || loop {
+-                        clock.refresh_exact();
+-                        std::thread::sleep(CACHED_MONOTONIC_CLOCK_REFRESH_INTERVAL);
+-                    }
+-                })
+-                .expect("cached monotonic clock thread must start");
+-            clock
+-        })
+-    }
+-
+-    #[inline]
+-    fn elapsed_micros_exact(&self) -> u64 {
+-        self.base_instant
+-            .elapsed()
+-            .as_micros()
+-            .min(u64::MAX as u128) as u64
+-    }
+-
+-    #[inline]
+-    fn refresh_exact(&self) -> u64 {
+-        let micros = self.elapsed_micros_exact();
+-        self.elapsed_micros.store(micros, Ordering::Relaxed);
+-        micros
+-    }
+-
+-    #[inline]
+-    fn micros(&self) -> u64 {
+-        self.elapsed_micros.load(Ordering::Relaxed)
+-    }
+-}
+-
+-#[inline]
+-fn cached_monotonic_micros() -> u64 {
+-    CachedMonotonicClock::global().micros()
+-}
+ 
+ thread_local! {
+     static REQUEST_EXECUTION_CONTEXT: Cell<RequestExecutionContext> = const {
+@@ -9900,7 +9846,7 @@ fn current_instant() -> Instant {
+     current_script_time_snapshot()
+         .or_else(current_request_time_snapshot)
+         .map(|snapshot| snapshot.instant)
+-        .unwrap_or_else(Instant::now)
++        .unwrap_or_else(|| RequestTimeSnapshot::capture().instant)
+ }
+ 
+ fn current_script_time_snapshot() -> Option<RequestTimeSnapshot> {
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+index 1e742edb10..512935d0a0 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+@@ -94,6 +94,20 @@ fn request_time_snapshot_scope_enter_if_missing_with_is_lazy_when_scope_exists()
+     assert_eq!(current_request_time_snapshot(), Some(fixed_snapshot));
+ }
+ 
++#[test]
++fn command_context_reuses_request_time_snapshot_when_present() {
++    let fixed_snapshot = RequestTimeSnapshot {
++        unix_micros: 555_666_777,
++        instant: Instant::now(),
++    };
++    let _scope = RequestTimeSnapshotScope::enter(fixed_snapshot);
++
++    let ctx = CommandContext::capture_or_current();
++
++    assert_eq!(ctx.time_snapshot(), fixed_snapshot);
++    assert_eq!(ctx.instant(), fixed_snapshot.instant);
++}
++
+ fn parse_integer_array_response(response: &[u8]) -> Vec<i64> {
+     let mut index = 0usize;
+     let array_len = parse_resp_array_len(response, &mut index);

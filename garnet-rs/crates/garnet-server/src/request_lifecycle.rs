@@ -20,6 +20,7 @@ use crate::aof_durability::AppendFsyncPolicy;
 use crate::aof_durability::LiveAofDurabilityConfig;
 use crate::aof_durability::LiveAofDurabilityRuntime;
 use crate::aof_durability::LocalAofFrontiersSnapshot;
+use crate::cached_monotonic_micros;
 use crate::command_spec::KeyAccessPattern;
 use crate::command_spec::command_allowed_while_script_busy;
 use crate::command_spec::command_is_effectively_mutating;
@@ -157,61 +158,6 @@ const INLINE_COMMAND_STATS_NAME_CAPACITY: usize = 64;
 const TRACKING_INVALIDATE_CHANNEL: &[u8] = b"__redis__:invalidate";
 const SET_OBJECT_HOT_STATE_CAPACITY: usize = 8;
 const SET_DEBUG_HT_MIN_TABLE_SIZE: usize = 4;
-const CACHED_MONOTONIC_CLOCK_REFRESH_INTERVAL: Duration = Duration::from_millis(1);
-
-struct CachedMonotonicClock {
-    base_instant: Instant,
-    elapsed_micros: AtomicU64,
-}
-
-impl CachedMonotonicClock {
-    fn global() -> &'static Self {
-        static CLOCK: OnceLock<&'static CachedMonotonicClock> = OnceLock::new();
-        CLOCK.get_or_init(|| {
-            let clock: &'static CachedMonotonicClock = Box::leak(Box::new(CachedMonotonicClock {
-                base_instant: Instant::now(),
-                elapsed_micros: AtomicU64::new(0),
-            }));
-            clock.refresh_exact();
-            std::thread::Builder::new()
-                .name("garnet-cached-clock".to_string())
-                .spawn({
-                    let clock = clock;
-                    move || loop {
-                        clock.refresh_exact();
-                        std::thread::sleep(CACHED_MONOTONIC_CLOCK_REFRESH_INTERVAL);
-                    }
-                })
-                .expect("cached monotonic clock thread must start");
-            clock
-        })
-    }
-
-    #[inline]
-    fn elapsed_micros_exact(&self) -> u64 {
-        self.base_instant
-            .elapsed()
-            .as_micros()
-            .min(u64::MAX as u128) as u64
-    }
-
-    #[inline]
-    fn refresh_exact(&self) -> u64 {
-        let micros = self.elapsed_micros_exact();
-        self.elapsed_micros.store(micros, Ordering::Relaxed);
-        micros
-    }
-
-    #[inline]
-    fn micros(&self) -> u64 {
-        self.elapsed_micros.load(Ordering::Relaxed)
-    }
-}
-
-#[inline]
-fn cached_monotonic_micros() -> u64 {
-    CachedMonotonicClock::global().micros()
-}
 
 thread_local! {
     static REQUEST_EXECUTION_CONTEXT: Cell<RequestExecutionContext> = const {
@@ -9900,7 +9846,7 @@ fn current_instant() -> Instant {
     current_script_time_snapshot()
         .or_else(current_request_time_snapshot)
         .map(|snapshot| snapshot.instant)
-        .unwrap_or_else(Instant::now)
+        .unwrap_or_else(|| RequestTimeSnapshot::capture().instant)
 }
 
 fn current_script_time_snapshot() -> Option<RequestTimeSnapshot> {

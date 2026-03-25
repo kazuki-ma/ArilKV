@@ -94,6 +94,20 @@ fn request_time_snapshot_scope_enter_if_missing_with_is_lazy_when_scope_exists()
     assert_eq!(current_request_time_snapshot(), Some(fixed_snapshot));
 }
 
+#[test]
+fn command_context_reuses_request_time_snapshot_when_present() {
+    let fixed_snapshot = RequestTimeSnapshot {
+        unix_micros: 555_666_777,
+        instant: Instant::now(),
+    };
+    let _scope = RequestTimeSnapshotScope::enter(fixed_snapshot);
+
+    let ctx = CommandContext::capture_or_current();
+
+    assert_eq!(ctx.time_snapshot(), fixed_snapshot);
+    assert_eq!(ctx.instant(), fixed_snapshot.instant);
+}
+
 fn parse_integer_array_response(response: &[u8]) -> Vec<i64> {
     let mut index = 0usize;
     let array_len = parse_resp_array_len(response, &mut index);
