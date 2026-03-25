@@ -1,0 +1,12 @@
+Matched Docker/Linux, single-lane server, multi-threaded client, PIPELINE=4
+
+Rerun result:
+- SET ops/sec: 195492.64 vs 427756.59  (-54.30%)
+- GET ops/sec: 271013.64 vs 414685.17  (-34.65%)
+- SET p99 ms:  4.991 vs 1.911  (+161.17%)
+- GET p99 ms:  3.823 vs 2.367  (+61.51%)
+
+Compared to 11.591:
+- Some host noise was present.
+- The direction did not flip.
+- Dragonfly still wins on both throughput and p99 in this shape.

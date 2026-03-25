@@ -1,0 +1,22 @@
+11.592 multithread client pipeline-4 rerun with flamegraphs
+
+Shape:
+- client THREADS=8 CONNS=16 PIPELINE=4
+- server kept single-lane for both engines
+
+Result:
+- Garnet SET 195492.64 ops/sec, p99 4.991 ms
+- Garnet GET 271013.64 ops/sec, p99 3.823 ms
+- Dragonfly SET 427756.59 ops/sec, p99 1.911 ms
+- Dragonfly GET 414685.17 ops/sec, p99 2.367 ms
+
+Relative:
+- SET -54.30%
+- GET -34.65%
+- SET p99 +161.17%
+- GET p99 +61.51%
+
+Takeaway:
+- 11.591 had some noise, but not enough to change the result.
+- Under this shape, Dragonfly remains ahead.
+- Flamegraphs still point to wakeup/timekeeping pressure on the Garnet side.
