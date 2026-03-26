@@ -1,0 +1,8 @@
+Candidate patch was reverted before archival.
+
+Touched areas while live:
+- `garnet-rs/crates/garnet-server/src/lib.rs`
+- `garnet-rs/crates/garnet-server/src/connection_handler.rs`
+- `garnet-rs/crates/garnet-server/src/request_lifecycle.rs`
+
+See `README.md` for the hidden notifier dependency that surfaced and the archived benchmark evidence.
