@@ -4896,6 +4896,54 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() 
 }
 
 #[test]
+fn connected_client_count_tracks_mark_killed_and_unregister_without_double_counting() {
+    let metrics = ServerMetrics::default();
+    let client_a = metrics.register_client(None, None);
+    let client_b = metrics.register_client(None, None);
+    let client_c = metrics.register_client(None, None);
+
+    assert_eq!(metrics.connected_client_count(), 3);
+
+    metrics.mark_clients_killed(&[client_a]);
+    assert_eq!(metrics.connected_client_count(), 2);
+
+    metrics.mark_clients_killed(&[client_a, client_b, ClientId::new(9999)]);
+    assert_eq!(metrics.connected_client_count(), 1);
+
+    metrics.unregister_client(client_a);
+    assert_eq!(metrics.connected_client_count(), 1);
+
+    metrics.unregister_client(client_c);
+    assert_eq!(metrics.connected_client_count(), 0);
+
+    metrics.unregister_client(client_b);
+    assert_eq!(metrics.connected_client_count(), 0);
+}
+
+#[test]
+fn kill_clients_decrements_connected_client_count_once_per_visible_client() {
+    let metrics = ServerMetrics::default();
+    let current_client = metrics.register_client(None, None);
+    let target_client = metrics.register_client(None, None);
+
+    assert_eq!(metrics.connected_client_count(), 2);
+
+    let filter = ClientKillFilter {
+        id: Some(target_client),
+        skip_current_connection: false,
+        ..ClientKillFilter::default()
+    };
+
+    let killed_once = metrics.kill_clients(current_client, &filter);
+    assert_eq!(killed_once, vec![target_client]);
+    assert_eq!(metrics.connected_client_count(), 1);
+
+    let killed_again = metrics.kill_clients(current_client, &filter);
+    assert!(killed_again.is_empty());
+    assert_eq!(metrics.connected_client_count(), 1);
+}
+
+#[test]
 fn add_client_output_bytes_updates_chunk_capacity_reply_buffer_state() {
     let metrics = ServerMetrics::default();
     let client_id = metrics.register_client(None, None);

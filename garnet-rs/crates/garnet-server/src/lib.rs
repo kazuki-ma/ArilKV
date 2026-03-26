@@ -299,6 +299,7 @@ pub struct ServerMetrics {
     closed_connections: AtomicU64,
     bytes_received: AtomicU64,
     next_client_id: AtomicU64,
+    visible_connected_clients: AtomicU64,
     clients: Mutex<BTreeMap<ClientId, ClientRuntimeInfo>>,
     reply_buffer_peak_reset_time_millis: AtomicU64,
     reply_buffer_resizing_enabled: AtomicBool,
@@ -752,6 +753,7 @@ impl Default for ServerMetrics {
             closed_connections: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             next_client_id: AtomicU64::new(0),
+            visible_connected_clients: AtomicU64::new(0),
             clients: Mutex::new(BTreeMap::new()),
             reply_buffer_peak_reset_time_millis: AtomicU64::new(
                 REPLY_BUFFER_DEFAULT_PEAK_RESET_TIME_MILLIS,
@@ -797,13 +799,19 @@ impl ServerMetrics {
         let id = ClientId::new(self.next_client_id.fetch_add(1, Ordering::Relaxed) + 1);
         if let Ok(mut clients) = self.clients.lock() {
             clients.insert(id, ClientRuntimeInfo::new(remote_addr, local_addr));
+            self.visible_connected_clients
+                .fetch_add(1, Ordering::Relaxed);
         }
         id
     }
 
     pub fn unregister_client(&self, client_id: ClientId) {
         if let Ok(mut clients) = self.clients.lock() {
-            let _ = clients.remove(&client_id);
+            let removed_client = clients.remove(&client_id);
+            if removed_client.is_some_and(|client| !client.killed) {
+                self.visible_connected_clients
+                    .fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -950,7 +958,11 @@ impl ServerMetrics {
         };
         for client_id in client_ids {
             if let Some(client) = clients.get_mut(client_id) {
-                client.killed = true;
+                if !client.killed {
+                    client.killed = true;
+                    self.visible_connected_clients
+                        .fetch_sub(1, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -1170,10 +1182,7 @@ impl ServerMetrics {
     }
 
     pub fn connected_client_count(&self) -> u64 {
-        let Ok(clients) = self.clients.lock() else {
-            return 0;
-        };
-        clients.values().filter(|client| !client.killed).count() as u64
+        self.visible_connected_clients.load(Ordering::Relaxed)
     }
 
     pub fn is_client_killed(&self, client_id: ClientId) -> bool {
@@ -1233,6 +1242,8 @@ impl ServerMetrics {
                 }
             }
             client.killed = true;
+            self.visible_connected_clients
+                .fetch_sub(1, Ordering::Relaxed);
             killed.push(*client_id);
         }
         killed
