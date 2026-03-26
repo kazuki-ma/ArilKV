@@ -4856,7 +4856,8 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() 
         .unwrap()
         .get(&client_id)
         .unwrap()
-        .last_activity;
+        .hot_metrics
+        .last_activity_instant();
 
     std::thread::sleep(Duration::from_millis(2));
     metrics.add_client_input_bytes(client_id, 5);
@@ -4866,7 +4867,8 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() 
         .unwrap()
         .get(&client_id)
         .unwrap()
-        .last_activity;
+        .hot_metrics
+        .last_activity_instant();
     assert!(after_input > initial_activity);
 
     std::thread::sleep(Duration::from_millis(2));
@@ -4880,7 +4882,8 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() 
         .unwrap()
         .get(&client_id)
         .unwrap()
-        .last_activity;
+        .hot_metrics
+        .last_activity_instant();
     assert_eq!(after_bookkeeping, after_input);
 
     std::thread::sleep(Duration::from_millis(2));
@@ -4891,7 +4894,8 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() 
         .unwrap()
         .get(&client_id)
         .unwrap()
-        .last_activity;
+        .hot_metrics
+        .last_activity_instant();
     assert!(after_output > after_bookkeeping);
 }
 
@@ -4952,7 +4956,10 @@ fn add_client_output_bytes_updates_chunk_capacity_reply_buffer_state() {
         let clients = metrics.clients.lock().unwrap();
         let client = clients.get(&client_id).unwrap();
         assert_eq!(client.reply_buffer_size, REPLY_BUFFER_CHUNK_BYTES);
-        (client.last_activity, client.reply_buffer_peak_last_reset)
+        (
+            client.hot_metrics.last_activity_instant(),
+            client.reply_buffer_peak_last_reset,
+        )
     };
 
     std::thread::sleep(Duration::from_millis(2));
@@ -4960,10 +4967,10 @@ fn add_client_output_bytes_updates_chunk_capacity_reply_buffer_state() {
 
     let clients = metrics.clients.lock().unwrap();
     let client = clients.get(&client_id).unwrap();
-    assert_eq!(client.total_output_bytes, 257);
+    assert_eq!(client.hot_metrics.total_output_bytes(), 257);
     assert_eq!(client.reply_buffer_size, REPLY_BUFFER_CHUNK_BYTES);
     assert_eq!(client.reply_buffer_peak, 257);
-    assert!(client.last_activity > initial_activity);
+    assert!(client.hot_metrics.last_activity_instant() > initial_activity);
     assert!(client.reply_buffer_peak_last_reset > initial_peak_reset);
 }
 
@@ -4977,16 +4984,17 @@ fn combined_input_and_last_command_updates_counters_activity_and_lowercased_comm
         .unwrap()
         .get(&client_id)
         .unwrap()
-        .last_activity;
+        .hot_metrics
+        .last_activity_instant();
 
     std::thread::sleep(Duration::from_millis(2));
     metrics.add_client_input_bytes_and_last_command(client_id, 13, b"CLIENT", Some(b"LIST"));
 
     let clients = metrics.clients.lock().unwrap();
     let client = clients.get(&client_id).unwrap();
-    assert_eq!(client.total_input_bytes, 13);
+    assert_eq!(client.hot_metrics.total_input_bytes(), 13);
     assert_eq!(client.last_command, b"client|list");
-    assert!(client.last_activity > initial_activity);
+    assert!(client.hot_metrics.last_activity_instant() > initial_activity);
 }
 
 #[test]

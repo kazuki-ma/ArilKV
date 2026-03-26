@@ -37,6 +37,7 @@ use crate::RequestProcessor;
 use crate::RequestTimeSnapshot;
 use crate::ServerMetrics;
 use crate::ShardOwnerThreadPool;
+use crate::cached_monotonic_micros;
 use crate::command_dispatch::dispatch_from_arg_slices;
 use crate::command_spec::CommandId;
 use crate::command_spec::TransactionControlCommand;
@@ -555,6 +556,7 @@ enum ClientTrackingMode {
 struct ClientConnectionState {
     authenticated: bool,
     authenticated_user: Vec<u8>,
+    last_command_cache: Vec<u8>,
     reply_mode: ClientReplyMode,
     tracking_mode: ClientTrackingMode,
     tracking_redirect_id: Option<i64>,
@@ -574,6 +576,7 @@ impl Default for ClientConnectionState {
         Self {
             authenticated: false,
             authenticated_user: b"default".to_vec(),
+            last_command_cache: b"unknown".to_vec(),
             reply_mode: ClientReplyMode::On,
             tracking_mode: ClientTrackingMode::Off,
             tracking_redirect_id: None,
@@ -591,6 +594,20 @@ impl Default for ClientConnectionState {
 }
 
 impl ClientConnectionState {
+    fn update_last_command_cache(&mut self, command_name: &[u8], subcommand_name: Option<&[u8]>) {
+        let subcommand = subcommand_name.filter(|value| !value.is_empty());
+        let required_len = command_name.len() + subcommand.map_or(0, |value| value.len() + 1);
+        self.last_command_cache.clear();
+        self.last_command_cache.reserve(required_len);
+        self.last_command_cache
+            .extend(command_name.iter().map(|byte| byte.to_ascii_lowercase()));
+        if let Some(subcommand) = subcommand {
+            self.last_command_cache.push(b'|');
+            self.last_command_cache
+                .extend(subcommand.iter().map(|byte| byte.to_ascii_lowercase()));
+        }
+    }
+
     fn clear_tracking(&mut self) {
         self.tracking_mode = ClientTrackingMode::Off;
         self.tracking_redirect_id = None;
@@ -611,6 +628,28 @@ impl ClientConnectionState {
             ClientTrackingMode::OptOut => self.tracking_caching != Some(false),
         }
     }
+}
+
+fn connection_last_command_matches(
+    stored: &[u8],
+    command_name: &[u8],
+    subcommand_name: Option<&[u8]>,
+) -> bool {
+    let subcommand = subcommand_name.filter(|value| !value.is_empty());
+    let required_len = command_name.len() + subcommand.map_or(0, |value| value.len() + 1);
+    if stored.len() != required_len {
+        return false;
+    }
+    if !ascii_eq_ignore_case(&stored[..command_name.len()], command_name) {
+        return false;
+    }
+    let Some(subcommand) = subcommand else {
+        return true;
+    };
+    if stored[command_name.len()] != b'|' {
+        return false;
+    }
+    ascii_eq_ignore_case(&stored[command_name.len() + 1..], subcommand)
 }
 
 fn reset_connection_auth_state(
@@ -851,6 +890,9 @@ pub(crate) async fn handle_connection(
     let remote_addr = stream.peer_addr().ok();
     let local_addr = stream.local_addr().ok();
     let client_id = metrics.register_client(remote_addr, local_addr);
+    let client_hot_metrics = metrics
+        .client_hot_metrics_handle(client_id)
+        .expect("registered client must have hot metrics");
     processor.attach_metrics(Arc::clone(&metrics));
     processor.set_connected_clients(metrics.connected_client_count());
     metrics.set_client_authenticated(client_id, processor.default_user_starts_authenticated());
@@ -1108,12 +1150,22 @@ pub(crate) async fn handle_connection(
                 .await?;
             }
             processor.set_resp_protocol_version(client_state.resp_protocol_version);
-            metrics.add_client_input_bytes_and_last_command(
-                client_id,
-                frame_bytes_consumed as u64,
+            if connection_last_command_matches(
+                client_state.last_command_cache.as_slice(),
                 command_name,
                 subcommand_name,
-            );
+            ) {
+                client_hot_metrics
+                    .observe_input(frame_bytes_consumed as u64, cached_monotonic_micros());
+            } else {
+                metrics.add_client_input_bytes_and_last_command(
+                    client_id,
+                    frame_bytes_consumed as u64,
+                    command_name,
+                    subcommand_name,
+                );
+                client_state.update_last_command_cache(command_name, subcommand_name);
+            }
             let stats_subcommand_name = command_stats_subcommand_name(command, subcommand_name);
             processor.record_command_call_with_subcommand(command_name, stats_subcommand_name);
             let mut command_call_name = None;

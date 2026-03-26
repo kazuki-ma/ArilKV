@@ -94,6 +94,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
@@ -112,8 +113,6 @@ use crate::request_lifecycle::current_request_instant;
 use garnet_common::ArgSlice;
 #[cfg(test)]
 use garnet_common::parse_resp_command_arg_slices;
-#[cfg(test)]
-use std::sync::Arc;
 #[cfg(test)]
 use tokio::net::TcpListener;
 #[cfg(test)]
@@ -224,6 +223,16 @@ pub(crate) fn cached_monotonic_micros() -> u64 {
 #[inline]
 fn cached_request_instant() -> Instant {
     CachedRequestClock::global().capture_snapshot().instant
+}
+
+#[inline]
+fn cached_request_instant_from_elapsed_micros(elapsed_micros: u64) -> Instant {
+    let clock = CachedRequestClock::global();
+    let elapsed = Duration::from_micros(elapsed_micros);
+    clock
+        .base_instant
+        .checked_add(elapsed)
+        .unwrap_or(clock.base_instant)
 }
 
 #[inline]
@@ -482,8 +491,69 @@ pub(crate) fn acl_password_hash_hex(password: &[u8]) -> Vec<u8> {
     out
 }
 
+#[derive(Debug)]
+pub(crate) struct ClientHotMetrics {
+    total_input_bytes: AtomicU64,
+    total_output_bytes: AtomicU64,
+    total_commands: AtomicU64,
+    last_activity_micros: AtomicU64,
+}
+
+impl ClientHotMetrics {
+    fn new(now_micros: u64) -> Self {
+        Self {
+            total_input_bytes: AtomicU64::new(0),
+            total_output_bytes: AtomicU64::new(0),
+            total_commands: AtomicU64::new(0),
+            last_activity_micros: AtomicU64::new(now_micros),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn observe_input(&self, bytes: u64, now_micros: u64) {
+        self.total_input_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.last_activity_micros
+            .store(now_micros, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(crate) fn observe_output(&self, bytes: u64, now_micros: u64) {
+        self.total_output_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.last_activity_micros
+            .store(now_micros, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(crate) fn observe_commands(&self, delta: u64) {
+        self.total_commands.fetch_add(delta, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(crate) fn total_input_bytes(&self) -> u64 {
+        self.total_input_bytes.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn total_output_bytes(&self) -> u64 {
+        self.total_output_bytes.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn total_commands(&self) -> u64 {
+        self.total_commands.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn last_activity_instant(&self) -> Instant {
+        cached_request_instant_from_elapsed_micros(
+            self.last_activity_micros.load(Ordering::Relaxed),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ClientRuntimeInfo {
+    hot_metrics: Arc<ClientHotMetrics>,
     name: Option<Vec<u8>>,
     user: Vec<u8>,
     authenticated: bool,
@@ -496,9 +566,6 @@ struct ClientRuntimeInfo {
     last_activity: Instant,
     addr: Vec<u8>,
     laddr: Vec<u8>,
-    total_input_bytes: u64,
-    total_output_bytes: u64,
-    total_commands: u64,
     /// Current bytes used in the client's query (receive) buffer.
     query_buffer_used: usize,
     /// Free bytes in the client's query (receive) buffer (capacity - len).
@@ -582,6 +649,7 @@ impl Default for ClientKillFilter {
 impl ClientRuntimeInfo {
     fn new(remote_addr: Option<SocketAddr>, local_addr: Option<SocketAddr>) -> Self {
         let now = Instant::now();
+        let now_micros = cached_monotonic_micros();
         let addr = remote_addr
             .map(|entry| entry.to_string().into_bytes())
             .unwrap_or_else(|| b"127.0.0.1:0".to_vec());
@@ -589,6 +657,7 @@ impl ClientRuntimeInfo {
             .map(|entry| entry.to_string().into_bytes())
             .unwrap_or_else(|| b"127.0.0.1:0".to_vec());
         Self {
+            hot_metrics: Arc::new(ClientHotMetrics::new(now_micros)),
             name: None,
             user: b"default".to_vec(),
             authenticated: false,
@@ -601,9 +670,6 @@ impl ClientRuntimeInfo {
             last_activity: now,
             addr,
             laddr,
-            total_input_bytes: 0,
-            total_output_bytes: 0,
-            total_commands: 0,
             query_buffer_used: 0,
             query_buffer_free: 0,
             query_buffer_capacity: 0,
@@ -661,7 +727,9 @@ impl ClientRuntimeInfo {
             return;
         }
 
-        if now.duration_since(self.last_activity) >= QUERY_BUFFER_IDLE_SHRINK_AFTER {
+        if now.duration_since(self.hot_metrics.last_activity_instant())
+            >= QUERY_BUFFER_IDLE_SHRINK_AFTER
+        {
             if self.query_buffer_used == 0 {
                 self.query_buffer_capacity = 0;
                 self.query_buffer_used = 0;
@@ -813,6 +881,17 @@ impl ServerMetrics {
                     .fetch_sub(1, Ordering::Relaxed);
             }
         }
+    }
+
+    pub(crate) fn client_hot_metrics_handle(
+        &self,
+        client_id: ClientId,
+    ) -> Option<Arc<ClientHotMetrics>> {
+        self.clients.lock().ok().and_then(|clients| {
+            clients
+                .get(&client_id)
+                .map(|client| client.hot_metrics.clone())
+        })
     }
 
     pub fn set_client_name(&self, client_id: ClientId, name: Option<Vec<u8>>) {
@@ -986,11 +1065,11 @@ impl ServerMetrics {
     }
 
     pub fn add_client_input_bytes(&self, client_id: ClientId, bytes: u64) {
-        if let Ok(mut clients) = self.clients.lock()
-            && let Some(client) = clients.get_mut(&client_id)
+        let now_micros = cached_monotonic_micros();
+        if let Ok(clients) = self.clients.lock()
+            && let Some(client) = clients.get(&client_id)
         {
-            client.total_input_bytes = client.total_input_bytes.saturating_add(bytes);
-            client.last_activity = current_request_activity_instant();
+            client.hot_metrics.observe_input(bytes, now_micros);
         }
     }
 
@@ -1001,13 +1080,11 @@ impl ServerMetrics {
         command_name: &[u8],
         subcommand_name: Option<&[u8]>,
     ) {
-        let now = current_request_activity_instant();
+        let now_micros = cached_monotonic_micros();
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
         {
-            client.total_input_bytes = client.total_input_bytes.saturating_add(bytes);
-            client.last_activity = now;
-
+            client.hot_metrics.observe_input(bytes, now_micros);
             let subcommand = subcommand_name.filter(|value| !value.is_empty());
             let required_len = command_name.len() + subcommand.map_or(0, |value| value.len() + 1);
 
@@ -1033,12 +1110,12 @@ impl ServerMetrics {
         if bytes == 0 {
             return;
         }
+        let now_micros = cached_monotonic_micros();
         let now = current_request_activity_instant();
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
         {
-            client.total_output_bytes = client.total_output_bytes.saturating_add(bytes);
-            client.last_activity = now;
+            client.hot_metrics.observe_output(bytes, now_micros);
             if client.reply_buffer_size == REPLY_BUFFER_CHUNK_BYTES {
                 client.observe_reply_bytes_at_chunk_capacity(bytes as usize, now);
                 return;
@@ -1070,10 +1147,10 @@ impl ServerMetrics {
         if delta == 0 {
             return;
         }
-        if let Ok(mut clients) = self.clients.lock()
-            && let Some(client) = clients.get_mut(&client_id)
+        if let Ok(clients) = self.clients.lock()
+            && let Some(client) = clients.get(&client_id)
         {
-            client.total_commands = client.total_commands.saturating_add(delta);
+            client.hot_metrics.observe_commands(delta);
         }
     }
 
@@ -1386,7 +1463,13 @@ fn render_client_line(
     reply_buffer_size: usize,
 ) -> Vec<u8> {
     let age_seconds = now.duration_since(client.connect_time).as_secs();
-    let idle_seconds = now.duration_since(client.last_activity).as_secs();
+    let last_activity = client
+        .last_activity
+        .max(client.hot_metrics.last_activity_instant());
+    let idle_seconds = now.duration_since(last_activity).as_secs();
+    let total_input_bytes = client.hot_metrics.total_input_bytes();
+    let total_output_bytes = client.hot_metrics.total_output_bytes();
+    let total_commands = client.hot_metrics.total_commands();
     let mut flags = String::new();
     if client.blocked {
         flags.push('b');
@@ -1440,9 +1523,9 @@ fn render_client_line(
         user,
         library_name,
         library_version,
-        client.total_input_bytes,
-        client.total_output_bytes,
-        client.total_commands
+        total_input_bytes,
+        total_output_bytes,
+        total_commands
     )
     .into_bytes()
 }
