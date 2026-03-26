@@ -1,0 +1,10 @@
+Candidate patch was reverted before archival.
+
+Touched areas while live:
+- `garnet-rs/crates/garnet-server/src/connection_handler.rs`
+- `garnet-rs/crates/garnet-server/src/lib.rs`
+- `garnet-rs/crates/garnet-server/src/request_lifecycle.rs`
+- `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs`
+- `garnet-rs/crates/garnet-server/src/tests.rs`
+
+See `README.md` for the structural summary and the archived benchmark evidence.

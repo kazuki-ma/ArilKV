@@ -1,0 +1,12 @@
+before_commit=b68f98ec04
+after_commit=reverted-candidate
+validation=targeted-rust-pass-while-live
+decision=drop
+p1_set_ops_pct=1.63
+p1_get_ops_pct=-5.75
+p1_set_p99_pct=0.00
+p1_get_p99_pct=27.59
+p4_set_ops_pct=0.91
+p4_get_ops_pct=-2.34
+p4_set_p99_pct=-5.47
+p4_get_p99_pct=7.20
