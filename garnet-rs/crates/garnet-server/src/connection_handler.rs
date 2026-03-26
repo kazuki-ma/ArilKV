@@ -9,6 +9,7 @@
 // - formal/tla/specs/WaitAckProgress.tla
 use std::borrow::Cow;
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
@@ -24,6 +25,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::task::yield_now;
+use tokio::time::Instant as TokioInstant;
 use tokio::time::sleep;
 use tsavorite::AofOffset;
 
@@ -878,6 +880,8 @@ pub(crate) async fn handle_connection(
     let mut local_aof_wait_target_offset_for_connection = 0u64;
     let mut replica_rdb_functions_only = false;
     let mut replica_rdb_only = false;
+    let killed_client_poll = sleep(KILLED_CLIENT_POLL_INTERVAL);
+    tokio::pin!(killed_client_poll);
 
     loop {
         processor.set_connected_clients(metrics.connected_client_count());
@@ -896,6 +900,7 @@ pub(crate) async fn handle_connection(
                 &mut receive_buffer,
                 &metrics,
                 pending_pubsub_notify.as_ref(),
+                killed_client_poll.as_mut(),
             )
             .await?
             {
@@ -916,19 +921,17 @@ pub(crate) async fn handle_connection(
                 }
             }
         } else {
-            match tokio::time::timeout(
-                KILLED_CLIENT_POLL_INTERVAL,
-                read_and_drain_available(
-                    &mut stream,
-                    &mut read_buffer,
-                    &mut receive_buffer,
-                    &metrics,
-                ),
+            match wait_for_connection_read_or_killed_poll(
+                &mut stream,
+                &mut read_buffer,
+                &mut receive_buffer,
+                &metrics,
+                killed_client_poll.as_mut(),
             )
-            .await
+            .await?
             {
-                Ok(result) => result?,
-                Err(_) => {
+                ConnectionReadWake::BytesRead(bytes_read) => bytes_read,
+                ConnectionReadWake::KilledClientPoll => {
                     flush_pending_pubsub_messages(
                         &mut stream,
                         &processor,
@@ -938,6 +941,9 @@ pub(crate) async fn handle_connection(
                     )
                     .await?;
                     continue;
+                }
+                ConnectionReadWake::PendingPubsub => {
+                    unreachable!("non-pubsub read helper must not return pending pubsub wake")
                 }
             }
         };
@@ -2603,7 +2609,11 @@ async fn wait_for_connection_read_or_pubsub(
     receive_buffer: &mut Vec<u8>,
     metrics: &ServerMetrics,
     pending_pubsub_notify: &tokio::sync::Notify,
+    mut killed_client_poll: Pin<&mut tokio::time::Sleep>,
 ) -> io::Result<ConnectionReadWake> {
+    killed_client_poll
+        .as_mut()
+        .reset(TokioInstant::now() + KILLED_CLIENT_POLL_INTERVAL);
     tokio::select! {
         result = read_and_drain_available(stream, read_buffer, receive_buffer, metrics) => {
             result.map(ConnectionReadWake::BytesRead)
@@ -2611,7 +2621,27 @@ async fn wait_for_connection_read_or_pubsub(
         _ = pending_pubsub_notify.notified() => {
             Ok(ConnectionReadWake::PendingPubsub)
         }
-        _ = sleep(KILLED_CLIENT_POLL_INTERVAL) => {
+        _ = killed_client_poll.as_mut() => {
+            Ok(ConnectionReadWake::KilledClientPoll)
+        }
+    }
+}
+
+async fn wait_for_connection_read_or_killed_poll(
+    stream: &mut TcpStream,
+    read_buffer: &mut [u8],
+    receive_buffer: &mut Vec<u8>,
+    metrics: &ServerMetrics,
+    mut killed_client_poll: Pin<&mut tokio::time::Sleep>,
+) -> io::Result<ConnectionReadWake> {
+    killed_client_poll
+        .as_mut()
+        .reset(TokioInstant::now() + KILLED_CLIENT_POLL_INTERVAL);
+    tokio::select! {
+        result = read_and_drain_available(stream, read_buffer, receive_buffer, metrics) => {
+            result.map(ConnectionReadWake::BytesRead)
+        }
+        _ = killed_client_poll.as_mut() => {
             Ok(ConnectionReadWake::KilledClientPoll)
         }
     }
