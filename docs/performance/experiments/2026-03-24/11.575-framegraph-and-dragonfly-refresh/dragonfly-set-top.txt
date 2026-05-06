@@ -1,4 +1,0 @@
-Top sampled symbol from matched Docker/Linux Dragonfly `SET`
-
-- `__wake_up_sync_key` `17.35%`
-- stack note: stack runs through Dragonfly `io_uring` send path after the same loopback wakeup

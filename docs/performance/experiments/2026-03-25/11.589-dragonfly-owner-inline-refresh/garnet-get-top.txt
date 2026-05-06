@@ -1,4 +1,0 @@
-Matched Docker/Linux owner-inline comparison
-Garnet GET top sampled symbol
-
-12.16%  garnet-node-127  [vdso]  [.] __kernel_clock_gettime

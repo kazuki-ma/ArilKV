@@ -1,8 +1,0 @@
-garnet.set_ops=62619.56
-garnet.get_ops=65358.46
-garnet.set_p99_ms=0.23100
-garnet.get_p99_ms=0.22300
-dragonfly.set_ops=92489.29
-dragonfly.get_ops=98088.02
-dragonfly.set_p99_ms=0.23100
-dragonfly.get_p99_ms=0.17500

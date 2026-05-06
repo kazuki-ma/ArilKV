@@ -1,7 +1,0 @@
-experiment=11.581-borrowed-get-lookup-key-drop
-status=dropped
-target=borrowed key probe for GET/STRLEN/GETRANGE
-run_1=SET +2.43%, GET -3.24%, SET p99 -8.42%, GET p99 0.00%
-run_2=SET +9.41%, GET +6.37%, SET p99 -15.53%, GET p99 -9.20%
-run_3=SET +0.67%, GET -7.36%, SET p99 -9.20%, GET p99 0.00%
-decision=drop

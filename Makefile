@@ -1,6 +1,5 @@
 .PHONY: help fmt fmt-check check test test-server clippy
 
-RUST_WORKSPACE := garnet-rs
 RUSTFMT_NIGHTLY ?= nightly-2026-02-24
 export RUST_BACKTRACE ?= 1
 
@@ -14,19 +13,19 @@ help:
 	@echo "  make clippy      # cargo clippy --workspace --all-targets -- -D warnings"
 
 fmt:
-	cd $(RUST_WORKSPACE) && cargo +$(RUSTFMT_NIGHTLY) fmt --all
+	cargo +$(RUSTFMT_NIGHTLY) fmt --all
 
 fmt-check:
-	cd $(RUST_WORKSPACE) && cargo +$(RUSTFMT_NIGHTLY) fmt --all -- --check
+	cargo +$(RUSTFMT_NIGHTLY) fmt --all -- --check
 
 check:
-	cd $(RUST_WORKSPACE) && cargo check --workspace
+	cargo check --workspace
 
 test:
-	cd $(RUST_WORKSPACE) && cargo test --workspace
+	cargo test --workspace
 
 test-server:
-	cd $(RUST_WORKSPACE) && cargo test -p garnet-server
+	cargo test -p garnet-server
 
 clippy:
-	cd $(RUST_WORKSPACE) && cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings

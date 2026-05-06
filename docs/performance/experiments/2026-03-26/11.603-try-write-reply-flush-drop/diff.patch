@@ -1,6 +1,0 @@
-Candidate patch was reverted before archival.
-
-Touched areas while live:
-- `garnet-rs/crates/garnet-server/src/connection_handler.rs`
-
-See `README.md` for the benchmark summary and the archived comparison files.

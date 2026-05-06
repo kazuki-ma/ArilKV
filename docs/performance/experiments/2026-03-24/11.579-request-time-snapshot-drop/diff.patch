@@ -1,6 +1,0 @@
-# Reverted candidate summary
-# - request_lifecycle.rs: introduced a request-local time snapshot scope around
-#   execute_bytes_in_db(...) and taught current_instant/current_unix_time_micros
-#   to reuse it during one command.
-# - request_lifecycle/tests.rs: added a scope regression asserting a fixed
-#   per-request instant.

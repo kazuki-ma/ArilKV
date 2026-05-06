@@ -1,9 +1,0 @@
-run,target,workload,ops_sec,avg_lat_ms,p99_ms,outdir
-1,garnet,set,159904.27,0.02559,0.07100,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c1_t1_c4_p1_sz1_256/run-1
-1,garnet,get,107646.10,0.03806,0.07100,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c1_t1_c4_p1_sz1_256/run-1
-1,dragonfly,set,91293.63,0.04438,0.07900,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c1_t1_c4_p1_sz1_256/run-1
-1,dragonfly,get,93851.48,0.04301,0.07900,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c1_t1_c4_p1_sz1_256/run-1
-2,garnet,set,164860.53,0.02458,0.07100,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c1_t1_c4_p1_sz1_256/run-2
-2,garnet,get,112544.91,0.03619,0.07900,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c1_t1_c4_p1_sz1_256/run-2
-2,dragonfly,set,88072.81,0.04592,0.07900,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c1_t1_c4_p1_sz1_256/run-2
-2,dragonfly,get,89489.46,0.04497,0.08700,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c1_t1_c4_p1_sz1_256/run-2

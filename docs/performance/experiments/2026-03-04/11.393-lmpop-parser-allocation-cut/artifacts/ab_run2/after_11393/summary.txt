@@ -1,7 +1,0 @@
-runs=3
-median_mixed_get_ops=57447.90000
-median_mixed_get_p99_ms=0.72700
-median_mixed_set_ops=57447.90000
-median_mixed_set_p99_ms=0.75900
-median_write_set_ops=110240.00000
-median_write_set_p99_ms=0.89500

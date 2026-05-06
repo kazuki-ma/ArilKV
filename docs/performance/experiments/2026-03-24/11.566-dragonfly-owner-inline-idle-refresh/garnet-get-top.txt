@@ -1,4 +1,0 @@
-Top sampled symbol from `results/garnet/get/perf-report-get.txt`
-
-- `__kernel_clock_gettime` `11.25%`
-- stack note: the sampled path includes `std::time::Instant::elapsed` under `RequestProcessor::execute_bytes_in_db`

@@ -1,5 +1,0 @@
-runs=3
-median_set_ops=402749.000
-median_get_ops=409215.000
-median_set_p99_ms=49.91900
-median_get_p99_ms=24.06300

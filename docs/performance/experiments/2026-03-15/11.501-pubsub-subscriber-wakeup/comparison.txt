@@ -1,8 +1,0 @@
-base.median_set_ops=75963
-base.median_get_ops=50297
-base.median_set_p99_ms=0.295
-base.median_get_p99_ms=0.599
-new.median_set_ops=82326
-new.median_get_ops=101833
-new.median_set_p99_ms=0.207
-new.median_get_p99_ms=0.143

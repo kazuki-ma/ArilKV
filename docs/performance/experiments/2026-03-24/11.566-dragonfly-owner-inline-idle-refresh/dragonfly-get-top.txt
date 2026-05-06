@@ -1,3 +1,0 @@
-Top sampled symbol from `results/dragonfly/get/perf-report-get.txt`
-
-- `__wake_up_sync_key` `19.80%`

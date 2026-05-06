@@ -1,8 +1,0 @@
-runs=1
-outdir=/tmp/garnet-11.477-df2
-runs_csv=/tmp/garnet-11.477-df2/runs.csv
-median_csv=/tmp/garnet-11.477-df2/median_summary.csv
-
-median dragonfly/garnet throughput ratio:
-  set=0.288
-  get=0.187

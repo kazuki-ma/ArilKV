@@ -1,13 +1,6 @@
-# Directories
-**/bin
-**/obj
+target
+**/target
 .git
-.vs
-.vscode
-
-# Files
-.gitignore
-**/*.md
-docker-compose.yml
-docker-compose.*.yml
-Dockerfile*
+.github
+benches/results
+**/*.log

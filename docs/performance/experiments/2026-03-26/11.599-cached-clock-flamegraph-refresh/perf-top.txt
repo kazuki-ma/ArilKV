@@ -1,9 +1,0 @@
-Matched Docker/Linux rerun after cached request clock
-Single-lane server, multi-threaded client, PIPELINE=4
-
-- Garnet SET: `13.06% __wake_up_sync_key`
-- Garnet GET: `14.71% __wake_up_sync_key`
-- Garnet GET: `0.54% __kernel_clock_gettime`
-- Garnet SET: `0.27% __kernel_clock_gettime`
-- Dragonfly SET: `8.70% dfly::DbSlice::AutoUpdater::AutoUpdater(...)`
-- Dragonfly GET: `7.53% _mi_stat_increase`

@@ -1,5 +1,0 @@
-runs=3
-median_hgetdel_ops=26874.00000
-median_hgetdel_p99_ms=0.33500
-median_hmset_ops=26874.00000
-median_hmset_p99_ms=0.26300

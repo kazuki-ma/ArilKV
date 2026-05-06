@@ -1,4 +1,0 @@
-Top sampled symbol from matched Docker/Linux Dragonfly `GET`
-
-- `__wake_up_sync_key` `18.37%`
-- stack note: loopback wakeup still dominates ahead of Dragonfly internal read-side work

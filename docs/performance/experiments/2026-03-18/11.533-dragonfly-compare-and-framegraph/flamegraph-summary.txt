@@ -1,6 +1,0 @@
-macos-sample-notes
-sample warned: Stack count is low (46) and (41)
-raw_get_svg=/tmp/garnet-hotspots-20260318-dragonfly-compare/garnet-get.flame.svg
-raw_set_svg=/tmp/garnet-hotspots-20260318-dragonfly-compare/garnet-set.flame.svg
-observation=get path remains dominated by tokio/runtime scheduling and wakeups, not value decode
-observation=set path shows send/recv plus shard-owner handoff and HashIndex lookup

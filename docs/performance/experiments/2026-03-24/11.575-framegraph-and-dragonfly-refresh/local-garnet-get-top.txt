@@ -1,5 +1,0 @@
-Fresh local macOS flamegraph notes for Garnet `GET`
-
-- inclusive root remains `handle_connection -> handle_get -> TsavoriteSession::peek`
-- second-order sampled work still includes `append_bulk_string`, `record_key_access`, `capture_time_snapshot`, `add_client_input_bytes`, and `add_client_output_bytes`
-- leaf samples are still led by `__sendto` and `__recvfrom`, so the extra internal work is additive rather than replacing socket cost

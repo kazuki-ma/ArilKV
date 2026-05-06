@@ -1,3 +1,0 @@
-Top sampled symbol from `results/garnet/set/perf-report-set.txt`
-
-- `__wake_up_sync_key` `16.00%`

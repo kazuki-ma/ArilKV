@@ -1,6 +1,0 @@
-accepted default ACL fast path after a confirming rerun.
-
-- target: `acl_authorize_client_command(...)` on the default unrestricted user
-- key idea: cache unrestricted-default ACL state and collapse client auth+user lookup to one metrics lock
-- accepted rerun result: `SET +6.27%`, `GET +11.03%`, `SET p99 0.00%`, `GET p99 -5.03%`
-- validation: targeted `acl_` suite PASS; `make test-server` PASS (`708 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`)

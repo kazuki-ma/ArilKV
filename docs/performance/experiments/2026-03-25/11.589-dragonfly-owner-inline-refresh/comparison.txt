@@ -1,7 +1,0 @@
-Matched Docker/Linux owner-inline comparison
-Garnet vs Dragonfly
-
-SET ops/sec: 136497.99 vs 80565.44  (+69.42%)
-GET ops/sec: 154211.16 vs 87389.17  (+76.46%)
-SET p99 ms:  0.079 vs 0.127  (-37.80%)
-GET p99 ms:  0.071 vs 0.095  (-25.26%)

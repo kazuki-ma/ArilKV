@@ -1,4 +1,0 @@
-Matched Docker/Linux owner-inline comparison
-Garnet SET top sampled symbol
-
-6.00%  garnet-node-127  [kernel.kallsyms]  [k] __wake_up_sync_key

@@ -1,8 +1,0 @@
-outdir=/tmp/garnet-hotspots-p32-s2-20260220-143214
-string_store_shards=2
-get_svg=/tmp/garnet-hotspots-p32-s2-20260220-143214/garnet-get.flame.svg
-set_svg=/tmp/garnet-hotspots-p32-s2-20260220-143214/garnet-set.flame.svg
-get_leaf_top20=/tmp/garnet-hotspots-p32-s2-20260220-143214/get.leaf.top20.txt
-get_incl_top20=/tmp/garnet-hotspots-p32-s2-20260220-143214/get.incl.top20.txt
-set_leaf_top20=/tmp/garnet-hotspots-p32-s2-20260220-143214/set.leaf.top20.txt
-set_incl_top20=/tmp/garnet-hotspots-p32-s2-20260220-143214/set.incl.top20.txt

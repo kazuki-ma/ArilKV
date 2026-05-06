@@ -1,4 +1,0 @@
-Top sampled symbol from matched Docker/Linux `GET`
-
-- `__wake_up_sync_key` `9.88%`
-- stack note: sample path is still dominated by loopback TCP wakeup and socket send

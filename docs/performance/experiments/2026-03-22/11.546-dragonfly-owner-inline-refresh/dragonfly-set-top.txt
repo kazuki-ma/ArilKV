@@ -1,4 +1,0 @@
-10.94%  Proactor0  [kernel.kallsyms]  [k] __wake_up_sync_key
-  7.81% tcp_data_ready
-  7.81% tcp_rcv_established
-  7.81% tcp_v4_do_rcv

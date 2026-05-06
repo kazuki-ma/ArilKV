@@ -1,6 +1,0 @@
-accepted slowlog atomic config cache after an owner-inline rerun.
-
-- target: `record_slowlog_command(...)` fast path
-- key idea: cache `slowlog-log-slower-than` and `slowlog-max-len` in atomics instead of locking `config_overrides`
-- accepted rerun result: `SET -0.21%`, `GET +5.86%`, `SET p99 -4.79%`, `GET p99 -5.30%`
-- validation: targeted slowlog regressions PASS; `make test-server` PASS (`707 passed; 0 failed; 16 ignored`, plus `26 passed`, plus `1 passed`)

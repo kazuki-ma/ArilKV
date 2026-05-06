@@ -1,4 +1,0 @@
-Top sampled symbol from matched Docker/Linux `SET`
-
-- `__wake_up_sync_key` `10.64%`
-- stack note: sample path is dominated by loopback TCP wakeup into `sendto`

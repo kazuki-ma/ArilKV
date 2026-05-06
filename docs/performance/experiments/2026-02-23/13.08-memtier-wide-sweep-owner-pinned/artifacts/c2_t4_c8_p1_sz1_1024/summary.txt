@@ -1,8 +1,0 @@
-runs=2
-outdir=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c2_t4_c8_p1_sz1_1024
-runs_csv=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c2_t4_c8_p1_sz1_1024/runs.csv
-median_csv=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/memtier-wide-sweep-20260223-2/c2_t4_c8_p1_sz1_1024/median_summary.csv
-
-median dragonfly/garnet throughput ratio:
-  set=1.186
-  get=1.006
