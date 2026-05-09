@@ -18,7 +18,7 @@ fn benchmark_set_and_get(c: &mut Criterion) {
 
     let mut setup_response = Vec::new();
     processor
-        .execute(&set_args[..set_meta.argument_count], &mut setup_response)
+        .execute_benchmark_command(&set_args[..set_meta.argument_count], &mut setup_response)
         .unwrap();
 
     c.bench_function("request_processor_set", |b| {
@@ -26,7 +26,7 @@ fn benchmark_set_and_get(c: &mut Criterion) {
         b.iter(|| {
             response.clear();
             processor
-                .execute(&set_args[..set_meta.argument_count], &mut response)
+                .execute_benchmark_command(&set_args[..set_meta.argument_count], &mut response)
                 .unwrap();
             black_box(&response);
         });
@@ -37,7 +37,7 @@ fn benchmark_set_and_get(c: &mut Criterion) {
         b.iter(|| {
             response.clear();
             processor
-                .execute(&get_args[..get_meta.argument_count], &mut response)
+                .execute_benchmark_command(&get_args[..get_meta.argument_count], &mut response)
                 .unwrap();
             black_box(&response);
         });

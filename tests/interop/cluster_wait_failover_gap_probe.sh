@@ -3,13 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-GARNET_RS_ROOT="${WORKSPACE_ROOT}/garnet-rs"
+GARNET_RS_ROOT="${WORKSPACE_ROOT}"
 
 COMPOSE_FILE="${COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.cluster-wait-failover.yml}"
 RESULT_DIR="${RESULT_DIR:-${SCRIPT_DIR}/results/cluster-wait-failover-gap-$(date +%Y%m%d-%H%M%S)}"
 SUMMARY_CSV="${RESULT_DIR}/summary.csv"
 
-GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
+GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-rustup run 1.95.0 cargo run -p garnet-server --release}"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 GARNET_STANDALONE_PORT="${GARNET_STANDALONE_PORT:-7490}"
 GARNET_CLUSTER_BASE_PORT="${GARNET_CLUSTER_BASE_PORT:-7491}"
@@ -64,7 +64,7 @@ record_result() {
 wait_for_ping() {
     local host="$1"
     local port="$2"
-    for _ in $(seq 1 300); do
+    for _ in $(seq 1 1200); do
         if redis-cli -h "${host}" -p "${port}" PING >/dev/null 2>&1; then
             return 0
         fi

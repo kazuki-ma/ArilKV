@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-GARNET_RS_ROOT="${WORKSPACE_ROOT}/garnet-rs"
+GARNET_RS_ROOT="${WORKSPACE_ROOT}"
 
 RESULT_DIR="${RESULT_DIR:-${SCRIPT_DIR}/results/command-coverage-$(date +%Y%m%d-%H%M%S)}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7.2-alpine}"
@@ -11,7 +11,7 @@ DRAGONFLY_IMAGE="${DRAGONFLY_IMAGE:-docker.dragonflydb.io/dragonflydb/dragonfly:
 REDIS_PORT="${REDIS_PORT:-6391}"
 GARNET_PORT="${GARNET_PORT:-6392}"
 DRAGONFLY_PORT="${DRAGONFLY_PORT:-6393}"
-GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
+GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-rustup run 1.95.0 cargo run -p garnet-server --release}"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 
 mkdir -p "${RESULT_DIR}"
@@ -49,7 +49,7 @@ trap cleanup EXIT
 
 wait_for_ping() {
     local port="$1"
-    for _ in $(seq 1 300); do
+    for _ in $(seq 1 1200); do
         if redis-cli -h 127.0.0.1 -p "${port}" PING >/dev/null 2>&1; then
             return 0
         fi

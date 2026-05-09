@@ -33,6 +33,57 @@ REDIS_BENCH_REQUESTS=10000 REDIS_BENCH_CLIENTS=20 \
 - Record reproducibility metadata.
   - keep run command, binary path, commit hash, and output directory in artifacts.
 
+## Fresh Checkout Performance Setup
+
+Use the setup script when a machine or checkout may be missing benchmark tools:
+
+```bash
+cd .
+benches/setup_perf_compare_env.sh
+```
+
+It verifies the Rust toolchains, Docker, `redis-cli`, `jq`, `memtier_benchmark`,
+and local release build readiness, then runs a small Docker-backed smoke
+comparison for Garnet, Dragonfly, and Valkey. The script does not install
+Homebrew Valkey by default because it conflicts with Homebrew Redis binaries;
+the Docker harness builds Valkey itself. Set `RUN_SMOKE=0` to only install and
+build.
+
+## Garnet / Dragonfly / Valkey Linux Comparison
+
+`docker_linux_perf_diff_profile.sh` runs the comparable Linux harness from
+inside a privileged Rust container. It builds Garnet for Linux, builds
+`memtier_benchmark`, downloads Dragonfly, builds Valkey, then runs matching
+SET/GET workloads through `linux_perf_diff_profile.sh`.
+
+Quick smoke without perf collection:
+
+```bash
+cd .
+CAPTURE_PERF=0 THREADS=1 CONNS=1 REQUESTS=50 PRELOAD_REQUESTS=50 \
+  TARGETS="garnet dragonfly valkey" \
+  benches/docker_linux_perf_diff_profile.sh
+```
+
+Full comparison with perf data:
+
+```bash
+cd .
+THREADS=8 CONNS=16 REQUESTS=50000 PRELOAD_REQUESTS=50000 PIPELINE=1 \
+  TARGETS="garnet dragonfly valkey" \
+  benches/docker_linux_perf_diff_profile.sh
+```
+
+Defaults are pinned for reproducibility:
+
+- `DRAGONFLY_VERSION=v1.38.1`
+- `VALKEY_VERSION=9.0.4`
+
+Override those environment variables to compare other releases. Use
+`VALKEY_IO_THREADS=<n>` and `VALKEY_IO_THREADS_DO_READS=yes|no` for Valkey
+threading experiments, and `DRAGONFLY_PROACTOR_THREADS=<n>` /
+`DRAGONFLY_CONN_IO_THREADS=<n>` for Dragonfly threading experiments.
+
 ### Common options
 
 - `REDIS_BENCH_HOST` (default: `127.0.0.1`)
@@ -124,10 +175,11 @@ Server-side hash-index default sizing is
 `GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS=16` (when unset); override it explicitly
 for A/B runs.
 
-For fiber-free owner-thread routing experiments, set
-`GARNET_STRING_OWNER_THREADS=<n>` (optional, disabled by default). This routes
-single-key string commands through shard-owner threads while keeping the Tokio
-network loop unchanged.
+Owner-thread routing uses inline execution by default, so the listener executes
+single-key string command work directly on the owner path without a cross-thread
+handoff. Set `GARNET_OWNER_EXECUTION_INLINE=0` only for legacy pooled-owner
+experiments, and set `GARNET_STRING_OWNER_THREADS=<n>` when explicitly testing
+pooled owner-thread counts.
 
 ### Minimal run (single benchmark)
 
@@ -351,6 +403,10 @@ Optional Garnet tuning env vars are forwarded into the container, including:
 - `GARNET_OWNER_THREAD_PINNING`
 - `GARNET_OWNER_THREAD_CPU_SET`
 - `GARNET_OWNER_EXECUTION_INLINE`
+
+`GARNET_OWNER_EXECUTION_INLINE` defaults to inline owner execution in normal
+server startup. Set it to `0` only when intentionally measuring the older
+cross-thread owner-pool path.
 
 Outputs are still written under `benches/results/` on the host.
 Latest published differential analysis:

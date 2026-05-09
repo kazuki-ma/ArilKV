@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-GARNET_RS_ROOT="${WORKSPACE_ROOT}/garnet-rs"
+GARNET_RS_ROOT="${WORKSPACE_ROOT}"
 COMPAT_DIR="${WORKSPACE_ROOT}/docs/compatibility"
 
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7.2-alpine}"
@@ -13,7 +13,7 @@ REDIS_COMMANDS_DIR="${REDIS_COMMANDS_DIR:-${REDIS_REPO_ROOT}/src/commands}"
 REDIS_DOCKER_START_TIMEOUT_SECONDS="${REDIS_DOCKER_START_TIMEOUT_SECONDS:-120}"
 REDIS_PORT="${REDIS_PORT:-6397}"
 GARNET_PORT="${GARNET_PORT:-6398}"
-GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
+GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-rustup run 1.95.0 cargo run -p garnet-server --release}"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 
 OUTPUT_CSV="${OUTPUT_CSV:-${COMPAT_DIR}/redis-command-status.csv}"
@@ -31,7 +31,7 @@ require_cmd() {
 wait_for_ping() {
     local host="$1"
     local port="$2"
-    for _ in $(seq 1 200); do
+    for _ in $(seq 1 1200); do
         if redis-cli -h "${host}" -p "${port}" PING >/dev/null 2>&1; then
             return 0
         fi

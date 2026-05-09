@@ -1,5 +1,9 @@
 //! TCP server accept loop and connection handler primitives.
 
+#![allow(dead_code)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
+
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -161,7 +165,6 @@ impl CachedRequestClock {
             std::thread::Builder::new()
                 .name("garnet-cached-clock".to_string())
                 .spawn({
-                    let clock = clock;
                     move || loop {
                         clock.refresh_exact();
                         std::thread::sleep(CACHED_REQUEST_CLOCK_REFRESH_INTERVAL);
@@ -1036,12 +1039,12 @@ impl ServerMetrics {
             return;
         };
         for client_id in client_ids {
-            if let Some(client) = clients.get_mut(client_id) {
-                if !client.killed {
-                    client.killed = true;
-                    self.visible_connected_clients
-                        .fetch_sub(1, Ordering::Relaxed);
-                }
+            if let Some(client) = clients.get_mut(client_id)
+                && !client.killed
+            {
+                client.killed = true;
+                self.visible_connected_clients
+                    .fetch_sub(1, Ordering::Relaxed);
             }
         }
     }

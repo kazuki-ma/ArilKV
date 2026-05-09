@@ -22304,19 +22304,15 @@ async fn garnet_primary_to_docker_redis_replica_reaches_link_up_and_replicates_p
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match TcpStream::connect(("127.0.0.1", redis_port)).await {
-            Ok(mut redis_admin) => {
-                redis_admin
-                    .write_all(&encode_resp_command(&[b"PING"]))
-                    .await
-                    .unwrap();
-                let reply =
-                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
-                if reply == b"+PONG" {
-                    break;
-                }
+        if let Ok(mut redis_admin) = TcpStream::connect(("127.0.0.1", redis_port)).await {
+            redis_admin
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let reply = read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+            if reply == b"+PONG" {
+                break;
             }
-            Err(_) => {}
         }
         assert!(
             Instant::now() < deadline,
@@ -22444,19 +22440,15 @@ async fn garnet_primary_to_docker_redis_replica_receives_preexisting_string_data
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match TcpStream::connect(("127.0.0.1", redis_port)).await {
-            Ok(mut redis_admin) => {
-                redis_admin
-                    .write_all(&encode_resp_command(&[b"PING"]))
-                    .await
-                    .unwrap();
-                let reply =
-                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
-                if reply == b"+PONG" {
-                    break;
-                }
+        if let Ok(mut redis_admin) = TcpStream::connect(("127.0.0.1", redis_port)).await {
+            redis_admin
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let reply = read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+            if reply == b"+PONG" {
+                break;
             }
-            Err(_) => {}
         }
         assert!(
             Instant::now() < deadline,
@@ -22639,19 +22631,15 @@ async fn garnet_primary_to_docker_redis_replica_receives_preexisting_object_data
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match TcpStream::connect(("127.0.0.1", redis_port)).await {
-            Ok(mut redis_admin) => {
-                redis_admin
-                    .write_all(&encode_resp_command(&[b"PING"]))
-                    .await
-                    .unwrap();
-                let reply =
-                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
-                if reply == b"+PONG" {
-                    break;
-                }
+        if let Ok(mut redis_admin) = TcpStream::connect(("127.0.0.1", redis_port)).await {
+            redis_admin
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let reply = read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+            if reply == b"+PONG" {
+                break;
             }
-            Err(_) => {}
         }
         assert!(
             Instant::now() < deadline,
@@ -22922,19 +22910,15 @@ async fn garnet_primary_to_docker_redis_replica_receives_preexisting_stream_data
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match TcpStream::connect(("127.0.0.1", redis_port)).await {
-            Ok(mut redis_admin) => {
-                redis_admin
-                    .write_all(&encode_resp_command(&[b"PING"]))
-                    .await
-                    .unwrap();
-                let reply =
-                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
-                if reply == b"+PONG" {
-                    break;
-                }
+        if let Ok(mut redis_admin) = TcpStream::connect(("127.0.0.1", redis_port)).await {
+            redis_admin
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let reply = read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+            if reply == b"+PONG" {
+                break;
             }
-            Err(_) => {}
         }
         assert!(
             Instant::now() < deadline,
@@ -23123,19 +23107,15 @@ async fn redis_primary_to_garnet_replica_receives_preexisting_string_dataset_on_
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match TcpStream::connect(("127.0.0.1", redis_port)).await {
-            Ok(mut redis_admin) => {
-                redis_admin
-                    .write_all(&encode_resp_command(&[b"PING"]))
-                    .await
-                    .unwrap();
-                let reply =
-                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
-                if reply == b"+PONG" {
-                    break;
-                }
+        if let Ok(mut redis_admin) = TcpStream::connect(("127.0.0.1", redis_port)).await {
+            redis_admin
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let reply = read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+            if reply == b"+PONG" {
+                break;
             }
-            Err(_) => {}
         }
         assert!(
             Instant::now() < deadline,
@@ -23257,19 +23237,15 @@ async fn redis_primary_to_garnet_replica_receives_preexisting_object_dataset_on_
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match TcpStream::connect(("127.0.0.1", redis_port)).await {
-            Ok(mut redis_admin) => {
-                redis_admin
-                    .write_all(&encode_resp_command(&[b"PING"]))
-                    .await
-                    .unwrap();
-                let reply =
-                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
-                if reply == b"+PONG" {
-                    break;
-                }
+        if let Ok(mut redis_admin) = TcpStream::connect(("127.0.0.1", redis_port)).await {
+            redis_admin
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let reply = read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+            if reply == b"+PONG" {
+                break;
             }
-            Err(_) => {}
         }
         assert!(
             Instant::now() < deadline,
@@ -23495,19 +23471,15 @@ async fn redis_6_2_primary_to_garnet_replica_receives_legacy_object_dataset_on_f
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match TcpStream::connect(("127.0.0.1", redis_port)).await {
-            Ok(mut redis_admin) => {
-                redis_admin
-                    .write_all(&encode_resp_command(&[b"PING"]))
-                    .await
-                    .unwrap();
-                let reply =
-                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
-                if reply == b"+PONG" {
-                    break;
-                }
+        if let Ok(mut redis_admin) = TcpStream::connect(("127.0.0.1", redis_port)).await {
+            redis_admin
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let reply = read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+            if reply == b"+PONG" {
+                break;
             }
-            Err(_) => {}
         }
         assert!(
             Instant::now() < deadline,
@@ -24015,19 +23987,15 @@ async fn redis_primary_to_garnet_replica_receives_preexisting_stream_dataset_on_
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        match TcpStream::connect(("127.0.0.1", redis_port)).await {
-            Ok(mut redis_admin) => {
-                redis_admin
-                    .write_all(&encode_resp_command(&[b"PING"]))
-                    .await
-                    .unwrap();
-                let reply =
-                    read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
-                if reply == b"+PONG" {
-                    break;
-                }
+        if let Ok(mut redis_admin) = TcpStream::connect(("127.0.0.1", redis_port)).await {
+            redis_admin
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let reply = read_resp_line_with_timeout(&mut redis_admin, Duration::from_secs(1)).await;
+            if reply == b"+PONG" {
+                break;
             }
-            Err(_) => {}
         }
         assert!(
             Instant::now() < deadline,
@@ -26144,9 +26112,9 @@ fn slowlog_entry_texts(entries: &[RespSocketValue]) -> Vec<String> {
     entries.iter().map(slowlog_entry_text).collect()
 }
 
-fn resp_socket_flat_map<'a>(
-    value: &'a RespSocketValue,
-) -> std::collections::BTreeMap<Vec<u8>, &'a RespSocketValue> {
+fn resp_socket_flat_map(
+    value: &RespSocketValue,
+) -> std::collections::BTreeMap<Vec<u8>, &RespSocketValue> {
     let items = resp_socket_array(value);
     assert_eq!(items.len() % 2, 0);
     let mut map = std::collections::BTreeMap::new();
@@ -26159,9 +26127,9 @@ fn resp_socket_flat_map<'a>(
     map
 }
 
-fn resp_socket_map_or_flat_map<'a>(
-    value: &'a RespSocketValue,
-) -> std::collections::BTreeMap<Vec<u8>, &'a RespSocketValue> {
+fn resp_socket_map_or_flat_map(
+    value: &RespSocketValue,
+) -> std::collections::BTreeMap<Vec<u8>, &RespSocketValue> {
     match value {
         RespSocketValue::Map(items) => {
             let mut map = std::collections::BTreeMap::new();
@@ -26900,10 +26868,9 @@ async fn wait_for_server_ping(addr: std::net::SocketAddr) {
             if let Ok(Ok(_)) =
                 tokio::time::timeout(Duration::from_millis(200), probe.read_exact(&mut response))
                     .await
+                && response == *b"+PONG\r\n"
             {
-                if response == *b"+PONG\r\n" {
-                    return;
-                }
+                return;
             }
         }
         assert!(Instant::now() < deadline, "server did not become ready");

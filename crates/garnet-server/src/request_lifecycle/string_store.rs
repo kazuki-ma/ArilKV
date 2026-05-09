@@ -696,12 +696,8 @@ impl RequestProcessor {
                 return Ok(logically_expired.unwrap_or(false));
             }
             let Some(should_expire) = self.with_auxiliary_db_state(db, false, |state| {
-                let Some(entry) = state.entries.get(key) else {
-                    return None;
-                };
-                let Some(expiration) = entry.expiration else {
-                    return None;
-                };
+                let entry = state.entries.get(key)?;
+                let expiration = entry.expiration?;
                 if expiration.deadline > now {
                     return Some(false);
                 }

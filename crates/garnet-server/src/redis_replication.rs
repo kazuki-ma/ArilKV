@@ -90,17 +90,14 @@ pub(crate) enum ManualFailoverPrepareError {
     TargetNotReplica,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum ManualFailoverState {
+    #[default]
     Idle,
     Prepared(ManualFailoverRequest),
-    Running { abort_requested: Arc<AtomicBool> },
-}
-
-impl Default for ManualFailoverState {
-    fn default() -> Self {
-        Self::Idle
-    }
+    Running {
+        abort_requested: Arc<AtomicBool>,
+    },
 }
 
 struct ReplicationInner {

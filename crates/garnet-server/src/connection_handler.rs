@@ -163,6 +163,13 @@ fn owner_execution_inline_default() -> Option<bool> {
     }
 }
 
+fn resolve_owner_execution_inline(raw_env: Option<&str>) -> io::Result<bool> {
+    if let Some(raw) = raw_env {
+        return parse_bool_env_flag(Some(raw), GARNET_OWNER_EXECUTION_INLINE_ENV);
+    }
+    Ok(owner_execution_inline_default().unwrap_or(true))
+}
+
 #[inline]
 fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
     // SAFETY: connection handler consumes ArgSlice values created from the
@@ -1192,49 +1199,49 @@ pub(crate) async fn handle_connection(
                 None
             };
 
-            if let Some(acl_args) = acl_args.as_ref() {
-                if let Err(error) = processor.acl_authorize_connection_command(
+            if let Some(acl_args) = acl_args.as_ref()
+                && let Err(error) = processor.acl_authorize_connection_command(
                     client_state.authenticated,
                     client_state.authenticated_user.as_slice(),
                     client_state.selected_db,
                     command,
                     acl_args,
-                ) {
-                    match error {
-                        ClientAclAuthorizationError::AuthenticationRequired => {
-                            append_noauth_response(&mut responses);
-                        }
-                        ClientAclAuthorizationError::Denied(error) => {
-                            append_acl_denial_response(
-                                &processor,
-                                client_id,
-                                ensure_command_call_name(
-                                    &mut command_call_name,
-                                    command_name,
-                                    stats_subcommand_name,
-                                ),
-                                &mut responses,
-                                &error,
-                                AclLogContext::Toplevel,
-                            );
-                        }
+                )
+            {
+                match error {
+                    ClientAclAuthorizationError::AuthenticationRequired => {
+                        append_noauth_response(&mut responses);
                     }
-                    disconnect_after_write |= finalize_client_command(
-                        &metrics,
-                        client_id,
-                        &mut responses,
-                        response_mark,
-                        &mut client_state,
-                        command,
-                        command_outcome,
-                        commands_processed,
-                    );
-                    consumed += frame_bytes_consumed;
-                    if disconnect_after_write {
-                        break;
+                    ClientAclAuthorizationError::Denied(error) => {
+                        append_acl_denial_response(
+                            &processor,
+                            client_id,
+                            ensure_command_call_name(
+                                &mut command_call_name,
+                                command_name,
+                                stats_subcommand_name,
+                            ),
+                            &mut responses,
+                            &error,
+                            AclLogContext::Toplevel,
+                        );
                     }
-                    continue;
                 }
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
             }
 
             if command == CommandId::Client && !transaction.in_multi {
@@ -2427,18 +2434,18 @@ pub(crate) async fn handle_connection(
                                         .into_iter()
                                         .map(|frame| (client_state.selected_db, frame)),
                                     );
-                                } else if blocking_outcome.should_replicate {
-                                    if let Some(replication_frame) = replication_frame_for_command(
+                                } else if blocking_outcome.should_replicate
+                                    && let Some(replication_frame) = replication_frame_for_command(
                                         &processor,
                                         client_state.selected_db,
                                         command,
                                         &args[..argument_count],
                                         &blocking_outcome.frame_response,
                                         frame,
-                                    ) {
-                                        replication_frames
-                                            .push((client_state.selected_db, replication_frame));
-                                    }
+                                    )
+                                {
+                                    replication_frames
+                                        .push((client_state.selected_db, replication_frame));
                                 }
                             }
                             Err(OwnerThreadExecutionError::Request(error)) => {
@@ -6277,11 +6284,11 @@ fn parse_resp_decimal(input: &[u8], cursor: usize) -> Option<ParsedDecimal> {
 pub(crate) fn build_owner_thread_pool(
     processor: &Arc<RequestProcessor>,
 ) -> io::Result<Arc<ShardOwnerThreadPool>> {
-    let inline_owner_execution = if let Ok(raw) = std::env::var(GARNET_OWNER_EXECUTION_INLINE_ENV) {
-        parse_bool_env_flag(Some(raw.as_str()), GARNET_OWNER_EXECUTION_INLINE_ENV)?
-    } else {
-        owner_execution_inline_default().unwrap_or(false)
-    };
+    let inline_owner_execution = resolve_owner_execution_inline(
+        std::env::var(GARNET_OWNER_EXECUTION_INLINE_ENV)
+            .ok()
+            .as_deref(),
+    )?;
     let owner_threads = parse_positive_env_usize(GARNET_STRING_OWNER_THREADS_ENV)
         .unwrap_or(DEFAULT_OWNER_THREAD_COUNT);
     let shard_count = processor.string_store_shard_count();
@@ -8034,5 +8041,18 @@ mod tests {
         );
         assert!(!client_state.authenticated);
         assert_eq!(client_state.authenticated_user, b"default");
+    }
+
+    #[test]
+    fn owner_execution_inline_defaults_to_enabled_and_env_can_disable() {
+        set_owner_execution_inline_default(true);
+        assert!(resolve_owner_execution_inline(None).unwrap());
+        assert!(!resolve_owner_execution_inline(Some("0")).unwrap());
+        assert!(resolve_owner_execution_inline(Some("1")).unwrap());
+
+        set_owner_execution_inline_default(false);
+        assert!(!resolve_owner_execution_inline(None).unwrap());
+
+        set_owner_execution_inline_default(true);
     }
 }

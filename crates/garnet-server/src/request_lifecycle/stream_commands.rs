@@ -1290,18 +1290,18 @@ impl RequestProcessor {
             }
         }
 
-        if let Some(group_state) = stream.groups.get(group) {
-            if let Some(last_scanned) = last_scanned {
-                next_cursor = group_state
-                    .pending
-                    .range((
-                        std::ops::Bound::Excluded(last_scanned),
-                        std::ops::Bound::Unbounded,
-                    ))
-                    .next()
-                    .map(|(entry_id, _)| *entry_id)
-                    .unwrap_or_else(StreamId::zero);
-            }
+        if let Some(group_state) = stream.groups.get(group)
+            && let Some(last_scanned) = last_scanned
+        {
+            next_cursor = group_state
+                .pending
+                .range((
+                    std::ops::Bound::Excluded(last_scanned),
+                    std::ops::Bound::Unbounded,
+                ))
+                .next()
+                .map(|(entry_id, _)| *entry_id)
+                .unwrap_or_else(StreamId::zero);
         }
 
         if changed {
@@ -1720,17 +1720,17 @@ impl RequestProcessor {
         };
 
         let mut history_cleared = false;
-        if let Some(idmp_duration_seconds) = parsed.idmp_duration_seconds {
-            if stream.idmp_duration_seconds != idmp_duration_seconds {
-                stream.idmp_duration_seconds = idmp_duration_seconds;
-                history_cleared = true;
-            }
+        if let Some(idmp_duration_seconds) = parsed.idmp_duration_seconds
+            && stream.idmp_duration_seconds != idmp_duration_seconds
+        {
+            stream.idmp_duration_seconds = idmp_duration_seconds;
+            history_cleared = true;
         }
-        if let Some(idmp_maxsize) = parsed.idmp_maxsize {
-            if stream.idmp_maxsize != idmp_maxsize {
-                stream.idmp_maxsize = idmp_maxsize;
-                history_cleared = true;
-            }
+        if let Some(idmp_maxsize) = parsed.idmp_maxsize
+            && stream.idmp_maxsize != idmp_maxsize
+        {
+            stream.idmp_maxsize = idmp_maxsize;
+            history_cleared = true;
         }
         if history_cleared {
             stream.clear_idmp_history();
@@ -2260,10 +2260,7 @@ fn claim_stream_pending_entry(
     }
     group_state.pending.insert(entry_id, pending_entry);
 
-    let consumer_state = group_state
-        .consumers
-        .entry(consumer_key)
-        .or_insert_with(StreamConsumerState::default);
+    let consumer_state = group_state.consumers.entry(consumer_key).or_default();
     consumer_state.pending.insert(entry_id);
     consumer_state.seen_time_millis = activity_time_millis;
     consumer_state.active_time_millis = Some(activity_time_millis);
@@ -2306,10 +2303,7 @@ fn record_stream_pending_delivery(
         previous_consumer_state.pending.remove(&entry_id);
     }
 
-    let consumer_state = group_state
-        .consumers
-        .entry(consumer_key)
-        .or_insert_with(StreamConsumerState::default);
+    let consumer_state = group_state.consumers.entry(consumer_key).or_default();
     consumer_state.pending.insert(entry_id);
     consumer_state.seen_time_millis = now_millis;
     consumer_state.active_time_millis = Some(now_millis);

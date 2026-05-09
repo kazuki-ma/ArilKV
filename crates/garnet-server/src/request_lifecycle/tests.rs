@@ -921,9 +921,9 @@ fn resp_test_is_null(value: &RespTestValue) -> bool {
     matches!(value, RespTestValue::Null)
 }
 
-fn resp_test_flat_map<'a>(
-    value: &'a RespTestValue,
-) -> std::collections::BTreeMap<Vec<u8>, &'a RespTestValue> {
+fn resp_test_flat_map(
+    value: &RespTestValue,
+) -> std::collections::BTreeMap<Vec<u8>, &RespTestValue> {
     let items = resp_test_array(value);
     assert_eq!(items.len() % 2, 0);
     let mut map = std::collections::BTreeMap::new();
@@ -1188,7 +1188,7 @@ fn execute_command_args_in_db(
     parts: &[&[u8]],
     selected_db: DbName,
 ) -> Vec<u8> {
-    let frame = encode_resp(&parts);
+    let frame = encode_resp(parts);
     let mut args = Vec::new();
     let meta = parse_resp_command_arg_slices_dynamic(&frame, &mut args, usize::MAX).unwrap();
     let mut response = Vec::new();

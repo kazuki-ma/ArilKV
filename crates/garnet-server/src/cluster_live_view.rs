@@ -114,7 +114,7 @@ fn collect_cluster_slot_state_counts(config: &ClusterConfig) -> (usize, usize, u
     (slots_assigned, slots_ok, slots_pfail, slots_fail)
 }
 
-fn worker_by_id_map<'a>(config: &'a ClusterConfig) -> BTreeMap<WorkerId, &'a Worker> {
+fn worker_by_id_map(config: &ClusterConfig) -> BTreeMap<WorkerId, &Worker> {
     let mut workers = BTreeMap::new();
     for worker in config.workers() {
         if worker.id == RESERVED_WORKER_ID {

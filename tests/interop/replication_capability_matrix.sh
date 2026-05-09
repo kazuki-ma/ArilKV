@@ -3,11 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-GARNET_RS_ROOT="${WORKSPACE_ROOT}/garnet-rs"
+GARNET_RS_ROOT="${WORKSPACE_ROOT}"
 
 RESULT_DIR="${RESULT_DIR:-${SCRIPT_DIR}/results/replication-capability-$(date +%Y%m%d-%H%M%S)}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7.2-alpine}"
-GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
+GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-rustup run 1.95.0 cargo run -p garnet-server --release}"
 RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 REDIS_REPL_MASTER_HOST="${REDIS_REPL_MASTER_HOST:-host.docker.internal}"
 PORT_BASE="${PORT_BASE:-7480}"
@@ -41,7 +41,7 @@ record_result() {
 wait_for_ping() {
     local host="$1"
     local port="$2"
-    for _ in $(seq 1 300); do
+    for _ in $(seq 1 1200); do
         if redis-cli -h "${host}" -p "${port}" PING >/dev/null 2>&1; then
             return 0
         fi

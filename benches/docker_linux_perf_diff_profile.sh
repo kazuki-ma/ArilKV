@@ -3,10 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-WORKSPACE_ROOT="$(cd "${REPO_ROOT}/.." && pwd)"
 
 DOCKER_IMAGE="${DOCKER_IMAGE:-rust:latest}"
-DRAGONFLY_VERSION="${DRAGONFLY_VERSION:-v1.36.0}"
+DRAGONFLY_VERSION="${DRAGONFLY_VERSION:-v1.38.1}"
+VALKEY_VERSION="${VALKEY_VERSION:-9.0.4}"
 
 THREADS="${THREADS:-8}"
 CONNS="${CONNS:-16}"
@@ -16,7 +16,8 @@ PIPELINE="${PIPELINE:-1}"
 SIZE_RANGE="${SIZE_RANGE:-1-1024}"
 PORT_BASE="${PORT_BASE:-16389}"
 PERF_FREQ="${PERF_FREQ:-99}"
-TARGETS="${TARGETS:-garnet dragonfly}"
+CAPTURE_PERF="${CAPTURE_PERF:-1}"
+TARGETS="${TARGETS:-garnet dragonfly valkey}"
 WORKLOADS="${WORKLOADS:-set get}"
 SERVER_CPU_SET="${SERVER_CPU_SET:-}"
 CLIENT_CPU_SET="${CLIENT_CPU_SET:-}"
@@ -29,9 +30,12 @@ GARNET_OWNER_THREAD_CPU_SET="${GARNET_OWNER_THREAD_CPU_SET:-}"
 GARNET_OWNER_EXECUTION_INLINE="${GARNET_OWNER_EXECUTION_INLINE:-}"
 DRAGONFLY_PROACTOR_THREADS="${DRAGONFLY_PROACTOR_THREADS:-}"
 DRAGONFLY_CONN_IO_THREADS="${DRAGONFLY_CONN_IO_THREADS:-}"
+VALKEY_IO_THREADS="${VALKEY_IO_THREADS:-}"
+VALKEY_IO_THREADS_DO_READS="${VALKEY_IO_THREADS_DO_READS:-yes}"
 
 OUTDIR_HOST="${OUTDIR_HOST:-${REPO_ROOT}/benches/results/linux-perf-diff-docker-$(date +%Y%m%d-%H%M%S)}"
 OUTDIR_BASENAME="$(basename "${OUTDIR_HOST}")"
+mkdir -p "$(dirname "${OUTDIR_HOST}")"
 OUTDIR_PARENT_HOST="$(cd "$(dirname "${OUTDIR_HOST}")" && pwd)"
 OUTDIR_CONTAINER="/out-host/${OUTDIR_BASENAME}"
 
@@ -51,7 +55,7 @@ DOCKER_RUN_ARGS=(
     --rm
     --privileged
     --security-opt seccomp=unconfined
-    -v "${WORKSPACE_ROOT}:/work"
+    -v "${REPO_ROOT}:/work/garnet-rs"
     -v "${OUTDIR_PARENT_HOST}:/out-host"
     -w /work
 )
@@ -74,6 +78,7 @@ add_required_env PIPELINE "${PIPELINE}"
 add_required_env SIZE_RANGE "${SIZE_RANGE}"
 add_required_env PORT_BASE "${PORT_BASE}"
 add_required_env PERF_FREQ "${PERF_FREQ}"
+add_required_env CAPTURE_PERF "${CAPTURE_PERF}"
 add_required_env TARGETS "${TARGETS}"
 add_required_env WORKLOADS "${WORKLOADS}"
 add_required_env GARNET_TSAVORITE_STRING_STORE_SHARDS "${GARNET_TSAVORITE_STRING_STORE_SHARDS}"
@@ -89,6 +94,8 @@ add_optional_env GARNET_OWNER_THREAD_CPU_SET "${GARNET_OWNER_THREAD_CPU_SET}"
 add_optional_env GARNET_OWNER_EXECUTION_INLINE "${GARNET_OWNER_EXECUTION_INLINE}"
 add_optional_env DRAGONFLY_PROACTOR_THREADS "${DRAGONFLY_PROACTOR_THREADS}"
 add_optional_env DRAGONFLY_CONN_IO_THREADS "${DRAGONFLY_CONN_IO_THREADS}"
+add_optional_env VALKEY_IO_THREADS "${VALKEY_IO_THREADS}"
+add_optional_env VALKEY_IO_THREADS_DO_READS "${VALKEY_IO_THREADS_DO_READS}"
 
 docker run "${DOCKER_RUN_ARGS[@]}" \
     "${DOCKER_IMAGE}" bash -lc "
@@ -101,7 +108,8 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update >/dev/null
 apt-get install -y \
     linux-perf netcat-openbsd util-linux make autoconf automake libtool \
-    pkg-config libevent-dev libssl-dev zlib1g-dev git curl ca-certificates \
+    build-essential pkg-config libevent-dev libssl-dev zlib1g-dev git curl \
+    ca-certificates \
     >/dev/null
 
 if [[ ! -x /tmp/memtier-src/memtier_benchmark ]]; then
@@ -129,10 +137,21 @@ mkdir -p /tmp/dragonfly
 tar -xzf /tmp/dragonfly.tar.gz -C /tmp/dragonfly
 chmod +x \"/tmp/dragonfly/\${dfly_name}\"
 
+if [[ ! -x /tmp/valkey-src/src/valkey-server ]] || [[ ! -f /tmp/valkey-src/.built-${VALKEY_VERSION} ]]; then
+    rm -rf /tmp/valkey-src
+    mkdir -p /tmp/valkey-src
+    curl -L \"https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz\" \
+        -o /tmp/valkey.tar.gz >/dev/null
+    tar -xzf /tmp/valkey.tar.gz -C /tmp/valkey-src --strip-components=1
+    make -C /tmp/valkey-src -j\"\$(nproc)\" BUILD_TLS=no >/dev/null
+    touch /tmp/valkey-src/.built-${VALKEY_VERSION}
+fi
+
 cd /work/garnet-rs
 export CARGO_TARGET_DIR=/tmp/garnet-target-linux
 export MEMTIER_BIN=/tmp/memtier-src/memtier_benchmark
 export DRAGONFLY_BIN=\"/tmp/dragonfly/\${dfly_name}\"
+export VALKEY_BIN=/tmp/valkey-src/src/valkey-server
 export GARNET_BIN=/tmp/garnet-target-linux/release/garnet-server
 ./benches/linux_perf_diff_profile.sh
 "

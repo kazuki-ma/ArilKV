@@ -7,11 +7,12 @@ MANIFEST_PATH="${REPO_ROOT}/Cargo.toml"
 
 GARNET_BIN="${GARNET_BIN:-${REPO_ROOT}/target/release/garnet-server}"
 DRAGONFLY_BIN="${DRAGONFLY_BIN:-$(command -v dragonfly || true)}"
+VALKEY_BIN="${VALKEY_BIN:-$(command -v valkey-server || command -v redis-server || true)}"
 MEMTIER_BIN="${MEMTIER_BIN:-$(command -v memtier_benchmark || true)}"
 HOST="${HOST:-127.0.0.1}"
 FLAMEGRAPH_DIR="${FLAMEGRAPH_DIR:-}"
 
-TARGETS="${TARGETS:-garnet dragonfly}"
+TARGETS="${TARGETS:-garnet dragonfly valkey}"
 WORKLOADS="${WORKLOADS:-set get}"
 SERVER_CPU_SET="${SERVER_CPU_SET:-}"
 CLIENT_CPU_SET="${CLIENT_CPU_SET:-}"
@@ -19,6 +20,8 @@ TOKIO_WORKER_THREADS="${TOKIO_WORKER_THREADS:-}"
 GARNET_STRING_OWNER_THREADS="${GARNET_STRING_OWNER_THREADS:-}"
 DRAGONFLY_PROACTOR_THREADS="${DRAGONFLY_PROACTOR_THREADS:-}"
 DRAGONFLY_CONN_IO_THREADS="${DRAGONFLY_CONN_IO_THREADS:-}"
+VALKEY_IO_THREADS="${VALKEY_IO_THREADS:-}"
+VALKEY_IO_THREADS_DO_READS="${VALKEY_IO_THREADS_DO_READS:-yes}"
 THREADS="${THREADS:-8}"
 CONNS="${CONNS:-16}"
 REQUESTS="${REQUESTS:-50000}"
@@ -26,6 +29,7 @@ PRELOAD_REQUESTS="${PRELOAD_REQUESTS:-${REQUESTS}}"
 PIPELINE="${PIPELINE:-1}"
 SIZE_RANGE="${SIZE_RANGE:-1-1024}"
 PERF_FREQ="${PERF_FREQ:-99}"
+CAPTURE_PERF="${CAPTURE_PERF:-1}"
 PORT_BASE="${PORT_BASE:-16389}"
 OUTDIR="${OUTDIR:-/tmp/garnet-linux-perf-diff-$(date +%Y%m%d-%H%M%S)}"
 
@@ -55,8 +59,10 @@ fi
 
 require_command nc
 require_command taskset
-require_command perf
 require_command file
+if [[ "${CAPTURE_PERF}" != "0" ]]; then
+    require_command perf
+fi
 if [[ -z "${MEMTIER_BIN}" ]]; then
     echo "missing required command: memtier_benchmark" >&2
     exit 1
@@ -276,6 +282,26 @@ start_target_server() {
         fi
         "${server_cmd[@]}" >"${server_log}" 2>&1 &
         SERVER_PID=$!
+    elif [[ "${target}" == "valkey" ]]; then
+        if [[ -z "${VALKEY_BIN}" ]]; then
+            echo "valkey-server binary not found; set VALKEY_BIN=/path/to/valkey-server" >&2
+            exit 1
+        fi
+        server_cmd=(
+            taskset -c "${SERVER_CPU_SET}"
+            "${VALKEY_BIN}"
+            --bind "${HOST}"
+            --port "${port}"
+            --save ""
+            --appendonly no
+            --protected-mode no
+        )
+        if [[ -n "${VALKEY_IO_THREADS}" ]]; then
+            server_cmd+=(--io-threads "${VALKEY_IO_THREADS}")
+            server_cmd+=(--io-threads-do-reads "${VALKEY_IO_THREADS_DO_READS}")
+        fi
+        "${server_cmd[@]}" >"${server_log}" 2>&1 &
+        SERVER_PID=$!
     else
         echo "unknown target: ${target}" >&2
         exit 1
@@ -309,6 +335,11 @@ capture_perf_profile() {
     local perf_script_stderr="${run_dir}/perf-script-${mode}.stderr.log"
 
     run_memtier "set" "${PRELOAD_REQUESTS}" "${port}" "${run_dir}/preload.log"
+
+    if [[ "${CAPTURE_PERF}" == "0" ]]; then
+        run_memtier "${mode}" "${REQUESTS}" "${port}" "${bench_log}"
+        return 0
+    fi
 
     taskset -c "${CLIENT_CPU_SET}" \
         "${MEMTIER_BIN}" \

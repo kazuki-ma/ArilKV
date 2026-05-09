@@ -4,6 +4,29 @@ Garnet-rs is an independent Rust implementation inspired by Microsoft Garnet. It
 
 This repository root is the Rust workspace. The original .NET Garnet source, website, CI, and sample assets are intentionally not carried here.
 
+## Current Performance Snapshot
+
+Owner-inline execution is now the default Garnet server policy. In the latest
+Docker/Linux single-server-core comparison on this machine, Garnet outperformed
+Dragonfly and Valkey on simple string `SET`/`GET` workloads:
+
+| Target | SET ops/sec | SET p99 | GET ops/sec | GET p99 |
+|---|---:|---:|---:|---:|
+| Garnet | 177,999.76 | 0.055 ms | 218,181.50 | 0.047 ms |
+| Dragonfly | 150,864.72 | 0.055 ms | 176,304.03 | 0.055 ms |
+| Valkey | 110,537.36 | 0.063 ms | 111,818.36 | 0.055 ms |
+
+Run artifact:
+`benches/results/linux-perf-diff-docker-20260510-042719/`.
+
+See [PERFORMANCE.md](PERFORMANCE.md) for methodology, commands, caveats, and
+historical context.
+
+Pipeline scaling snapshot for Garnet on the same single-server-core shape:
+`PIPELINE=16` reached SET `526,033.39` / GET `735,647.07` ops/sec, and
+`PIPELINE=64` reached SET `778,973.94` / GET `1,345,967.48` ops/sec. In this
+Docker Desktop run, GET crossed 1M ops/sec; SET did not.
+
 ## Status
 
 The project is experimental and under active development. Compatibility and performance-sensitive changes should be backed by targeted regression tests and benchmark evidence.

@@ -2871,7 +2871,8 @@ impl RequestProcessor {
             let resp3 = self.resp_protocol_version().is_resp3();
             if ascii_eq_ignore_case(protocol_subcommand, b"DOUBLE") {
                 if resp3 {
-                    append_double(response_out, 3.141);
+                    #[allow(clippy::approx_constant)]
+                    append_double(response_out, 3.141_f64);
                 } else {
                     append_bulk_string(response_out, b"3.141");
                 }
@@ -3129,7 +3130,7 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "DEBUG", "DEBUG QUICKLIST-PACKED-THRESHOLD <bytes>")?;
             // Redis accepts an optional trailing 'b'/'B' suffix (meaning bytes).
             let raw = args[2];
-            let num_bytes = if raw.last().map_or(false, |c| *c == b'b' || *c == b'B') {
+            let num_bytes = if raw.last().is_some_and(|c| *c == b'b' || *c == b'B') {
                 &raw[..raw.len() - 1]
             } else {
                 raw
@@ -5312,7 +5313,7 @@ impl RequestProcessor {
                         );
                         return Ok(());
                     };
-                    if hz_val < 1 || hz_val > 500 {
+                    if !(1..=500).contains(&hz_val) {
                         append_error(
                             response_out,
                             b"ERR CONFIG SET failed (possibly related to argument 'hz') - argument must be between 1 and 500",
@@ -6568,7 +6569,7 @@ fn restore_redis_hash_dump_payload(
     field_expirations: Vec<RedisRdbHashFieldExpiration>,
     expiration_unix_millis: Option<u64>,
 ) -> Result<bool, RequestExecutionError> {
-    if should_materialize_restored_value(expiration_unix_millis)? == false {
+    if !should_materialize_restored_value(expiration_unix_millis)? {
         return Ok(false);
     }
 
@@ -6689,7 +6690,7 @@ fn restore_migration_value(
     value: MigrationValue,
     expiration_unix_millis: Option<u64>,
 ) -> Result<bool, RequestExecutionError> {
-    if should_materialize_restored_value(expiration_unix_millis)? == false {
+    if !should_materialize_restored_value(expiration_unix_millis)? {
         return Ok(false);
     }
 
@@ -6784,7 +6785,7 @@ fn restore_redis_rdb_snapshot_entry(
         value,
         expiration_unix_millis,
     } = entry;
-    if should_materialize_restored_value(expiration_unix_millis)? == false {
+    if !should_materialize_restored_value(expiration_unix_millis)? {
         return Ok(false);
     }
 
@@ -8510,16 +8511,14 @@ fn encode_redis_stream_listpack(node_entries: &[(&StreamId, &Vec<(Vec<u8>, Vec<u
         listpack_entries.push(
             entry_id
                 .timestamp_millis()
-                .checked_sub(master_id.timestamp_millis())
-                .unwrap_or(0)
+                .saturating_sub(master_id.timestamp_millis())
                 .to_string()
                 .into_bytes(),
         );
         listpack_entries.push(
             entry_id
                 .sequence()
-                .checked_sub(master_id.sequence())
-                .unwrap_or(0)
+                .saturating_sub(master_id.sequence())
                 .to_string()
                 .into_bytes(),
         );
@@ -9409,11 +9408,9 @@ fn redis_lzf_decompress(compressed: &[u8], expected_len: usize) -> Option<Vec<u8
         if distance > output.len() {
             return None;
         }
-        let mut ref_index = output.len() - distance;
-        for _ in 0..copy_len {
+        for ref_index in output.len() - distance..output.len() - distance + copy_len {
             let value = *output.get(ref_index)?;
             output.push(value);
-            ref_index += 1;
         }
     }
 

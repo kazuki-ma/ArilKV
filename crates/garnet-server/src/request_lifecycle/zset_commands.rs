@@ -1851,13 +1851,13 @@ fn parse_zadd_options(args: &[&[u8]]) -> Result<ZaddOptions, RequestExecutionErr
     }
 
     let score_arguments = args.len() - index;
-    if score_arguments == 0 || score_arguments % 2 != 0 {
+    if score_arguments == 0 || !score_arguments.is_multiple_of(2) {
         return Err(RequestExecutionError::SyntaxError);
     }
     if options.nx && options.xx {
         return Err(RequestExecutionError::SyntaxError);
     }
-    if (options.gt && options.nx) || (options.lt && options.nx) || (options.gt && options.lt) {
+    if (options.gt || options.lt) && (options.nx || options.gt && options.lt) {
         return Err(RequestExecutionError::SyntaxError);
     }
     if options.incr && score_arguments != 2 {

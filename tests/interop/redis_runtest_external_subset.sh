@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-GARNET_RS_ROOT="${WORKSPACE_ROOT}/garnet-rs"
+GARNET_RS_ROOT="${WORKSPACE_ROOT}"
 
 REDIS_REPO_ROOT="${REDIS_REPO_ROOT:-/Users/kazuki-matsuda/dev/src/github.com/redis/redis}"
 RUNTEXT_BIN="${REDIS_RUNTEXT_BIN:-${REDIS_REPO_ROOT}/runtest}"
@@ -101,7 +101,7 @@ echo "case,status,details" > "${SUMMARY_CSV}"
 
 resolved_garnet_server_cmd() {
     if [[ "${GARNET_SERVER_CMD}" == "cargo run -p garnet-server --release" ]]; then
-        echo "cargo run --manifest-path '${GARNET_RS_ROOT}/Cargo.toml' -p garnet-server --release"
+        echo "rustup run 1.95.0 cargo run --manifest-path '${GARNET_RS_ROOT}/Cargo.toml' -p garnet-server --release"
         return 0
     fi
     echo "${GARNET_SERVER_CMD}"
@@ -125,7 +125,7 @@ record_result() {
 
 wait_for_ping() {
     local port="$1"
-    for _ in $(seq 1 200); do
+    for _ in $(seq 1 1200); do
         if redis-cli -h 127.0.0.1 -p "${port}" PING >/dev/null 2>&1; then
             return 0
         fi
@@ -265,8 +265,8 @@ if old not in text:
     raise SystemExit(f"expected proc test header not found in {path}")
 text = text.replace(old, new, 1)
 
-old = """    if {![tags_acceptable $tags err]} {\n        incr ::num_aborted\n        send_data_packet $::test_server_fd ignore \"$name: $err\"\n        return\n    }\n\n    incr ::num_tests\n"""
-new = """    if {![tags_acceptable $tags err]} {\n        incr ::num_aborted\n        send_data_packet $::test_server_fd ignore \"$name: $err\"\n        return\n    }\n\n    garnet_external_prepare_exact_test $name\n\n    incr ::num_tests\n"""
+old = """    if {![tags_acceptable $tags err]} {\n        incr ::num_aborted\n        send_data_packet $::test_server_fd ignore \"$name: $err\"\n        return\n    }\n"""
+new = """    if {![tags_acceptable $tags err]} {\n        incr ::num_aborted\n        send_data_packet $::test_server_fd ignore \"$name: $err\"\n        return\n    }\n\n    garnet_external_prepare_exact_test $name\n"""
 if old not in text:
     raise SystemExit(f"expected tags_acceptable block not found in {path}")
 path.write_text(text.replace(old, new, 1))
@@ -589,11 +589,15 @@ run_runtest_case() {
         "${RUNTEXT_BIN}"
         --host 127.0.0.1
         --port "${GARNET_PORT}"
-        "${RUNTEXT_DB_MODE_ARGS[@]}"
-        "${RUNTEXT_COMMON_ARGS[@]}"
         --dont-clean
         --single "${unit}"
     )
+    if ((${#RUNTEXT_DB_MODE_ARGS[@]} > 0)); then
+        cmd+=("${RUNTEXT_DB_MODE_ARGS[@]}")
+    fi
+    if ((${#RUNTEXT_COMMON_ARGS[@]} > 0)); then
+        cmd+=("${RUNTEXT_COMMON_ARGS[@]}")
+    fi
 
     for test_name in "$@"; do
         cmd+=(--only "${test_name}")
@@ -635,11 +639,15 @@ run_full_runtest_case() {
         "${RUNTEXT_BIN}"
         --host 127.0.0.1
         --port "${GARNET_PORT}"
-        "${RUNTEXT_DB_MODE_ARGS[@]}"
-        "${RUNTEXT_COMMON_ARGS[@]}"
         --dont-clean
         --durable
     )
+    if ((${#RUNTEXT_DB_MODE_ARGS[@]} > 0)); then
+        cmd+=("${RUNTEXT_DB_MODE_ARGS[@]}")
+    fi
+    if ((${#RUNTEXT_COMMON_ARGS[@]} > 0)); then
+        cmd+=("${RUNTEXT_COMMON_ARGS[@]}")
+    fi
     local skip_querybuf_applied=0
     local skip_scripting_applied=0
     local skiptest_scripting_noreplicas_applied=0
@@ -845,13 +853,19 @@ run_isolated_unit_case() {
         "${RUNTEXT_BIN}"
         --host 127.0.0.1
         --port "${GARNET_PORT}"
-        "${RUNTEXT_DB_MODE_ARGS[@]}"
-        "${RUNTEXT_COMMON_ARGS[@]}"
         --dont-clean
         --durable
         --single "${unit}"
-        "${case_args[@]}"
     )
+    if ((${#RUNTEXT_DB_MODE_ARGS[@]} > 0)); then
+        cmd+=("${RUNTEXT_DB_MODE_ARGS[@]}")
+    fi
+    if ((${#RUNTEXT_COMMON_ARGS[@]} > 0)); then
+        cmd+=("${RUNTEXT_COMMON_ARGS[@]}")
+    fi
+    if ((${#case_args[@]} > 0)); then
+        cmd+=("${case_args[@]}")
+    fi
 
     local effective_timeout="${RUNTEXT_TIMEOUT_SECONDS}"
     if [[ -n "${timeout_override}" ]]; then

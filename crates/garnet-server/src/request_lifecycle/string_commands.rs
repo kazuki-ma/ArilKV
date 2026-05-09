@@ -1741,6 +1741,7 @@ impl RequestProcessor {
         };
         let effective_expiration = options.expiration.or(preserved_expiration);
 
+        #[allow(clippy::drop_non_drop)]
         drop(session);
 
         let mut session = store.session(&self.write_only_functions);
@@ -2317,11 +2318,7 @@ impl RequestProcessor {
 
         self.expire_key_if_needed(source_db_key)?;
         let destination_db_key = DbKeyRef::new(destination_db, &destination);
-        if destination_db == source_db {
-            self.expire_key_if_needed(destination_db_key)?;
-        } else {
-            self.expire_key_if_needed(destination_db_key)?;
-        }
+        self.expire_key_if_needed(destination_db_key)?;
 
         let Some(mut source_entry) = self.export_migration_entry(source_db, &source)? else {
             append_integer(response_out, 0);
@@ -3938,10 +3935,10 @@ fn lcs_sequence_and_matches(left: &[u8], right: &[u8]) -> LcsComputation {
                 should_emit_match = false;
             }
 
-            if let Some(range) = current_match.as_ref() {
-                if range.start_left == 0 || range.start_right == 0 {
-                    should_emit_match = true;
-                }
+            if let Some(range) = current_match.as_ref()
+                && (range.start_left == 0 || range.start_right == 0)
+            {
+                should_emit_match = true;
             }
 
             i -= 1;
@@ -3955,10 +3952,8 @@ fn lcs_sequence_and_matches(left: &[u8], right: &[u8]) -> LcsComputation {
             should_emit_match = current_match.is_some();
         }
 
-        if should_emit_match {
-            if let Some(range) = current_match.take() {
-                matches.push(range);
-            }
+        if should_emit_match && let Some(range) = current_match.take() {
+            matches.push(range);
         }
     }
 

@@ -1167,7 +1167,7 @@ impl DbScopedKey {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct DbKeySetState {
     by_db: HashMap<DbName, HashSet<RedisKey>>,
 }
@@ -1215,14 +1215,6 @@ impl DbKeySetState {
         }
         if let Some(right) = right {
             self.by_db.insert(db1, right);
-        }
-    }
-}
-
-impl Default for DbKeySetState {
-    fn default() -> Self {
-        Self {
-            by_db: HashMap::new(),
         }
     }
 }
@@ -4765,11 +4757,7 @@ impl RequestProcessor {
                 .common
                 .key_operations
                 .as_ref()
-                .is_some_and(|operations| {
-                    !operations
-                        .iter()
-                        .any(|operation| *operation == JwtKeyOperations::Verify)
-                })
+                .is_some_and(|operations| !operations.contains(&JwtKeyOperations::Verify))
             {
                 continue;
             }
@@ -4834,10 +4822,7 @@ impl RequestProcessor {
             let Ok(values) = self.config_overrides.lock() else {
                 return None;
             };
-            match Self::oidc_auth_config_snapshot_from_values(&values) {
-                Ok(snapshot) => snapshot,
-                Err(_) => None,
-            }
+            Self::oidc_auth_config_snapshot_from_values(&values).unwrap_or_default()
         };
 
         let Some(snapshot) = snapshot else {
@@ -4869,9 +4854,7 @@ impl RequestProcessor {
         let Ok(token_text) = std::str::from_utf8(token) else {
             return None;
         };
-        let Some(runtime) = self.current_oidc_auth_runtime() else {
-            return None;
-        };
+        let runtime = self.current_oidc_auth_runtime()?;
         let Ok(header) = decode_jwt_header(token_text) else {
             return None;
         };
@@ -5668,9 +5651,7 @@ impl RequestProcessor {
         if !self.local_aof_publish_enabled.load(Ordering::Acquire) {
             return None;
         }
-        let Some(runtime) = self.aof_durability_runtime() else {
-            return None;
-        };
+        let runtime = self.aof_durability_runtime()?;
         if !self.appendonly_enabled() {
             return None;
         }
@@ -7094,13 +7075,13 @@ impl RequestProcessor {
     }
 
     pub(super) fn force_raw_string_encoding(&self, key: DbKeyRef<'_>) {
-        if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
-            if forced.insert(key) {
-                self.db_catalog
-                    .side_state
-                    .forced_raw_string_keys_count
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock()
+            && forced.insert(key)
+        {
+            self.db_catalog
+                .side_state
+                .forced_raw_string_keys_count
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -7114,13 +7095,13 @@ impl RequestProcessor {
         {
             return;
         }
-        if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
-            if forced.remove(key) {
-                self.db_catalog
-                    .side_state
-                    .forced_raw_string_keys_count
-                    .fetch_sub(1, Ordering::Relaxed);
-            }
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock()
+            && forced.remove(key)
+        {
+            self.db_catalog
+                .side_state
+                .forced_raw_string_keys_count
+                .fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -7471,6 +7452,15 @@ impl RequestProcessor {
         selected_db: DbName,
     ) -> Result<(), RequestExecutionError> {
         self.execute_with_client_context_in_db(args, response_out, false, None, false, selected_db)
+    }
+
+    #[doc(hidden)]
+    pub fn execute_benchmark_command(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.execute_in_db(args, response_out, DbName::db0())
     }
 
     pub(crate) fn execute_with_client_context_in_db(
@@ -8639,14 +8629,14 @@ fn acl_migrate_key_accesses<'a>(args: &[&'a [u8]]) -> Vec<AclCommandKeyAccess<'a
             continue;
         }
         if ascii_eq_ignore_case(token, b"KEYS") {
-            for key_index in index + 1..args.len() {
-                if args[key_index].is_empty() {
+            for (key_index, key) in args.iter().enumerate().skip(index + 1) {
+                if key.is_empty() {
                     break;
                 }
                 push_acl_key_access(
                     &mut accesses,
                     key_index,
-                    args[key_index],
+                    key,
                     AclRequiredKeyPermission::ReadWrite,
                 );
             }
@@ -8664,7 +8654,7 @@ fn acl_sort_key_accesses<'a>(
 ) -> Vec<AclCommandKeyAccess<'a>> {
     let mut accesses = Vec::new();
     if let Some(source) = args.get(1) {
-        push_acl_key_access(&mut accesses, 1, *source, AclRequiredKeyPermission::Read);
+        push_acl_key_access(&mut accesses, 1, source, AclRequiredKeyPermission::Read);
     }
 
     let mut index = 2usize;
@@ -8708,7 +8698,7 @@ fn acl_georadius_key_accesses<'a>(
 ) -> Vec<AclCommandKeyAccess<'a>> {
     let mut accesses = Vec::new();
     if let Some(source) = args.get(1) {
-        push_acl_key_access(&mut accesses, 1, *source, AclRequiredKeyPermission::Read);
+        push_acl_key_access(&mut accesses, 1, source, AclRequiredKeyPermission::Read);
     }
 
     let mut index = match command {
@@ -8791,7 +8781,7 @@ fn acl_command_key_accesses<'a>(
             let permission = acl_default_key_permission(command, args);
             let mut accesses = Vec::with_capacity(args.len().saturating_sub(1));
             for (argument_index, key) in args.iter().enumerate().skip(1) {
-                push_acl_key_access(&mut accesses, argument_index, *key, permission);
+                push_acl_key_access(&mut accesses, argument_index, key, permission);
             }
             accesses
         }
@@ -8818,7 +8808,7 @@ fn acl_command_key_accesses<'a>(
                     .skip(1)
                     .take(args.len().saturating_sub(2))
                 {
-                    push_acl_key_access(&mut accesses, argument_index, *key, permission);
+                    push_acl_key_access(&mut accesses, argument_index, key, permission);
                 }
             }
             accesses
@@ -8829,7 +8819,7 @@ fn acl_command_key_accesses<'a>(
                 push_acl_key_access(
                     &mut accesses,
                     1,
-                    *source,
+                    source,
                     AclRequiredKeyPermission::ReadWrite,
                 );
             }
@@ -8837,7 +8827,7 @@ fn acl_command_key_accesses<'a>(
                 push_acl_key_access(
                     &mut accesses,
                     2,
-                    *destination,
+                    destination,
                     AclRequiredKeyPermission::Write,
                 );
             }
@@ -8849,7 +8839,7 @@ fn acl_command_key_accesses<'a>(
                 push_acl_key_access(
                     &mut accesses,
                     1,
-                    *source,
+                    source,
                     AclRequiredKeyPermission::ReadWrite,
                 );
             }
@@ -8857,7 +8847,7 @@ fn acl_command_key_accesses<'a>(
                 push_acl_key_access(
                     &mut accesses,
                     2,
-                    *destination,
+                    destination,
                     AclRequiredKeyPermission::Write,
                 );
             }
@@ -8866,13 +8856,13 @@ fn acl_command_key_accesses<'a>(
         CommandId::Copy => {
             let mut accesses = Vec::new();
             if let Some(source) = args.get(1) {
-                push_acl_key_access(&mut accesses, 1, *source, AclRequiredKeyPermission::Read);
+                push_acl_key_access(&mut accesses, 1, source, AclRequiredKeyPermission::Read);
             }
             if let Some(destination) = args.get(2) {
                 push_acl_key_access(
                     &mut accesses,
                     2,
-                    *destination,
+                    destination,
                     AclRequiredKeyPermission::Write,
                 );
             }
@@ -8935,7 +8925,7 @@ fn acl_command_key_accesses<'a>(
                 let permission = acl_default_key_permission(command, args);
                 let mut accesses = Vec::with_capacity(args.len().saturating_sub(1));
                 for (argument_index, key) in args.iter().enumerate().skip(1) {
-                    push_acl_key_access(&mut accesses, argument_index, *key, permission);
+                    push_acl_key_access(&mut accesses, argument_index, key, permission);
                 }
                 accesses
             }
