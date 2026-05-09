@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="ArilKV is an experimental Rust Redis-compatible server focused on owner-thread execution, correctness, and measured performance.">
+    <meta name="theme-color" content="#15100f">
+    <link rel="canonical" href="https://kazuki-ma.github.io/garnet-rs/">
+    <meta property="og:title" content="ArilKV">
+    <meta property="og:description" content="A Redis-compatible Rust server shaped around owner-thread execution and evidence-driven performance work.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://kazuki-ma.github.io/garnet-rs/">
+    <meta property="og:image" content="https://kazuki-ma.github.io/garnet-rs/assets/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:site_name" content="ArilKV">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="ArilKV">
+    <meta name="twitter:description" content="A Redis-compatible Rust server shaped around owner-thread execution and evidence-driven performance work.">
+    <meta name="twitter:image" content="https://kazuki-ma.github.io/garnet-rs/assets/og-image.png">
+    <title>ArilKV</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <canvas id="aril-field" aria-hidden="true"></canvas>
+
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="ArilKV home">
+        <span class="brand-mark"></span>
+        <span>ArilKV</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="#performance">Performance</a>
+        <a href="#design">Design</a>
+        <a href="#docs">Docs</a>
+        <a href="https://github.com/kazuki-ma/garnet-rs">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Formerly Garnet-rs</p>
+          <h1 id="hero-title">ArilKV</h1>
+          <p class="hero-lede">
+            A Redis-compatible Rust server shaped around owner-thread execution,
+            explicit correctness work, and performance claims that come with receipts.
+          </p>
+          <div class="hero-actions" aria-label="Project actions">
+            <a class="button primary" href="https://github.com/kazuki-ma/garnet-rs">View source</a>
+            <a class="button secondary" href="https://github.com/kazuki-ma/garnet-rs/blob/main/PERFORMANCE.md">Read report</a>
+          </div>
+        </div>
+        <div class="hero-panel" aria-label="Latest benchmark snapshot">
+          <p class="panel-label">Single-server-core Docker snapshot</p>
+          <dl class="metric-grid">
+            <div>
+              <dt>GET</dt>
+              <dd>218k</dd>
+              <span>ops/sec</span>
+            </div>
+            <div>
+              <dt>SET</dt>
+              <dd>178k</dd>
+              <span>ops/sec</span>
+            </div>
+            <div>
+              <dt>GET p99</dt>
+              <dd>0.047</dd>
+              <span>ms</span>
+            </div>
+            <div>
+              <dt>PIPELINE 64 GET</dt>
+              <dd>1.34M</dd>
+              <span>ops/sec</span>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="origin band" aria-labelledby="origin-title">
+        <div class="section-heading">
+          <p class="eyebrow">Name</p>
+          <h2 id="origin-title">An aril is the seed wrapped in red.</h2>
+        </div>
+        <p>
+          Garnet traces back to <em>granatus</em>, the seeded fruit. ArilKV keeps
+          that lineage but moves closer to the data model: many small, durable
+          units gathered into a fast in-memory structure.
+        </p>
+      </section>
+
+      <section id="performance" class="performance" aria-labelledby="performance-title">
+        <div class="section-heading">
+          <p class="eyebrow">Measured baseline</p>
+          <h2 id="performance-title">Fast paths are defaults, not trivia.</h2>
+        </div>
+        <div class="comparison-table" role="table" aria-label="Performance comparison">
+          <div class="table-row table-head" role="row">
+            <span role="columnheader">Target</span>
+            <span role="columnheader">SET ops/sec</span>
+            <span role="columnheader">GET ops/sec</span>
+            <span role="columnheader">GET p99</span>
+          </div>
+          <div class="table-row highlight" role="row">
+            <span role="cell">ArilKV</span>
+            <span role="cell">177,999</span>
+            <span role="cell">218,181</span>
+            <span role="cell">0.047 ms</span>
+          </div>
+          <div class="table-row" role="row">
+            <span role="cell">Dragonfly</span>
+            <span role="cell">150,864</span>
+            <span role="cell">176,304</span>
+            <span role="cell">0.055 ms</span>
+          </div>
+          <div class="table-row" role="row">
+            <span role="cell">Valkey</span>
+            <span role="cell">110,537</span>
+            <span role="cell">111,818</span>
+            <span role="cell">0.055 ms</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="design" class="feature-band" aria-labelledby="design-title">
+        <div class="section-heading">
+          <p class="eyebrow">Architecture</p>
+          <h2 id="design-title">A small surface with serious internals.</h2>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <h3>Owner-thread execution</h3>
+            <p>Mutation paths are serialized where locality matters, keeping routing explicit instead of hiding contention behind broad locks.</p>
+          </article>
+          <article>
+            <h3>Redis-compatible protocol</h3>
+            <p>RESP command handling is tested through Rust regressions and external compatibility probes as the command surface grows.</p>
+          </article>
+          <article>
+            <h3>Evidence-first performance</h3>
+            <p>Benchmark scripts capture parameters, artifacts, integrity checks, and caveats so performance work can be repeated.</p>
+          </article>
+          <article>
+            <h3>Formal-model hooks</h3>
+            <p>Critical concurrency paths are tracked against TLA+ models where the implementation needs stronger invariants.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="docs" class="docs band" aria-labelledby="docs-title">
+        <div class="section-heading">
+          <p class="eyebrow">Start here</p>
+          <h2 id="docs-title">Build, test, compare.</h2>
+        </div>
+        <div class="doc-links">
+          <a href="https://github.com/kazuki-ma/garnet-rs/blob/main/README.md">
+            <span>README</span>
+            <strong>Project overview and current snapshot</strong>
+          </a>
+          <a href="https://github.com/kazuki-ma/garnet-rs/blob/main/PERFORMANCE.md">
+            <span>Performance report</span>
+            <strong>Methodology, commands, caveats, results</strong>
+          </a>
+          <a href="https://github.com/kazuki-ma/garnet-rs/blob/main/docs/ENVIRONMENT_SETUP.md">
+            <span>Environment setup</span>
+            <strong>Local toolchain and benchmark commands</strong>
+          </a>
+          <a href="https://github.com/kazuki-ma/garnet-rs/blob/main/docs/compatibility/redis-command-status-summary.md">
+            <span>Compatibility</span>
+            <strong>Redis command coverage status</strong>
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>ArilKV</span>
+      <span>Rust, RESP, owner-thread execution.</span>
+    </footer>
+
+    <script src="main.js"></script>
+  </body>
+</html>
