@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Browse ArilKV Redis compatibility suite results and filter by command regular expressions.">
+    <meta name="theme-color" content="#15100f">
+    <link rel="canonical" href="https://kazuki-ma.github.io/ArilKV/compatibility.html">
+    <meta property="og:title" content="ArilKV Compatibility">
+    <meta property="og:description" content="Redis compatibility suite results with command regex filtering and permalinks.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://kazuki-ma.github.io/ArilKV/compatibility.html">
+    <meta property="og:image" content="https://kazuki-ma.github.io/ArilKV/assets/og-image.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="ArilKV Compatibility">
+    <meta name="twitter:description" content="Redis compatibility suite results with command regex filtering and permalinks.">
+    <meta name="twitter:image" content="https://kazuki-ma.github.io/ArilKV/assets/og-image.png">
+    <title>ArilKV Compatibility</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body class="compatibility-page">
+    <header class="site-header compact">
+      <a class="brand" href="index.html" aria-label="ArilKV home">
+        <span class="brand-mark"></span>
+        <span>ArilKV</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="index.html#performance">Performance</a>
+        <a href="compatibility.html" aria-current="page">Compatibility</a>
+        <a href="https://github.com/kazuki-ma/ArilKV">GitHub</a>
+      </nav>
+    </header>
+
+    <main class="compat-shell">
+      <section class="compat-hero" aria-labelledby="compat-title">
+        <div>
+          <p class="eyebrow">Redis compatibility suite</p>
+          <h1 id="compat-title">Find the case that matters.</h1>
+          <p>
+            Suite results are loaded from YAML and filtered in the browser. Use
+            command regular expressions to narrow the list, then share the URL.
+          </p>
+        </div>
+        <div class="suite-summary" id="suite-summary" aria-label="Compatibility summary">
+          <span>Loading suite data...</span>
+        </div>
+      </section>
+
+      <section class="compat-controls" aria-label="Compatibility filters">
+        <label>
+          <span>Command regex</span>
+          <input id="command-filter" type="search" placeholder="GET|SET, ^H, EVAL">
+        </label>
+        <label>
+          <span>Suite status</span>
+          <select id="status-filter">
+            <option value="">All statuses</option>
+            <option value="PASS">PASS</option>
+            <option value="PASS_WITH_KNOWN_GAPS">PASS_WITH_KNOWN_GAPS</option>
+            <option value="FAIL">FAIL</option>
+          </select>
+        </label>
+        <label>
+          <span>Case text</span>
+          <input id="text-filter" type="search" placeholder="unit/type/string">
+        </label>
+        <button id="copy-link" class="button secondary" type="button">Copy link</button>
+      </section>
+
+      <section class="compat-results" aria-labelledby="suite-results-title">
+        <div class="results-heading">
+          <div>
+            <p class="eyebrow">Suite cases</p>
+            <h2 id="suite-results-title">Compatibility results</h2>
+          </div>
+          <p id="result-count">0 cases</p>
+        </div>
+        <div id="suite-results" class="suite-results" aria-live="polite"></div>
+      </section>
+
+      <section class="command-index-panel" aria-labelledby="command-index-title">
+        <div class="results-heading">
+          <div>
+            <p class="eyebrow">Command index</p>
+            <h2 id="command-index-title">Declared command surface</h2>
+          </div>
+          <p id="command-count">0 commands</p>
+        </div>
+        <div id="command-index" class="command-index"></div>
+      </section>
+    </main>
+
+    <script src="compatibility.js"></script>
+  </body>
+</html>

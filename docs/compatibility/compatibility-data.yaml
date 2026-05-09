@@ -1,0 +1,1642 @@
+schema_version: 1
+last_updated: "2026-05-10"
+source: "docs/compatibility/redis-command-maturity.csv"
+summary:
+  redis_command_count: 267
+  arilkv_declared_count: 259
+  supported_declared_count: 259
+  not_implemented_count: 8
+  full_count: 230
+  partial_minimal_count: 17
+  disabled_count: 12
+  test_case_count: 5
+  test_pass_count: 5
+commands:
+  - command: "ACL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Minimal ACL subcommand surface only."
+  - command: "APPEND"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ASKING"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "AUTH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BGREWRITEAOF"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Compatibility response surface only; full AOF rewrite lifecycle semantics are not implemented."
+  - command: "BGSAVE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Compatibility response surface only; does not provide full Redis background-save lifecycle behavior."
+  - command: "BITCOUNT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BITFIELD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BITFIELD_RO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BITOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BITPOS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BLMOVE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BLMPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BLPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BRPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BRPOPLPUSH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BZMPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BZPOPMAX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "BZPOPMIN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "CLIENT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full subcommand coverage: GETNAME/SETNAME/ID/NO-EVICT/NO-TOUCH/SETINFO/INFO/LIST/KILL/HELP with per-connection state."
+  - command: "CLUSTER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled."
+  - command: "COMMAND"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "CONFIG"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "COPY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "DBSIZE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "DEBUG"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "DECR"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "DECRBY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "DEL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "DELEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared extension surface; runtime behavior is not implemented."
+  - command: "DIGEST"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Compatibility digest surface is limited to DEBUG DIGEST-VALUE."
+  - command: "DISCARD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "DUMP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ECHO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "EVAL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full Lua 5.1 sandbox with cjson/cmsgpack/bit libraries; redis.call/pcall bridge; KEYS/ARGV; and shebang support."
+  - command: "EVALSHA"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full cached-SHA execution with NOSCRIPT error and replication normalization to EVAL payloads."
+  - command: "EVALSHA_RO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full cached-SHA execution with write-command rejection inside redis.call/pcall."
+  - command: "EVAL_RO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full Lua sandbox with write-command rejection from script context."
+  - command: "EXEC"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "EXISTS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "EXPIRE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "EXPIREAT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "EXPIRETIME"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "FAILOVER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Standalone/manual failover slice implemented (`ABORT`; `TIMEOUT`; `TO host port`; `FORCE`; connected-replica target selection; promotion/demotion flow; exact validation/runtime errors) with exact Rust coverage. Cluster failover-controller integration and full cluster-management parity are not implemented yet."
+  - command: "FCALL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full function execution for FUNCTION LOAD-registered functions with library/function registry."
+  - command: "FCALL_RO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full read-only function execution with no-writes flag enforcement."
+  - command: "FLUSHALL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "FLUSHDB"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "FUNCTION"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full subcommand coverage: LOAD/LIST/DELETE/STATS/KILL/DUMP/RESTORE/FLUSH/HELP with library registry."
+  - command: "GCRA"
+    declaration_status: "NOT_IMPLEMENTED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: false
+    comment: "auto-filled: missing from command-implementation-status.yaml"
+  - command: "GCRASETVALUE"
+    declaration_status: "NOT_IMPLEMENTED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: false
+    comment: "auto-filled: missing from command-implementation-status.yaml"
+  - command: "GEOADD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEODIST"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEOHASH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEOPOS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEORADIUS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEORADIUSBYMEMBER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEORADIUSBYMEMBER_RO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEORADIUS_RO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEOSEARCH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GEOSEARCHSTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GETBIT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GETDEL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GETEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GETRANGE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "GETSET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HDEL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HELLO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HEXISTS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HEXPIRE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Hash-field expiration subset implemented; full command-family parity is not complete."
+  - command: "HEXPIREAT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared for compatibility matrix only."
+  - command: "HEXPIRETIME"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared for compatibility matrix only."
+  - command: "HGET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HGETALL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HGETDEL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Hash-field expiration extension surface implemented with partial parity."
+  - command: "HGETEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Hash-field expiration extension surface implemented with partial parity."
+  - command: "HINCRBY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HINCRBYFLOAT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HKEYS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HLEN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HMGET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HMSET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HOTKEYS"
+    declaration_status: "NOT_IMPLEMENTED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: false
+    comment: "Declared for compatibility matrix only."
+  - command: "HPERSIST"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared for compatibility matrix only."
+  - command: "HPEXPIRE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Hash-field expiration subset implemented; full command-family parity is not complete."
+  - command: "HPEXPIREAT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Hash-field expiration subset implemented; full command-family parity is not complete."
+  - command: "HPEXPIRETIME"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared for compatibility matrix only."
+  - command: "HPTTL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared for compatibility matrix only."
+  - command: "HRANDFIELD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HSCAN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HSET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HSETEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Hash-field expiration extension surface implemented with partial parity."
+  - command: "HSETNX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HSTRLEN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "HTTL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared for compatibility matrix only."
+  - command: "HVALS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "INCR"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "INCRBY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "INCRBYFLOAT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "INFO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "KEYS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LASTSAVE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LATENCY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full subcommand coverage: HISTOGRAM/HISTORY/LATEST/GRAPH/RESET/HELP with event store and command stats."
+  - command: "LCS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LINDEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LINSERT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LLEN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LMOVE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LMPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LOLWUT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LPOS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LPUSH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LPUSHX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LRANGE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LREM"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LSET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "LTRIM"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "MEMORY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "MGET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "MIGRATE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Selected-DB standalone subset implemented (`COPY`/`REPLACE`/`AUTH`/`AUTH2`/`KEYS`; target `SELECT`/`RESTORE`; target-error and `IOERR` surfacing) with exact Rust coverage. Still Garnet-to-Garnet dump payloads only; full Redis DUMP parity and replication/AOF rewrite semantics are not implemented yet."
+  - command: "MODULE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Minimal admin and introspection compatibility surface."
+  - command: "MONITOR"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real command monitoring with broadcast streaming; connection-level subscribe/unsubscribe lifecycle with RESET integration and sensitive-token redaction."
+  - command: "MOVE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "MSET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "MSETEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared extension surface; runtime behavior is not implemented."
+  - command: "MSETNX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "MULTI"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "OBJECT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PERSIST"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PEXPIRE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PEXPIREAT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PEXPIRETIME"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PFADD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PFCOUNT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PFDEBUG"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PFMERGE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PFSELFTEST"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PING"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PSETEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PSUBSCRIBE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real pattern-subscribe with message delivery; ACK tracking; and RESET integration."
+  - command: "PSYNC"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PTTL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "PUBLISH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real channel publish with subscriber delivery and broadcast."
+  - command: "PUBSUB"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full subcommand coverage: CHANNELS/NUMSUB/NUMPAT/SHARDCHANNELS/SHARDNUMSUB/HELP."
+  - command: "PUNSUBSCRIBE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real pattern-unsubscribe with ACK count tracking."
+  - command: "QUIT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RANDOMKEY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "READONLY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "READWRITE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RENAME"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RENAMENX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "REPLCONF"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "REPLICAOF"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RESET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RESTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RESTORE-ASKING"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ROLE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Returns fixed master-role shape; full role-state semantics are not implemented."
+  - command: "RPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RPOPLPUSH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RPUSH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "RPUSHX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SADD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SAVE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SCAN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SCARD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SCRIPT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full subcommand coverage: FLUSH/LOAD/EXISTS/HELP/DEBUG/KILL with runtime hardening."
+  - command: "SDIFF"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SDIFFSTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SELECT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SENTINEL"
+    declaration_status: "NOT_IMPLEMENTED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: false
+    comment: "Declared extension surface; runtime behavior is not implemented."
+  - command: "SET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SETBIT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SETEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SETNX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SETRANGE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SFLUSH"
+    declaration_status: "NOT_IMPLEMENTED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: false
+    comment: "Declared extension surface; runtime behavior is not implemented."
+  - command: "SHUTDOWN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SINTER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SINTERCARD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SINTERSTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SISMEMBER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SLAVEOF"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SLOWLOG"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Full subcommand coverage: GET/LEN/RESET/HELP with slowlog event store."
+  - command: "SMEMBERS"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SMISMEMBER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SMOVE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SORT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SORT_RO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SPUBLISH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real shard-channel publish with subscriber delivery."
+  - command: "SRANDMEMBER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SREM"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SSCAN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SSUBSCRIBE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real shard-channel subscribe with message delivery and ACK tracking."
+  - command: "STRLEN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SUBSCRIBE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real channel subscribe with message delivery and ACK tracking."
+  - command: "SUBSTR"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SUNION"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SUNIONSTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SUNSUBSCRIBE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real shard-channel unsubscribe with ACK count tracking."
+  - command: "SWAPDB"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "SYNC"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "TIME"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "TOUCH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "TRIMSLOTS"
+    declaration_status: "NOT_IMPLEMENTED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: false
+    comment: "Declared extension surface; runtime behavior is not implemented."
+  - command: "TTL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "TYPE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "UNLINK"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "UNSUBSCRIBE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Real channel unsubscribe with ACK count tracking."
+  - command: "UNWATCH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "WAIT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Top-level command-path WAIT now uses the downstream replication ACK ledger and timeout wait primitive; but transaction/script edge contexts and durability-coupled semantics are not yet full Redis parity."
+  - command: "WAITAOF"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "PARTIAL_MINIMAL"
+    redis_present: true
+    arilkv_present: true
+    comment: "Minimal compatibility behavior; full replication and durability semantics are not implemented."
+  - command: "WATCH"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XACK"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XACKDEL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XADD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XAUTOCLAIM"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XCFGSET"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: true
+    comment: "Declared extension surface; runtime behavior is not implemented."
+  - command: "XCLAIM"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XDEL"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XDELEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XGROUP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XIDMPRECORD"
+    declaration_status: "NOT_IMPLEMENTED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: false
+    comment: "auto-filled: missing from command-implementation-status.yaml"
+  - command: "XINFO"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XLEN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XNACK"
+    declaration_status: "NOT_IMPLEMENTED"
+    implementation_status: "DISABLED"
+    redis_present: true
+    arilkv_present: false
+    comment: "auto-filled: missing from command-implementation-status.yaml"
+  - command: "XPENDING"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XRANGE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XREAD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XREADGROUP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XREVRANGE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XSETID"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "XTRIM"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZADD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZCARD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZCOUNT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZDIFF"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZDIFFSTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZINCRBY"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZINTER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZINTERCARD"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZINTERSTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZLEXCOUNT"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZMPOP"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZMSCORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZPOPMAX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZPOPMIN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZRANDMEMBER"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZRANGE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZRANGEBYLEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZRANGEBYSCORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZRANGESTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZRANK"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZREM"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZREMRANGEBYLEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZREMRANGEBYRANK"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZREMRANGEBYSCORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZREVRANGE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZREVRANGEBYLEX"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZREVRANGEBYSCORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZREVRANK"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZSCAN"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZSCORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZUNION"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+  - command: "ZUNIONSTORE"
+    declaration_status: "SUPPORTED_DECLARED"
+    implementation_status: "FULL"
+    redis_present: true
+    arilkv_present: true
+    comment: ""
+test_cases:
+  - case: "redis_runtest_string_mget_mset"
+    status: "PASS"
+    unit: "unit/type/string"
+    commands: ["MGET", "MSET", "GET", "SET"]
+    details: "unit=unit/type/string; expected_ok=6; actual_ok=6"
+  - case: "redis_runtest_incrby_decrby"
+    status: "PASS"
+    unit: "unit/type/incr"
+    commands: ["INCRBY", "DECRBY", "INCR", "DECR"]
+    details: "unit=unit/type/incr; expected_ok=4; actual_ok=4"
+  - case: "redis_runtest_keyspace_exists"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["EXISTS", "TYPE", "DEL"]
+    details: "unit=unit/keyspace; expected_ok=2; actual_ok=2"
+  - case: "redis_cli_type_probe"
+    status: "PASS"
+    unit: "redis-cli probe"
+    commands: ["TYPE", "SET", "HSET", "LPUSH", "SADD", "ZADD", "XADD"]
+    details: "redis-cli TYPE probe passed"
+  - case: "redis_cli_scripting_probe"
+    status: "PASS"
+    unit: "redis-cli probe"
+    commands: ["EVAL", "FUNCTION", "FCALL_RO"]
+    details: "scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok"
