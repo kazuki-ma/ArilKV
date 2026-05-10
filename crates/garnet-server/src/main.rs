@@ -7,6 +7,8 @@ use garnet_server::set_owner_execution_inline_default;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+const TOKIO_WORKER_THREADS_ENV: &str = "TOKIO_WORKER_THREADS";
+
 mod multi_port_runtime;
 mod server_launch_config;
 
@@ -38,6 +40,26 @@ fn validate_server_launch_config(
     Ok(())
 }
 
+fn parse_tokio_worker_threads(raw: Option<&str>) -> std::io::Result<Option<usize>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    let parsed = trimmed.parse::<usize>().map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid {TOKIO_WORKER_THREADS_ENV} `{raw}`: {error}"),
+        )
+    })?;
+    if parsed == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid {TOKIO_WORKER_THREADS_ENV} `{raw}`: must be >= 1"),
+        ));
+    }
+    Ok(Some(parsed))
+}
+
 #[cfg(test)]
 fn parse_server_config_from_values(
     bind_addr: Option<&str>,
@@ -63,8 +85,18 @@ fn parse_server_config_from_values(
     Ok(config)
 }
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> std::io::Result<()> {
+fn main() -> std::io::Result<()> {
+    let worker_threads =
+        parse_tokio_worker_threads(std::env::var(TOKIO_WORKER_THREADS_ENV).ok().as_deref())?;
+    let mut runtime = tokio::runtime::Builder::new_multi_thread();
+    runtime.enable_all();
+    if let Some(worker_threads) = worker_threads {
+        runtime.worker_threads(worker_threads);
+    }
+    runtime.build()?.block_on(async_main())
+}
+
+async fn async_main() -> std::io::Result<()> {
     let launch = parse_server_launch_config_from_env()?;
     validate_server_launch_config(&launch)?;
     if launch.bind_addrs.len() == 1 && !launch.owner_thread_pinning.enabled {

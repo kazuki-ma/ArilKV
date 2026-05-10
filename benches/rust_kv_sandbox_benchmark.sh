@@ -23,6 +23,7 @@ SERVER_THREADS="${SERVER_THREADS:-}"
 SERVER_MEMORY="${SERVER_MEMORY:-4g}"
 SERVER_CPUS="${SERVER_CPUS:-}"
 SERVER_CPUSET="${SERVER_CPUSET:-}"
+ARILKV_TOKIO_WORKER_THREADS="${ARILKV_TOKIO_WORKER_THREADS:-${TOKIO_WORKER_THREADS:-}}"
 BENCH_MEMORY="${BENCH_MEMORY:-2g}"
 BENCH_CPUSET="${BENCH_CPUSET:-}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7-alpine}"
@@ -225,6 +226,9 @@ run_server() {
                 -e GARNET_BIND_ADDR=0.0.0.0:6379
                 -e RUST_BACKTRACE=0
             )
+            if [[ -n "${ARILKV_TOKIO_WORKER_THREADS}" ]]; then
+                args+=(-e "TOKIO_WORKER_THREADS=${ARILKV_TOKIO_WORKER_THREADS}")
+            fi
             ;;
         lux)
             args+=(-e RUST_BACKTRACE=0)
@@ -351,6 +355,7 @@ write_metadata() {
         echo "server_memory=${SERVER_MEMORY}"
         echo "server_cpus=${SERVER_CPUS:-unlimited}"
         echo "server_cpuset=${SERVER_CPUSET:-unconstrained}"
+        echo "arilkv_tokio_worker_threads=${ARILKV_TOKIO_WORKER_THREADS:-default}"
         echo "bench_memory=${BENCH_MEMORY}"
         echo "bench_cpuset=${BENCH_CPUSET:-unconstrained}"
         echo "restart_between_benchmarks=${RESTART_BETWEEN_BENCHMARKS}"

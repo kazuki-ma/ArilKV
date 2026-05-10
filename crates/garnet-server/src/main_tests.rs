@@ -26,6 +26,25 @@ fn parse_server_config_from_values_rejects_invalid_buffer_size() {
 }
 
 #[test]
+fn parse_tokio_worker_threads_accepts_positive_value() {
+    assert_eq!(parse_tokio_worker_threads(Some("4")).unwrap(), Some(4));
+    assert_eq!(parse_tokio_worker_threads(Some(" 2 ")).unwrap(), Some(2));
+    assert_eq!(parse_tokio_worker_threads(None).unwrap(), None);
+}
+
+#[test]
+fn parse_tokio_worker_threads_rejects_invalid_or_zero_value() {
+    let error = parse_tokio_worker_threads(Some("0")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("TOKIO_WORKER_THREADS"));
+    assert!(error.to_string().contains("must be >= 1"));
+
+    let error = parse_tokio_worker_threads(Some("many")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("TOKIO_WORKER_THREADS"));
+}
+
+#[test]
 fn parse_server_launch_config_defaults_to_single_default_bind_addr() {
     let config =
         parse_server_launch_config_from_values(None, None, None, None, None, None, None, None)

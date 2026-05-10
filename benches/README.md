@@ -116,6 +116,10 @@ keeps `redis-benchmark -t get` from inheriting keyspace state from a preceding
 `SET` measurement. Without this, GET hit-path and miss-path results are mixed
 depending on test order.
 
+Set `ARILKV_TOKIO_WORKER_THREADS=<n>` to force the ArilKV Tokio runtime worker
+count inside the container. If it is unset, the harness also accepts the older
+`TOKIO_WORKER_THREADS=<n>` environment variable as a fallback.
+
 Representative local snapshot with `SERVER_CPUSET=12-15`,
 `RESTART_BETWEEN_BENCHMARKS=1`, `REQUESTS=1000000`, `CLIENTS=50`,
 `DATA_SIZE=32`, and `KEYSPACE=1000000`:
@@ -155,6 +159,7 @@ Each run writes `redis-official-benchmark-<timestamp>.txt` with benchmark config
 - `GARNET_OWNER_THREAD_PINNING` (optional bool, default `0`; enable owner listener thread CPU pinning)
 - `GARNET_OWNER_THREAD_CPU_SET` (optional comma-separated CPU indices, e.g. `0,1,2,3`; if set, pinning is auto-enabled and owner threads are assigned round-robin over this set)
 - `GARNET_READ_BUFFER_SIZE`
+- `TOKIO_WORKER_THREADS` (optional positive integer; overrides the single-port Tokio runtime worker-thread count)
 
 Note: app-side pinning is best-effort. On some platforms/container settings, affinity calls can fail and the server continues without pinning. Use `taskset -c ...` (Linux) for strict process-level pinning.
 
