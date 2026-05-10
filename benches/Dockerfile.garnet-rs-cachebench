@@ -9,7 +9,7 @@ RUN rustup set profile minimal \
 COPY . /src
 RUN cargo build --release -p garnet-server --manifest-path /src/Cargo.toml
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN groupadd --system garnet \
     && useradd --system --gid garnet --create-home --home-dir /home/garnet garnet

@@ -84,6 +84,48 @@ Override those environment variables to compare other releases. Use
 threading experiments, and `DRAGONFLY_PROACTOR_THREADS=<n>` /
 `DRAGONFLY_CONN_IO_THREADS=<n>` for Dragonfly threading experiments.
 
+## ArilKV / Lux / FeOx Docker Sandbox Comparison
+
+`rust_kv_sandbox_benchmark.sh` builds or reuses isolated Docker images for
+ArilKV, Lux, and FeOx, then runs identical `redis-benchmark` workloads through
+a private internal Docker bridge network. Runtime containers use no host ports,
+non-root users, read-only root filesystems, `no-new-privileges`, and
+`cap-drop=ALL`.
+
+Quick run with existing images:
+
+```bash
+cd .
+SKIP_BUILD=1 \
+ARILKV_IMAGE=arilkv-bench:smoke2-20260511-064309 \
+TARGETS=arilkv,lux,feox \
+REQUESTS=1000000 CLIENTS=50 PIPELINES=1,64 TESTS=set,get \
+SERVER_CPUSET=12-15 RESTART_BETWEEN_BENCHMARKS=1 \
+benches/rust_kv_sandbox_benchmark.sh
+```
+
+On Apple Silicon Macs, avoid leaving benchmark server containers CPU-unbounded
+when measuring high-pipeline `redis-benchmark` runs. On the local Apple M5 Max
+used for the May 2026 investigation, macOS reported 18 cores with host CPU IDs
+`12-17` mapped to the high-performance `cluster-type=P` group. Docker Desktop
+does not provide a hard host-core affinity guarantee, but `--cpuset-cpus 12-15`
+measured materially faster than `0-3` for ArilKV `GET -c 50 -P 64`.
+
+Use `RESTART_BETWEEN_BENCHMARKS=1` when comparing raw command throughput. This
+keeps `redis-benchmark -t get` from inheriting keyspace state from a preceding
+`SET` measurement. Without this, GET hit-path and miss-path results are mixed
+depending on test order.
+
+Representative local snapshot with `SERVER_CPUSET=12-15`,
+`RESTART_BETWEEN_BENCHMARKS=1`, `REQUESTS=1000000`, `CLIENTS=50`,
+`DATA_SIZE=32`, and `KEYSPACE=1000000`:
+
+| Target | SET P1 | GET P1 | SET P64 | GET P64 |
+|---|---:|---:|---:|---:|
+| ArilKV | 249812.66 | 256278.83 | 988142.31 | 1838235.25 |
+| Lux | 252334.09 | 256607.64 | 5586592.00 | 8403361.00 |
+| FeOx | 207511.94 | 232720.50 | 1669449.12 | 7352941.00 |
+
 ### Common options
 
 - `REDIS_BENCH_HOST` (default: `127.0.0.1`)
