@@ -374,10 +374,12 @@ h1 {
 
 .compatibility-page {
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 .compat-shell {
   width: min(1180px, calc(100% - 40px));
+  max-width: 100%;
   margin: 0 auto;
   padding: clamp(3rem, 7vw, 5.5rem) 0;
 }
@@ -412,6 +414,7 @@ h1 {
 .suite-summary {
   width: 100%;
   min-width: 0;
+  justify-self: stretch;
   padding: 1rem;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -525,7 +528,7 @@ h1 {
 
 .suite-case {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.4fr);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.34fr);
   gap: 1.2rem;
   padding: 1rem;
   border: 1px solid rgba(255, 250, 243, 0.14);
@@ -549,12 +552,17 @@ h1 {
   display: grid;
   align-content: space-between;
   gap: 0.8rem;
+  min-width: 0;
 }
 
 .case-meta > div {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
+}
+
+.suite-case > div {
+  min-width: 0;
 }
 
 .status-badge,

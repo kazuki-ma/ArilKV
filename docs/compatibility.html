@@ -3,17 +3,17 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Browse ArilKV Redis compatibility suite results and filter by command regular expressions.">
+    <meta name="description" content="Browse ArilKV Redis full-regression compatibility results and filter by command regular expressions.">
     <meta name="theme-color" content="#15100f">
     <link rel="canonical" href="https://kazuki-ma.github.io/ArilKV/compatibility.html">
     <meta property="og:title" content="ArilKV Compatibility">
-    <meta property="og:description" content="Redis compatibility suite results with command regex filtering and permalinks.">
+    <meta property="og:description" content="Redis full-regression compatibility results with command regex filtering and permalinks.">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://kazuki-ma.github.io/ArilKV/compatibility.html">
     <meta property="og:image" content="https://kazuki-ma.github.io/ArilKV/assets/og-image.png">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="ArilKV Compatibility">
-    <meta name="twitter:description" content="Redis compatibility suite results with command regex filtering and permalinks.">
+    <meta name="twitter:description" content="Redis full-regression compatibility results with command regex filtering and permalinks.">
     <meta name="twitter:image" content="https://kazuki-ma.github.io/ArilKV/assets/og-image.png">
     <title>ArilKV Compatibility</title>
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -38,11 +38,12 @@
     <main class="compat-shell">
       <section class="compat-hero" aria-labelledby="compat-title">
         <div>
-          <p class="eyebrow">Redis compatibility suite</p>
+          <p class="eyebrow">Redis full regression</p>
           <h1 id="compat-title">Find the case that matters.</h1>
           <p>
-            Suite results are loaded from YAML and filtered in the browser. Use
-            command regular expressions to narrow the list, then share the URL.
+            Redis runtest results are loaded from YAML and filtered in the
+            browser. Use command regular expressions to narrow the list, then
+            share the URL.
           </p>
         </div>
         <div class="suite-summary" id="suite-summary" aria-label="Compatibility summary">
@@ -60,8 +61,9 @@
           <select id="status-filter">
             <option value="">All statuses</option>
             <option value="PASS">PASS</option>
-            <option value="PASS_WITH_KNOWN_GAPS">PASS_WITH_KNOWN_GAPS</option>
             <option value="FAIL">FAIL</option>
+            <option value="TIMEOUT">TIMEOUT</option>
+            <option value="IGNORE">IGNORE</option>
           </select>
         </label>
         <label>
@@ -74,7 +76,7 @@
       <section class="compat-results" aria-labelledby="suite-results-title">
         <div class="results-heading">
           <div>
-            <p class="eyebrow">Suite cases</p>
+            <p class="eyebrow">Runtest cases</p>
             <h2 id="suite-results-title">Compatibility results</h2>
           </div>
           <p id="result-count">0 cases</p>

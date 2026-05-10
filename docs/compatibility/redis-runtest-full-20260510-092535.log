@@ -1,0 +1,933 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 68768
+[1;37;49mTesting unit/acl-v2[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[1/147 [0;33;49mdone[0m]: unit/acl-v2 (0 seconds)
+[1;37;49mTesting unit/acl[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[2/147 [0;33;49mdone[0m]: unit/acl (0 seconds)
+[1;37;49mTesting unit/aofrw[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[3/147 [0;33;49mdone[0m]: unit/aofrw (0 seconds)
+[1;37;49mTesting unit/auth[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[4/147 [0;33;49mdone[0m]: unit/auth (0 seconds)
+[1;37;49mTesting unit/bitfield[0m
+[[0;32;49mok[0m]: BITFIELD signed SET and GET basics (1 ms)
+[[0;32;49mok[0m]: BITFIELD unsigned SET and GET basics (0 ms)
+[[0;32;49mok[0m]: BITFIELD signed SET and GET together (1 ms)
+[[0;32;49mok[0m]: BITFIELD unsigned with SET, GET and INCRBY arguments (0 ms)
+[[0;32;49mok[0m]: BITFIELD with only key as argument (0 ms)
+[[0;32;49mok[0m]: BITFIELD #<idx> form (1 ms)
+[[0;32;49mok[0m]: BITFIELD basic INCRBY form (0 ms)
+[[0;32;49mok[0m]: BITFIELD chaining of multiple commands (0 ms)
+[[0;32;49mok[0m]: BITFIELD unsigned overflow wrap (0 ms)
+[[0;32;49mok[0m]: BITFIELD unsigned overflow sat (0 ms)
+[[0;32;49mok[0m]: BITFIELD signed overflow wrap (0 ms)
+[[0;32;49mok[0m]: BITFIELD signed overflow sat (0 ms)
+[[0;32;49mok[0m]: BITFIELD overflow detection fuzzing (108 ms)
+[[0;32;49mok[0m]: BITFIELD overflow wrap fuzzing (127 ms)
+[[0;32;49mok[0m]: BITFIELD regression for #3221 (0 ms)
+[[0;32;49mok[0m]: BITFIELD regression for #3564 (1 ms)
+[[0;32;49mok[0m]: BITFIELD_RO with only key as argument (0 ms)
+[[0;32;49mok[0m]: BITFIELD_RO fails when write option is used (0 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[5/147 [0;33;49mdone[0m]: unit/bitfield (0 seconds)
+[1;37;49mTesting unit/bitops[0m
+[[0;32;49mok[0m]: BITCOUNT against wrong type (0 ms)
+[[0;32;49mok[0m]: BITCOUNT returns 0 against non existing key (0 ms)
+[[0;32;49mok[0m]: BITCOUNT returns 0 with out of range indexes (0 ms)
+[[0;32;49mok[0m]: BITCOUNT returns 0 with negative indexes where start > end (0 ms)
+[[0;32;49mok[0m]: BITCOUNT against test vector #1 (0 ms)
+[[0;32;49mok[0m]: BITCOUNT against test vector #2 (0 ms)
+[[0;32;49mok[0m]: BITCOUNT against test vector #3 (0 ms)
+[[0;32;49mok[0m]: BITCOUNT against test vector #4 (0 ms)
+[[0;32;49mok[0m]: BITCOUNT against test vector #5 (0 ms)
+[[0;32;49mok[0m]: BITCOUNT fuzzing without start/end (64 ms)
+[[0;32;49mok[0m]: BITCOUNT fuzzing with start/end (105 ms)
+[[0;32;49mok[0m]: BITCOUNT with start, end (0 ms)
+[[0;32;49mok[0m]: BITCOUNT with illegal arguments (1 ms)
+[[0;32;49mok[0m]: BITCOUNT against non-integer value (0 ms)
+[[0;32;49mok[0m]: BITCOUNT regression test for github issue #582 (0 ms)
+[[0;32;49mok[0m]: BITCOUNT misaligned prefix (0 ms)
+[[0;32;49mok[0m]: BITCOUNT misaligned prefix + full words + remainder (0 ms)
+[[0;32;49mok[0m]: BITOP NOT (empty string) (0 ms)
+[[0;32;49mok[0m]: BITOP NOT (known string) (0 ms)
+[[0;32;49mok[0m]: BITOP NOT with multiple source keys (0 ms)
+[[0;32;49mok[0m]: BITOP where dest and target are the same key (1 ms)
+[[0;32;49mok[0m]: BITOP AND|OR|XOR|ONE don't change the string with single input key (0 ms)
+[[0;32;49mok[0m]: BITOP DIFF|DIFF1|ANDOR with one source key (0 ms)
+[[0;32;49mok[0m]: BITOP missing key is considered a stream of zero (1 ms)
+[[0;32;49mok[0m]: BITOP shorter keys are zero-padded to the key with max length (1 ms)
+[[0;32;49mok[0m]: BITOP and fuzzing (89 ms)
+[[0;32;49mok[0m]: BITOP or fuzzing (96 ms)
+[[0;32;49mok[0m]: BITOP xor fuzzing (81 ms)
+[[0;32;49mok[0m]: BITOP diff fuzzing (134 ms)
+[[0;32;49mok[0m]: BITOP diff1 fuzzing (136 ms)
+[[0;32;49mok[0m]: BITOP andor fuzzing (123 ms)
+[[0;32;49mok[0m]: BITOP one fuzzing (199 ms)
+[[0;32;49mok[0m]: BITOP NOT fuzzing (19 ms)
+[[0;32;49mok[0m]: BITOP and with large values (AVX-512 path) (586 ms)
+[[0;32;49mok[0m]: BITOP or with large values (AVX-512 path) (644 ms)
+[[0;32;49mok[0m]: BITOP xor with large values (AVX-512 path) (588 ms)
+[[0;32;49mok[0m]: BITOP diff with large values (AVX-512 path) (571 ms)
+[[0;32;49mok[0m]: BITOP diff1 with large values (AVX-512 path) (577 ms)
+[[0;32;49mok[0m]: BITOP andor with large values (AVX-512 path) (583 ms)
+[[0;32;49mok[0m]: BITOP one with large values (AVX-512 path) (1476 ms)
+[[0;32;49mok[0m]: BITOP with integer encoded source objects (0 ms)
+[[0;32;49mok[0m]: BITOP with non string source key (0 ms)
+[[0;32;49mok[0m]: BITOP with empty string after non empty string (issue #529) (1 ms)
+[[0;32;49mok[0m]: BITPOS against wrong type (0 ms)
+[[0;32;49mok[0m]: BITPOS will illegal arguments (0 ms)
+[[0;32;49mok[0m]: BITPOS against non-integer value (0 ms)
+[[0;32;49mok[0m]: BITPOS bit=0 with empty key returns 0 (0 ms)
+[[0;32;49mok[0m]: BITPOS bit=1 with empty key returns -1 (0 ms)
+[[0;32;49mok[0m]: BITPOS bit=0 with string less than 1 word works (0 ms)
+[[0;32;49mok[0m]: BITPOS bit=1 with string less than 1 word works (0 ms)
+[[0;32;49mok[0m]: BITPOS bit=0 starting at unaligned address (1 ms)
+[[0;32;49mok[0m]: BITPOS bit=1 starting at unaligned address (0 ms)
+[[0;32;49mok[0m]: BITPOS bit=0 unaligned+full word+reminder (2 ms)
+[[0;32;49mok[0m]: BITPOS bit=1 unaligned+full word+reminder (2 ms)
+[[0;32;49mok[0m]: BITPOS bit=1 returns -1 if string is all 0 bits (4 ms)
+[[0;32;49mok[0m]: BITPOS bit=0 works with intervals (1 ms)
+[[0;32;49mok[0m]: BITPOS bit=1 works with intervals (0 ms)
+[[0;32;49mok[0m]: BITPOS bit=0 changes behavior if end is given (0 ms)
+[[0;32;49mok[0m]: SETBIT/BITFIELD only increase dirty when the value changed (2 ms)
+[[0;32;49mok[0m]: BITPOS bit=1 fuzzy testing using SETBIT (146 ms)
+[[0;32;49mok[0m]: BITPOS bit=0 fuzzy testing using SETBIT (138 ms)
+[[0;32;49mok[0m]: BITPOS/BITCOUNT fuzzy testing using SETBIT (93 ms)
+[[0;36;49mignore[0m]: BIT pos larger than UINT_MAX: large memory flag not provided
+[[0;36;49mignore[0m]: SETBIT values larger than UINT32_MAX and lzf_compress/lzf_decompress correctly: large memory flag not provided
+[6/147 [0;33;49mdone[0m]: unit/bitops (7 seconds)
+[1;37;49mTesting unit/client-eviction[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[7/147 [0;33;49mdone[0m]: unit/client-eviction (0 seconds)
+[1;37;49mTesting unit/dump[0m
+[[0;32;49mok[0m]: DUMP / RESTORE are able to serialize / unserialize a simple key (1 ms)
+[[0;32;49mok[0m]: RESTORE can set an arbitrary expire to the materialized key (0 ms)
+[[0;32;49mok[0m]: RESTORE can set an expire that overflows a 32 bit integer (0 ms)
+[[0;32;49mok[0m]: RESTORE can set an absolute expire (1 ms)
+[[0;31;49merr[0m]: RESTORE with ABSTTL in the past in tests/unit/dump.tcl
+Expected '1' to be equal to '0' (context: type source line 51 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/dump.tcl cmd {assert_equal [expr $expiredkeys + 1] [s expired_keys]} proc ::test)
+[[0;32;49mok[0m]: RESTORE can set LRU (1 ms)
+[[0;32;49mok[0m]: RESTORE with TTL maintain valid object (9 ms)
+[[0;32;49mok[0m]: RESTORE can set LFU (6 ms)
+[[0;32;49mok[0m]: RESTORE returns an error of the key already exists (0 ms)
+[[0;32;49mok[0m]: RESTORE can overwrite an existing key with REPLACE (0 ms)
+[[0;32;49mok[0m]: RESTORE can detect a syntax error for unrecognized options (0 ms)
+[[0;32;49mok[0m]: RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK (1 ms)
+[[0;32;49mok[0m]: DUMP of non existing key returns nil (0 ms)
+[[0;36;49mignore[0m]: MIGRATE is caching connections: Not supported on external server
+[[0;32;49mok[0m]: MIGRATE cached connections are released after some time (15005 ms)
+[[0;36;49mignore[0m]: MIGRATE is able to migrate a key between two instances: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE is able to copy a key between two instances: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE will not overwrite existing keys, unless REPLACE is used: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE propagates TTL correctly: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE can correctly transfer large values: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE can correctly transfer hashes: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE timeout actually works: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE can migrate multiple keys at once: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE with multiple keys must have empty key arg: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE with multiple keys migrate just existing ones: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE with multiple keys: stress command rewriting: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE with multiple keys: delete just ack keys: Not supported on external server
+[[0;36;49mignore[0m]: MIGRATE AUTH: correct and wrong password cases: Not supported on external server
+[8/147 [0;33;49mdone[0m]: unit/dump (15 seconds)
+[1;37;49mTesting unit/expire[0m
+[[0;32;49mok[0m]: EXPIRE - set timeouts multiple times (0 ms)
+[[0;32;49mok[0m]: EXPIRE - It should be still possible to read 'x' (0 ms)
+[[0;32;49mok[0m]: EXPIRE - After 2.1 seconds the key should no longer be here (2104 ms)
+[[0;32;49mok[0m]: EXPIRE - write on expire should work (1 ms)
+[[0;32;49mok[0m]: EXPIREAT - Check for EXPIRE alike behavior (1 ms)
+[[0;32;49mok[0m]: SETEX - Set + Expire combo operation. Check for TTL (0 ms)
+[[0;32;49mok[0m]: SETEX - Check value (0 ms)
+[[0;32;49mok[0m]: SETEX - Overwrite old key (0 ms)
+[[0;32;49mok[0m]: SETEX - Wait for the key to expire (1105 ms)
+[[0;32;49mok[0m]: SETEX - Wrong time parameter (0 ms)
+[[0;32;49mok[0m]: PERSIST can undo an EXPIRE (1 ms)
+[[0;32;49mok[0m]: PERSIST returns 0 against non existing or non volatile keys (1 ms)
+[[0;32;49mok[0m]: EXPIRE precision is now the millisecond (1109 ms)
+[[0;32;49mok[0m]: PSETEX can set sub-second expires (105 ms)
+[[0;32;49mok[0m]: PEXPIRE can set sub-second expires (104 ms)
+[[0;32;49mok[0m]: PEXPIREAT can set sub-second expires (205 ms)
+[[0;32;49mok[0m]: TTL returns time to live in seconds (1 ms)
+[[0;32;49mok[0m]: PTTL returns time to live in milliseconds (1 ms)
+[[0;32;49mok[0m]: TTL / PTTL / EXPIRETIME / PEXPIRETIME return -1 if key has no expire (0 ms)
+[[0;32;49mok[0m]: TTL / PTTL / EXPIRETIME / PEXPIRETIME return -2 if key does not exit (0 ms)
+[[0;32;49mok[0m]: EXPIRETIME returns absolute expiration time in seconds (0 ms)
+[[0;32;49mok[0m]: PEXPIRETIME returns absolute expiration time in milliseconds (0 ms)
+[[0;32;49mok[0m]: Redis should actively expire keys incrementally (623 ms)
+[[0;32;49mok[0m]: Redis should lazy expire keys (1005 ms)
+[[0;32;49mok[0m]: EXPIRE should not resurrect keys (issue #1026) (1005 ms)
+[[0;32;49mok[0m]: 5 keys in, 5 keys out (0 ms)
+[[0;32;49mok[0m]: EXPIRE with empty string as TTL should report an error (0 ms)
+[[0;32;49mok[0m]: SET with EX with big integer should report an error (0 ms)
+[[0;32;49mok[0m]: SET with EX with smallest integer should report an error (0 ms)
+[[0;32;49mok[0m]: GETEX with big integer should report an error (0 ms)
+[[0;32;49mok[0m]: GETEX with smallest integer should report an error (1 ms)
+[[0;32;49mok[0m]: EXPIRE with big integer overflows when converted to milliseconds (1 ms)
+[[0;32;49mok[0m]: PEXPIRE with big integer overflow when basetime is added (0 ms)
+[[0;32;49mok[0m]: EXPIRE with big negative integer (0 ms)
+[[0;32;49mok[0m]: PEXPIREAT with big integer works (0 ms)
+[[0;32;49mok[0m]: PEXPIREAT with big negative integer works (0 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;32;49mok[0m]: All TTL in commands are propagated as absolute timestamp in replication stream (3 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;32;49mok[0m]: SET command will remove expire (0 ms)
+[[0;32;49mok[0m]: SET command will remove expire with large string (optimization path) (1 ms)
+[[0;32;49mok[0m]: SET - use KEEPTTL option, TTL should not be removed (0 ms)
+[[0;32;49mok[0m]: SET - use KEEPTTL option, TTL should not be removed after loadaof (2013 ms)
+[[0;32;49mok[0m]: GETEX use of PERSIST option should remove TTL (0 ms)
+[[0;32;49mok[0m]: GETEX use of PERSIST option should remove TTL after loadaof (1 ms)
+[[0;32;49mok[0m]: GETEX propagate as to replica as PERSIST, DEL, or nothing (1 ms)
+[[0;32;49mok[0m]: EXPIRE with NX option on a key with ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with NX option on a key without ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with XX option on a key with ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with XX option on a key without ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with GT option on a key with lower ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with GT option on a key with higher ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with GT option on a key without ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with LT option on a key with higher ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with LT option on a key with lower ttl (1 ms)
+[[0;32;49mok[0m]: EXPIRE with LT option on a key without ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with LT and XX option on a key with ttl (1 ms)
+[[0;32;49mok[0m]: EXPIRE with LT and XX option on a key without ttl (0 ms)
+[[0;32;49mok[0m]: EXPIRE with conflicting options: LT GT (0 ms)
+[[0;32;49mok[0m]: EXPIRE with conflicting options: NX GT (0 ms)
+[[0;32;49mok[0m]: EXPIRE with conflicting options: NX LT (0 ms)
+[[0;32;49mok[0m]: EXPIRE with conflicting options: NX XX (0 ms)
+[[0;32;49mok[0m]: EXPIRE with unsupported options (0 ms)
+[[0;32;49mok[0m]: EXPIRE with unsupported options (0 ms)
+[[0;32;49mok[0m]: EXPIRE with negative expiry (0 ms)
+[[0;32;49mok[0m]: EXPIRE with negative expiry on a non-valitale key (0 ms)
+[[0;32;49mok[0m]: EXPIRE with non-existed key (0 ms)
+[[0;32;49mok[0m]: Redis should not propagate the read command on lazy expire (105 ms)
+[[0;32;49mok[0m]: SCAN: Lazy-expire should not be wrapped in MULTI/EXEC (3 ms)
+[[0;32;49mok[0m]: RANDOMKEY: Lazy-expire should not be wrapped in MULTI/EXEC (3 ms)
+[[0;32;49mok[0m]: Lazy expire should increment expired_keys but not expired_keys_active (4 ms)
+[[0;32;49mok[0m]: Active expire should increment both expired_keys and expired_keys_active (105 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;32;49mok[0m]: Config lazyexpire-nested-arbitrary-keys (yes, direct) (3 ms)
+[[0;32;49mok[0m]: Config lazyexpire-nested-arbitrary-keys (yes, multi) (4 ms)
+[[0;32;49mok[0m]: Config lazyexpire-nested-arbitrary-keys (yes, lua) (4 ms)
+[[0;32;49mok[0m]: Config lazyexpire-nested-arbitrary-keys (no, direct) (3 ms)
+[[0;32;49mok[0m]: Config lazyexpire-nested-arbitrary-keys (no, multi) (4 ms)
+[[0;32;49mok[0m]: Config lazyexpire-nested-arbitrary-keys (no, lua) (3 ms)
+[9/147 [0;33;49mdone[0m]: unit/expire (11 seconds)
+[1;37;49mTesting unit/functions[0m
+[[0;32;49mok[0m]: FUNCTION - Basic usage (0 ms)
+[[0;32;49mok[0m]: FUNCTION - Load with unknown argument (0 ms)
+[[0;32;49mok[0m]: FUNCTION - Create an already exiting library raise error (0 ms)
+[[0;32;49mok[0m]: FUNCTION - Create an already exiting library raise error (case insensitive) (0 ms)
+[[0;32;49mok[0m]: FUNCTION - Create a library with wrong name format (0 ms)
+[[0;32;49mok[0m]: FUNCTION - Create library with unexisting engine (0 ms)
+[[0;32;49mok[0m]: FUNCTION - Test uncompiled script (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test replace argument (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test function case insensitive (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test replace argument with failure keeps old libraries (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test function delete (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test fcall bad arguments (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test fcall bad number of keys arguments (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test fcall negative number of keys (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test delete on not exiting library (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test function kill when function is not running (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test wrong subcommand (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test loading from rdb (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test debug reload different options (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test debug reload with nosave and noflush (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test flushall and flushdb do not clean functions (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function dump and restore (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test function dump and restore with flush argument (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function dump and restore with append argument (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test function dump and restore with replace argument (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test function restore with bad payload do not drop existing functions (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test function restore with wrong number of arguments (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test fcall_ro with write command (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test fcall_ro with read only commands (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test keys and argv (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test command get keys on fcall (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test command get keys on fcall_ro (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function kill (409 ms)
+[[0;32;49mok[0m]: FUNCTION - test script kill not working on function (409 ms)
+[[0;32;49mok[0m]: FUNCTION - test function kill not working on eval (408 ms)
+[[0;32;49mok[0m]: FUNCTION - test function flush (2 ms)
+[[0;32;49mok[0m]: FUNCTION - async function flush rebuilds Lua VM without causing race condition between main and lazyfree thread (113 ms)
+[[0;32;49mok[0m]: FUNCTION - test function wrong argument (1 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: FUNCTION can processes create, delete and flush commands in AOF when doing "debug loadaof" in read-only slaves: Not supported on external server
+[[0;32;49mok[0m]: LIBRARIES - test shared function can access default globals (1 ms)
+[[0;32;49mok[0m]: LIBRARIES - usage and code sharing (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration failure revert the entire load (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration function name collision (1 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration function name collision on same library (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration with no argument (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration with only name (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration with to many arguments (1 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration with no string name (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration with wrong name format (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - test registration with empty name (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - math.random from function load (1 ms)
+[[0;32;49mok[0m]: LIBRARIES - redis.call from function load (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - redis.setresp from function load (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - redis.set_repl from function load (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - redis.acl_check_cmd from function load (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - malicious access test (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - delete removed all functions on library (1 ms)
+[[0;32;49mok[0m]: LIBRARIES - register function inside a function (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - register library with no functions (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - load timeout (5000 ms)
+[[0;32;49mok[0m]: LIBRARIES - verify global protection on the load run (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - named arguments (1 ms)
+[[0;32;49mok[0m]: LIBRARIES - named arguments, bad function name (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - named arguments, bad callback type (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - named arguments, bad description (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - named arguments, unknown argument (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - named arguments, missing function name (0 ms)
+[[0;32;49mok[0m]: LIBRARIES - named arguments, missing callback (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function restore with function name collision (3 ms)
+[[0;32;49mok[0m]: FUNCTION - test function list with code (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test function list with pattern (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function list wrong argument (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function list with bad argument to library name (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function list withcode multiple times (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function list libraryname multiple times (0 ms)
+[[0;32;49mok[0m]: FUNCTION - verify OOM on function load and function restore (1 ms)
+[[0;32;49mok[0m]: FUNCTION - verify allow-omm allows running any command (1 ms)
+[[0;32;49mok[0m]: FUNCTION - wrong flags type named arguments (0 ms)
+[[0;32;49mok[0m]: FUNCTION - wrong flag type (0 ms)
+[[0;32;49mok[0m]: FUNCTION - unknown flag (0 ms)
+[[0;32;49mok[0m]: FUNCTION - write script on fcall_ro (0 ms)
+[[0;32;49mok[0m]: FUNCTION - write script with no-writes flag (1 ms)
+[[0;32;49mok[0m]: FUNCTION - deny oom (1 ms)
+[[0;32;49mok[0m]: FUNCTION - deny oom on no-writes function (0 ms)
+[[0;36;49mignore[0m]: FUNCTION - allow stale: Not supported on external server
+[[0;32;49mok[0m]: FUNCTION - redis version api (0 ms)
+[[0;32;49mok[0m]: FUNCTION - function stats (1 ms)
+[[0;32;49mok[0m]: FUNCTION - function stats reloaded correctly from rdb (0 ms)
+[[0;32;49mok[0m]: FUNCTION - function stats delete library (0 ms)
+[[0;32;49mok[0m]: FUNCTION - test function stats on loading failure (0 ms)
+[[0;32;49mok[0m]: FUNCTION - function stats cleaned after flush (0 ms)
+[[0;32;49mok[0m]: FUNCTION - function test empty engine (0 ms)
+[[0;32;49mok[0m]: FUNCTION - function test unknown metadata value (0 ms)
+[[0;32;49mok[0m]: FUNCTION - function test no name (1 ms)
+[[0;32;49mok[0m]: FUNCTION - function test multiple names (0 ms)
+[[0;32;49mok[0m]: FUNCTION - function test name with quotes (0 ms)
+[[0;32;49mok[0m]: FUNCTION - trick global protection 1 (1 ms)
+[[0;32;49mok[0m]: FUNCTION - test getmetatable on script load (0 ms)
+[10/147 [0;33;49mdone[0m]: unit/functions (6 seconds)
+[1;37;49mTesting unit/gcra[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[11/147 [0;33;49mdone[0m]: unit/gcra (0 seconds)
+[1;37;49mTesting unit/geo[0m
+[[0;32;49mok[0m]: GEO with wrong type src key (0 ms)
+[[0;32;49mok[0m]: GEO with non existing src key (1 ms)
+[[0;32;49mok[0m]: GEO BYLONLAT with empty search (0 ms)
+[[0;32;49mok[0m]: GEO BYMEMBER with non existing member (0 ms)
+[[0;32;49mok[0m]: GEOADD create (0 ms)
+[[0;32;49mok[0m]: GEOADD update (0 ms)
+[[0;32;49mok[0m]: GEOADD update with CH option (0 ms)
+[[0;32;49mok[0m]: GEOADD update with NX option (0 ms)
+[[0;32;49mok[0m]: GEOADD update with XX option (0 ms)
+[[0;32;49mok[0m]: GEOADD update with CH NX option (0 ms)
+[[0;32;49mok[0m]: GEOADD update with CH XX option (0 ms)
+[[0;32;49mok[0m]: GEOADD update with XX NX option will return syntax error (0 ms)
+[[0;32;49mok[0m]: GEOADD update with invalid option (0 ms)
+[[0;32;49mok[0m]: GEOADD invalid coordinates (0 ms)
+[[0;31;49merr[0m]: GEOADD out-of-range longitude/latitude error reply is well-formed in tests/unit/geo.tcl
+Expected '-ERR value is out of range' to match '-ERR invalid longitude,latitude pair*' (context: type source line 231 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/geo.tcl cmd {assert_match {-ERR invalid longitude,latitude pair*} $reply} proc ::test) 
+[[0;32;49mok[0m]: GEOADD multi add (0 ms)
+[[0;32;49mok[0m]: Check geoset values (0 ms)
+[[0;32;49mok[0m]: GEORADIUS simple (sorted) (0 ms)
+[[0;32;49mok[0m]: GEORADIUS_RO simple (sorted) (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH simple (sorted) (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH FROMLONLAT and FROMMEMBER cannot exist at the same time (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH FROMLONLAT and FROMMEMBER one must exist (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH BYRADIUS and BYBOX cannot exist at the same time (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH BYRADIUS and BYBOX one must exist (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH with STOREDIST option (0 ms)
+[[0;32;49mok[0m]: GEORADIUS withdist (sorted) (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH withdist (sorted) (0 ms)
+[[0;32;49mok[0m]: GEORADIUS with COUNT (0 ms)
+[[0;32;49mok[0m]: GEORADIUS with multiple WITH* tokens (0 ms)
+[[0;32;49mok[0m]: GEORADIUS with ANY not sorted by default (0 ms)
+[[0;32;49mok[0m]: GEORADIUS with ANY sorted by ASC (0 ms)
+[[0;32;49mok[0m]: GEORADIUS with ANY but no COUNT (0 ms)
+[[0;32;49mok[0m]: GEORADIUS with COUNT but missing integer argument (0 ms)
+[[0;32;49mok[0m]: GEORADIUS with COUNT DESC (0 ms)
+[[0;32;49mok[0m]: GEORADIUS HUGE, issue #2767 (0 ms)
+[[0;32;49mok[0m]: GEORADIUSBYMEMBER simple (sorted) (0 ms)
+[[0;32;49mok[0m]: GEORADIUSBYMEMBER_RO simple (sorted) (0 ms)
+[[0;32;49mok[0m]: GEORADIUSBYMEMBER search areas contain satisfied points in oblique direction (0 ms)
+[[0;32;49mok[0m]: GEORADIUSBYMEMBER crossing pole search (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH FROMMEMBER simple (sorted) (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH vs GEORADIUS (1 ms)
+[[0;32;49mok[0m]: GEOSEARCH non square, long and narrow (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH corner point test (0 ms)
+[[0;32;49mok[0m]: GEORADIUSBYMEMBER withdist (sorted) (0 ms)
+[[0;32;49mok[0m]: GEOHASH is able to return geohash strings (0 ms)
+[[0;32;49mok[0m]: GEOHASH with only key as argument (0 ms)
+[[0;32;49mok[0m]: GEOPOS simple (0 ms)
+[[0;32;49mok[0m]: GEOPOS missing element (0 ms)
+[[0;32;49mok[0m]: GEOPOS with only key as argument (0 ms)
+[[0;32;49mok[0m]: GEODIST simple & unit (0 ms)
+[[0;32;49mok[0m]: GEODIST missing elements (0 ms)
+[[0;32;49mok[0m]: GEORADIUS STORE option: syntax error (1 ms)
+[[0;32;49mok[0m]: GEOSEARCHSTORE STORE option: syntax error (0 ms)
+[[0;32;49mok[0m]: GEORANGE STORE option: incompatible options (0 ms)
+[[0;32;49mok[0m]: GEORANGE STORE option: plain usage (0 ms)
+[[0;32;49mok[0m]: GEORADIUSBYMEMBER STORE/STOREDIST option: plain usage (1 ms)
+[[0;32;49mok[0m]: GEOSEARCHSTORE STORE option: plain usage (0 ms)
+[[0;32;49mok[0m]: GEORANGE STOREDIST option: plain usage (0 ms)
+[[0;32;49mok[0m]: GEOSEARCHSTORE STOREDIST option: plain usage (1 ms)
+[[0;32;49mok[0m]: GEORANGE STOREDIST option: COUNT ASC and DESC (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH the box spans -180° or 180° (0 ms)
+[[0;32;49mok[0m]: GEOSEARCH with small distance (1 ms)
+[[0;32;49mok[0m]: GEOSEARCH fuzzy test - byradius (3540 ms)
+[[0;32;49mok[0m]: GEOSEARCH fuzzy test - bybox (3124 ms)
+[[0;32;49mok[0m]: GEOSEARCH box edges fuzzy test (26 ms)
+[12/147 [0;33;49mdone[0m]: unit/geo (7 seconds)
+[1;37;49mTesting unit/hotkeys[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[13/147 [0;33;49mdone[0m]: unit/hotkeys (0 seconds)
+[1;37;49mTesting unit/hyperloglog[0m
+[[0;32;49mok[0m]: HyperLogLog self test passes (0 ms)
+[[0;32;49mok[0m]: PFADD without arguments creates an HLL value (0 ms)
+[[0;32;49mok[0m]: Approximated cardinality after creation is zero (0 ms)
+[[0;32;49mok[0m]: PFADD returns 1 when at least 1 reg was modified (0 ms)
+[[0;32;49mok[0m]: PFADD returns 0 when no reg was modified (0 ms)
+[[0;32;49mok[0m]: PFADD works with empty string (regression) (0 ms)
+[[0;32;49mok[0m]: PFCOUNT returns approximated cardinality of set (0 ms)
+[[0;32;49mok[0m]: HyperLogLogs are promote from sparse to dense (207 ms)
+[[0;32;49mok[0m]: Change hll-sparse-max-bytes (1 ms)
+[[0;32;49mok[0m]: Hyperloglog promote to dense well in different hll-sparse-max-bytes (15 ms)
+[[0;32;49mok[0m]: HyperLogLog sparse encoding stress test (440 ms)
+[[0;32;49mok[0m]: Corrupted sparse HyperLogLogs are detected: Additional at tail (0 ms)
+[[0;32;49mok[0m]: Corrupted sparse HyperLogLogs are detected: Broken magic (0 ms)
+[[0;32;49mok[0m]: Corrupted sparse HyperLogLogs are detected: Invalid encoding (0 ms)
+[[0;32;49mok[0m]: Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode (18 ms)
+[[0;32;49mok[0m]: Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode (4073 ms)
+[[0;32;49mok[0m]: Corrupted dense HyperLogLogs are detected: Wrong length (1 ms)
+[[0;32;49mok[0m]: Fuzzing dense/sparse encoding: Redis should always detect errors (1544 ms)
+[[0;32;49mok[0m]: PFADD, PFCOUNT, PFMERGE type checking works (0 ms)
+[[0;32;49mok[0m]: PFMERGE results on the cardinality of union of sets (1 ms)
+[[0;32;49mok[0m]: PFMERGE on missing source keys will create an empty destkey (0 ms)
+[[0;32;49mok[0m]: PFMERGE with one empty input key, create an empty destkey (0 ms)
+[[0;32;49mok[0m]: PFMERGE with one non-empty input key, dest key is actually one of the source keys (0 ms)
+[[0;32;49mok[0m]: PFMERGE results with simd (524 ms)
+[[0;32;49mok[0m]: PFCOUNT multiple-keys merge returns cardinality of union #1 (1632 ms)
+[[0;32;49mok[0m]: PFCOUNT multiple-keys merge returns cardinality of union #2 (1086 ms)
+[[0;32;49mok[0m]: PFDEBUG GETREG returns the HyperLogLog raw registers (238 ms)
+[[0;32;49mok[0m]: PFADD / PFCOUNT cache invalidation works (1 ms)
+[[0;36;49mignore[0m]: PFADD with 2GB entry should not crash server due to overflow in MurmurHash64A: large memory flag not provided
+[14/147 [0;33;49mdone[0m]: unit/hyperloglog (9 seconds)
+[1;37;49mTesting unit/info-command[0m
+[[0;32;49mok[0m]: info command with at most one sub command (0 ms)
+[[0;32;49mok[0m]: info command with one sub-section (1 ms)
+[[0;32;49mok[0m]: info command with multiple sub-sections (0 ms)
+[15/147 [0;33;49mdone[0m]: unit/info-command (0 seconds)
+[1;37;49mTesting unit/info-keysizes[0m
+[[0;32;49mok[0m]: KEYSIZES - Test i'th bin counts keysizes between (2^i) and (2^(i+1)-1) as expected  (1 ms)
+[[0;32;49mok[0m]: KEYSIZES - Histogram values of Bytes, Kilo and Mega  (10 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test hyperloglog  (2671 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test List  (80 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test SET  (78 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test ZSET  (84 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test STRING  (57 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test UNLINK (async deletion)  (4 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test complex dataset  (607 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;32;49mok[0m]: KEYSIZES - Test HASH (listpackex)  (377 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test Hash field lazy expiration (listpackex)  (102 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test HASH (hashtable)  (456 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test Hash field lazy expiration (hashtable)  (100 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test STRING BITS  (3 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test RESTORE  (1 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test RENAME  (1 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test MOVE  (1 ms)
+[[0;36;49mignore[0m]: KEYSIZES - Test SWAPDB : Not supported on singledb
+[[0;32;49mok[0m]: KEYSIZES - DEBUG RELOAD reset keysizes  (1 ms)
+[[0;36;49mignore[0m]: KEYSIZES - Test RDB : Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[16/147 [0;33;49mdone[0m]: unit/info-keysizes (5 seconds)
+[1;37;49mTesting unit/info[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[17/147 [0;33;49mdone[0m]: unit/info (0 seconds)
+[1;37;49mTesting unit/introspection-2[0m
+[[0;32;49mok[0m]: The microsecond part of the TIME command will not overflow (0 ms)
+[[0;32;49mok[0m]: TTL, TYPE and EXISTS do not alter the last access time of a key (3004 ms)
+[[0;32;49mok[0m]: TOUCH alters the last access time of a key (3004 ms)
+[[0;32;49mok[0m]: Operations in no-touch mode do not alter the last access time of a key (1105 ms)
+[[0;32;49mok[0m]: Operations in no-touch mode TOUCH alters the last access time of a key (1104 ms)
+[[0;32;49mok[0m]: Operations in no-touch mode TOUCH from script alters the last access time of a key (1104 ms)
+[[0;32;49mok[0m]: TOUCH returns the number of existing keys specified (0 ms)
+[[0;32;49mok[0m]: command stats for GEOADD (0 ms)
+[[0;32;49mok[0m]: errors stats for GEOADD (0 ms)
+[[0;32;49mok[0m]: command stats for EXPIRE (1 ms)
+[[0;32;49mok[0m]: command stats for BRPOP (3 ms)
+[[0;32;49mok[0m]: command stats for MULTI (1 ms)
+[[0;32;49mok[0m]: command stats for scripts (1 ms)
+[[0;32;49mok[0m]: COMMAND COUNT get total number of Redis commands (0 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYS GET (0 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYSANDFLAGS (0 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYSANDFLAGS invalid args (0 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYSANDFLAGS MSETEX (1 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYS MEMORY USAGE (0 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYS XGROUP (0 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYS EVAL with keys (1 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYS EVAL without keys (0 ms)
+[[0;32;49mok[0m]: COMMAND GETKEYS LCS (0 ms)
+[[0;31;49merr[0m]: COMMAND GETKEYS PFMERGE with and without source keys in tests/unit/introspection-2.tcl
+ error
+ERR syntax error
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r command getkeys PFMERGE dest src1 src2"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;32;49mok[0m]: COMMAND GETKEYS MORE THAN 256 KEYS (1 ms)
+[[0;32;49mok[0m]: COMMAND LIST syntax error (0 ms)
+[[0;32;49mok[0m]: COMMAND LIST WITHOUT FILTERBY (1 ms)
+[[0;32;49mok[0m]: COMMAND LIST FILTERBY ACLCAT against non existing category (0 ms)
+[[0;32;49mok[0m]: COMMAND LIST FILTERBY ACLCAT - list all commands/subcommands (0 ms)
+[[0;32;49mok[0m]: COMMAND LIST FILTERBY PATTERN - list all commands/subcommands (1 ms)
+[[0;32;49mok[0m]: COMMAND LIST FILTERBY MODULE against non existing module (0 ms)
+[[0;32;49mok[0m]: COMMAND INFO of invalid subcommands (0 ms)
+[[0;32;49mok[0m]: SET command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: GET command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: MSET command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: BITFIELD command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: LMOVE command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: LPOP command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: BLPOP command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: PING command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: MEMORY command will not be marked with movablekeys (1 ms)
+[[0;32;49mok[0m]: MEMORY|USAGE command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: RENAME command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: GEORADIUS_RO command will not be marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: ZUNIONSTORE command is marked with movablekeys (1 ms)
+[[0;32;49mok[0m]: XREAD command is marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: EVAL command is marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: SORT command is marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: SORT_RO command is marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: MIGRATE command is marked with movablekeys (0 ms)
+[[0;32;49mok[0m]: GEORADIUS command is marked with movablekeys (0 ms)
+[18/147 [0;33;49mdone[0m]: unit/introspection-2 (9 seconds)
+[1;37;49mTesting unit/introspection[0m
+[[0;32;49mok[0m]: PING (0 ms)
+[[0;31;49merr[0m]: CLIENT LIST in tests/unit/introspection.tcl
+Expected 'id=230 addr=127.0.0.1:60465 laddr=127.0.0.1:6396 fd=8 name= age=36 idle=36 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=1024 rbp=0 obl=0 oll=0 omem=0 tot-mem=21504 events=r cmd=fcall|test user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=46 tot-net-out=48 tot-cmds=5
+id=232 addr=127.0.0.1:60467 laddr=127.0.0.1:6396 fd=8 name= age=36 idle=36 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=1024 rbp=0 obl=0 oll=0 omem=0 tot-mem=21504 events=r cmd=fcall|test user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=46 tot-net-out=48 tot-cmds=5
+id=234 addr=127.0.0.1:60469 laddr=127.0.0.1:6396 fd=8 name= age=36 idle=35 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=1024 rbp=0 obl=0 oll=0 omem=0 tot-mem=21504 events=r cmd=eval|local a = 1 while true do a = a + 1 end user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=81 tot-net-out=84 tot-cmds=5
+id=468 addr=127.0.0.1:60708 laddr=127.0.0.1:6396 fd=8 name= age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=3246 rbp=0 obl=0 oll=0 omem=0 tot-mem=23726 events=r cmd=client|list user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=238 tot-net-out=3334 tot-cmds=8' to match 'id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*' (context: type source line 26 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client_list} proc ::test) 
+[[0;32;49mok[0m]: CLIENT LIST with IDs (0 ms)
+[[0;31;49merr[0m]: CLIENT INFO in tests/unit/introspection.tcl
+Expected 'id=468 addr=127.0.0.1:60708 laddr=127.0.0.1:6396 fd=8 name= age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=3246 rbp=0 obl=0 oll=0 omem=0 tot-mem=23726 events=r cmd=client|info user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=373 tot-net-out=5096 tot-cmds=12' to match 'id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*' (context: type source line 41 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client} proc ::test) 
+[[0;32;49mok[0m]: CLIENT INFO input/output/cmds-processed stats (0 ms)
+[[0;32;49mok[0m]: CLIENT INFO input/output/cmds-processed stats for blocking command (108 ms)
+[[0;32;49mok[0m]: CLIENT INFO cmds-processed stats for recursive command (0 ms)
+[[0;31;49merr[0m]: CLIENT INFO read-events and pipeline-length stats in tests/unit/introspection.tcl
+empty string as operand of "+"
+can't use empty string as operand of "+"
+    while executing
+"expr {$re1 + 4}"
+    ("uplevel" body line 23)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: CLIENT INFO pipeline-length stats for pipelined commands in tests/unit/introspection.tcl
+empty string as operand of "-"
+can't use empty string as operand of "-"
+    while executing
+"expr {$plsum2 - $plsum1}"
+    ("uplevel" body line 26)
+    invoked from within
+"uplevel 1 $code"
+[[0;32;49mok[0m]: CLIENT KILL with illegal arguments (1 ms)
+[[0;32;49mok[0m]: CLIENT KILL maxAGE will kill old clients (2003 ms)
+[[0;32;49mok[0m]: CLIENT KILL SKIPME YES/NO will kill all clients (2 ms)
+[[0;32;49mok[0m]: CLIENT command unhappy path coverage (2 ms)
+[[0;32;49mok[0m]: CLIENT KILL close the client connection during bgsave (10008 ms)
+[[0;32;49mok[0m]: CLIENT REPLY OFF/ON: disable all commands reply (0 ms)
+[[0;32;49mok[0m]: CLIENT REPLY SKIP: skip the next command reply (1 ms)
+[[0;32;49mok[0m]: CLIENT REPLY ON: unset SKIP flag (0 ms)
+[[0;32;49mok[0m]: MONITOR can log executed commands (26 ms)
+[[0;32;49mok[0m]: MONITOR can log commands issued by the scripting engine (27 ms)
+[[0;32;49mok[0m]: MONITOR can log commands issued by functions (27 ms)
+[[0;32;49mok[0m]: MONITOR supports redacting command arguments (80 ms)
+[[0;32;49mok[0m]: MONITOR correctly handles multi-exec cases (54 ms)
+[[0;32;49mok[0m]: MONITOR log blocked command only once (132 ms)
+[[0;32;49mok[0m]: CLIENT GETNAME should return NIL if name is not assigned (0 ms)
+[[0;32;49mok[0m]: CLIENT GETNAME check if name set correctly (0 ms)
+[[0;32;49mok[0m]: CLIENT LIST shows empty fields for unassigned names (1 ms)
+[[0;32;49mok[0m]: CLIENT SETNAME does not accept spaces (0 ms)
+[[0;32;49mok[0m]: CLIENT SETNAME can assign a name to this connection (0 ms)
+[[0;32;49mok[0m]: CLIENT SETNAME can change the name of an existing connection (0 ms)
+[[0;32;49mok[0m]: After CLIENT SETNAME, connection can still be closed (0 ms)
+[[0;32;49mok[0m]: CLIENT SETINFO can set a library name to this connection (0 ms)
+[[0;32;49mok[0m]: CLIENT SETINFO invalid args (0 ms)
+[[0;32;49mok[0m]: RESET does NOT clean library name (0 ms)
+[[0;32;49mok[0m]: CLIENT SETINFO can clear library name (0 ms)
+[[0;36;49mignore[0m]: CONFIG save params special case handled properly: Not supported on external server
+[[0;32;49mok[0m]: CONFIG sanity (9 ms)
+[[0;36;49mignore[0m]: CONFIG REWRITE sanity: Not supported on external server
+[[0;36;49mignore[0m]: CONFIG REWRITE handles save and shutdown properly: Not supported on external server
+[[0;32;49mok[0m]: CONFIG SET with multiple args (1 ms)
+[[0;32;49mok[0m]: CONFIG SET rollback on set error (1 ms)
+[[0;32;49mok[0m]: CONFIG SET rollback on apply error (2 ms)
+[[0;32;49mok[0m]: CONFIG SET duplicate configs (0 ms)
+[[0;32;49mok[0m]: CONFIG SET set immutable (0 ms)
+[[0;32;49mok[0m]: CONFIG GET hidden configs (1 ms)
+[[0;32;49mok[0m]: CONFIG GET multiple args (0 ms)
+[[0;36;49mignore[0m]: redis-server command line arguments - error cases: Not supported on external server
+[[0;36;49mignore[0m]: redis-server command line arguments - allow passing option name and option value in the same arg: Not supported on external server
+[[0;36;49mignore[0m]: redis-server command line arguments - wrong usage that we support anyway: Not supported on external server
+[[0;36;49mignore[0m]: redis-server command line arguments - allow option value to use the `--` prefix: Not supported on external server
+[[0;36;49mignore[0m]: redis-server command line arguments - option name and option value in the same arg and `--` prefix: Not supported on external server
+[[0;36;49mignore[0m]: redis-server command line arguments - save with empty input: Not supported on external server
+[[0;36;49mignore[0m]: redis-server command line arguments - take one bulk string with spaces for MULTI_ARG configs parsing: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: config during loading: Not supported on external server
+[[0;36;49mignore[0m]: CONFIG REWRITE handles rename-command properly: Not supported on external server
+[[0;36;49mignore[0m]: CONFIG REWRITE handles alias config properly: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;32;49mok[0m]: IO threads client number (0 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;32;49mok[0m]: Clients are evenly distributed among io threads (0 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[19/147 [0;33;49mdone[0m]: unit/introspection (13 seconds)
+[1;37;49mTesting unit/keyspace[0m
+[[0;32;49mok[0m]: DEL against a single item (1 ms)
+[[0;32;49mok[0m]: Vararg DEL (0 ms)
+[[0;32;49mok[0m]: Untagged multi-key commands (0 ms)
+[[0;32;49mok[0m]: KEYS with pattern (0 ms)
+[[0;32;49mok[0m]: KEYS to get all keys (0 ms)
+[[0;32;49mok[0m]: DBSIZE (0 ms)
+[[0;32;49mok[0m]: KEYS with hashtag (0 ms)
+[[0;32;49mok[0m]: DEL all keys (0 ms)
+[[0;32;49mok[0m]: DEL against expired key (1105 ms)
+[[0;32;49mok[0m]: EXISTS (1 ms)
+[[0;32;49mok[0m]: Zero length value in key. SET/GET/EXISTS (0 ms)
+[[0;32;49mok[0m]: Commands pipelining (0 ms)
+[[0;32;49mok[0m]: Non existing command (0 ms)
+[[0;32;49mok[0m]: RENAME basic usage (1 ms)
+[[0;32;49mok[0m]: RENAME source key should no longer exist (0 ms)
+[[0;32;49mok[0m]: RENAME against already existing key (1 ms)
+[[0;32;49mok[0m]: RENAMENX basic usage (1 ms)
+[[0;32;49mok[0m]: RENAMENX against already existing key (0 ms)
+[[0;32;49mok[0m]: RENAMENX against already existing key (2) (1 ms)
+[[0;32;49mok[0m]: RENAME against non existing source key (0 ms)
+[[0;32;49mok[0m]: RENAME where source and dest key are the same (existing) (0 ms)
+[[0;32;49mok[0m]: RENAMENX where source and dest key are the same (existing) (0 ms)
+[[0;32;49mok[0m]: RENAME where source and dest key are the same (non existing) (0 ms)
+[[0;32;49mok[0m]: RENAME with volatile key, should move the TTL as well (1 ms)
+[[0;32;49mok[0m]: RENAME with volatile key, should not inherit TTL of target key (1 ms)
+[[0;32;49mok[0m]: DEL all keys again (DB 0) (0 ms)
+[[0;36;49mignore[0m]: DEL all keys again (DB 1): Not supported on singledb
+[[0;32;49mok[0m]: COPY basic usage for string (1 ms)
+[[0;36;49mignore[0m]: COPY for string does not replace an existing key without REPLACE option: Not supported on singledb
+[[0;36;49mignore[0m]: COPY for string can replace an existing key with REPLACE option: Not supported on singledb
+[[0;36;49mignore[0m]: COPY for string ensures that copied data is independent of copying data: Not supported on singledb
+[[0;32;49mok[0m]: COPY for string does not copy data to no-integer DB (0 ms)
+[[0;32;49mok[0m]: COPY can copy key expire metadata as well (1 ms)
+[[0;32;49mok[0m]: COPY does not create an expire if it does not exist (0 ms)
+[[0;32;49mok[0m]: COPY basic usage for list - quicklist (1 ms)
+[[0;32;49mok[0m]: COPY basic usage for list - listpack (0 ms)
+[[0;32;49mok[0m]: COPY basic usage for intset set (0 ms)
+[[0;32;49mok[0m]: COPY basic usage for listpack set (1 ms)
+[[0;32;49mok[0m]: COPY basic usage for hashtable set (13 ms)
+[[0;32;49mok[0m]: COPY basic usage for listpack sorted set (0 ms)
+[[0;32;49mok[0m]: COPY basic usage for skiplist sorted set (5 ms)
+[[0;32;49mok[0m]: COPY basic usage for listpack hash (1 ms)
+[[0;32;49mok[0m]: COPY basic usage for hashtable hash (4 ms)
+[[0;32;49mok[0m]: COPY basic usage for stream (180 ms)
+[[0;32;49mok[0m]: COPY basic usage for stream-cgroups (2 ms)
+[[0;36;49mignore[0m]: MOVE basic usage: Not supported on singledb
+[[0;36;49mignore[0m]: MOVE against key existing in the target DB: Not supported on singledb
+[[0;36;49mignore[0m]: MOVE against non-integer DB (#1428): Not supported on singledb
+[[0;36;49mignore[0m]: MOVE can move key expire metadata as well: Not supported on singledb
+[[0;36;49mignore[0m]: MOVE does not create an expire if it does not exist: Not supported on singledb
+[[0;36;49mignore[0m]: SET/GET keys in different DBs: Not supported on singledb
+[[0;32;49mok[0m]: RANDOMKEY (4 ms)
+[[0;32;49mok[0m]: RANDOMKEY against empty DB (0 ms)
+[[0;32;49mok[0m]: RANDOMKEY regression 1 (0 ms)
+[[0;32;49mok[0m]: KEYS * two times with long key, Github issue #1208 (0 ms)
+[[0;32;49mok[0m]: Regression for pattern matching long nested loops (0 ms)
+[[0;32;49mok[0m]: Regression for pattern matching very long nested loops (1 ms)
+[[0;36;49mignore[0m]: Coverage: basic SWAPDB test and unhappy path: Not supported on singledb
+[[0;36;49mignore[0m]: Coverage: SWAPDB and FLUSHDB: Not supported on singledb
+[20/147 [0;33;49mdone[0m]: unit/keyspace (1 seconds)
+[1;37;49mTesting unit/latency-monitor[0m
+[[0;32;49mok[0m]: LATENCY HISTOGRAM with empty histogram (0 ms)
+[[0;32;49mok[0m]: LATENCY HISTOGRAM all commands (0 ms)
+[[0;32;49mok[0m]: LATENCY HISTOGRAM sub commands (0 ms)
+[[0;32;49mok[0m]: LATENCY HISTOGRAM with a subset of commands (0 ms)
+[[0;32;49mok[0m]: LATENCY HISTOGRAM command (0 ms)
+[[0;32;49mok[0m]: LATENCY HISTOGRAM with wrong command name skips the invalid one (0 ms)
+[[0;32;49mok[0m]: Test latency events logging (3417 ms)
+[[0;32;49mok[0m]: LATENCY HISTORY output is ok (0 ms)
+[[0;32;49mok[0m]: LATENCY LATEST output is ok (0 ms)
+[[0;32;49mok[0m]: LATENCY GRAPH can output the event graph (0 ms)
+[[0;32;49mok[0m]: LATENCY GRAPH can output the expire event graph (0 ms)
+[[0;32;49mok[0m]: LATENCY of expire events are correctly collected (1182 ms)
+[[0;32;49mok[0m]: LATENCY HISTORY / RESET with wrong event name is fine (0 ms)
+[[0;32;49mok[0m]: LATENCY DOCTOR produces some output (0 ms)
+[[0;32;49mok[0m]: LATENCY RESET is able to reset events (1 ms)
+[[0;32;49mok[0m]: LATENCY HELP should not have unexpected options (0 ms)
+[21/147 [0;33;49mdone[0m]: unit/latency-monitor (5 seconds)
+[1;37;49mTesting unit/lazyfree[0m
+[[0;32;49mok[0m]: UNLINK can reclaim memory in background (54 ms)
+[[0;32;49mok[0m]: FLUSHDB ASYNC can reclaim memory in background (57 ms)
+[[0;32;49mok[0m]: lazy free a stream with all types of metadata (158 ms)
+[[0;32;49mok[0m]: lazy free a stream with deleted cgroup (1 ms)
+[[0;32;49mok[0m]: FLUSHALL SYNC optimized to run in bg as blocking FLUSHALL ASYNC (13 ms)
+[[0;32;49mok[0m]: Run consecutive blocking FLUSHALL ASYNC successfully (0 ms)
+[[0;32;49mok[0m]: FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC (0 ms)
+[[0;32;49mok[0m]: Client closed in the middle of blocking FLUSHALL ASYNC (1309 ms)
+[[0;32;49mok[0m]: Pending commands in querybuf processed once unblocking FLUSHALL ASYNC (0 ms)
+[[0;36;49mignore[0m]: Unblocks client blocked on lazyfree via REPLICAOF command: Not supported on external server
+[22/147 [0;33;49mdone[0m]: unit/lazyfree (2 seconds)
+[1;37;49mTesting unit/limits[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[23/147 [0;33;49mdone[0m]: unit/limits (0 seconds)
+[1;37;49mTesting unit/maxmemory[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[24/147 [0;33;49mdone[0m]: unit/maxmemory (0 seconds)
+[1;37;49mTesting unit/memefficiency[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Active defrag can't be triggered during replicaof database flush. See issue #14267: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[25/147 [0;33;49mdone[0m]: unit/memefficiency (0 seconds)
+[1;37;49mTesting unit/multi[0m
+[[0;32;49mok[0m]: MULTI / EXEC basics (0 ms)
+[[0;32;49mok[0m]: DISCARD (0 ms)
+[[0;32;49mok[0m]: Nested MULTI are not allowed (1 ms)
+[[0;32;49mok[0m]: MULTI where commands alter argc/argv (0 ms)
+[[0;32;49mok[0m]: WATCH inside MULTI is not allowed (0 ms)
+[[0;32;49mok[0m]: EXEC fails if there are errors while queueing commands #1 (1 ms)
+[[0;32;49mok[0m]: EXEC fails if there are errors while queueing commands #2 (0 ms)
+[[0;32;49mok[0m]: If EXEC aborts, the client MULTI state is cleared (1 ms)
+[[0;32;49mok[0m]: EXEC works on WATCHed key not modified (0 ms)
+[[0;32;49mok[0m]: EXEC fail on WATCHed key modified (1 key of 1 watched) (0 ms)
+[[0;32;49mok[0m]: EXEC fail on WATCHed key modified (1 key of 5 watched) (0 ms)
+[[0;32;49mok[0m]: EXEC fail on WATCHed key modified by SORT with STORE even if the result is empty (0 ms)
+[[0;32;49mok[0m]: EXEC fail on lazy expired WATCHed key (106 ms)
+[[0;32;49mok[0m]: WATCH stale keys should not fail EXEC (3 ms)
+[[0;32;49mok[0m]: Delete WATCHed stale keys should not fail EXEC (3 ms)
+[[0;32;49mok[0m]: FLUSHDB while watching stale keys should not fail EXEC (3 ms)
+[[0;32;49mok[0m]: After successful EXEC key is no longer watched (1 ms)
+[[0;32;49mok[0m]: After failed EXEC key is no longer watched (0 ms)
+[[0;32;49mok[0m]: It is possible to UNWATCH (1 ms)
+[[0;32;49mok[0m]: UNWATCH when there is nothing watched works as expected (0 ms)
+[[0;32;49mok[0m]: FLUSHALL is able to touch the watched keys (0 ms)
+[[0;32;49mok[0m]: FLUSHALL does not touch non affected keys (0 ms)
+[[0;32;49mok[0m]: FLUSHDB is able to touch the watched keys (0 ms)
+[[0;32;49mok[0m]: FLUSHDB does not touch non affected keys (0 ms)
+[[0;36;49mignore[0m]: SWAPDB is able to touch the watched keys that exist: Not supported on singledb
+[[0;36;49mignore[0m]: SWAPDB is able to touch the watched keys that do not exist: Not supported on singledb
+[[0;36;49mignore[0m]: SWAPDB does not touch watched stale keys: Not supported on singledb
+[[0;36;49mignore[0m]: SWAPDB does not touch non-existing key replaced with stale key: Not supported on singledb
+[[0;36;49mignore[0m]: SWAPDB does not touch stale key replaced with another stale key: Not supported on singledb
+[[0;36;49mignore[0m]: WATCH is able to remember the DB a key belongs to: Not supported on singledb
+[[0;32;49mok[0m]: WATCH will consider touched keys target of EXPIRE (1 ms)
+[[0;32;49mok[0m]: WATCH will consider touched expired keys (1042 ms)
+[[0;32;49mok[0m]: DISCARD should clear the WATCH dirty flag on the client (1 ms)
+[[0;32;49mok[0m]: DISCARD should UNWATCH all the keys (1 ms)
+[[0;32;49mok[0m]: MULTI / EXEC is not propagated (single write command) (1 ms)
+[[0;32;49mok[0m]: MULTI / EXEC is propagated correctly (multiple commands) (1 ms)
+[[0;36;49mignore[0m]: MULTI / EXEC is propagated correctly (multiple commands with SELECT): Not supported on singledb
+[[0;32;49mok[0m]: MULTI / EXEC is propagated correctly (empty transaction) (0 ms)
+[[0;32;49mok[0m]: MULTI / EXEC is propagated correctly (read-only commands) (1 ms)
+[[0;32;49mok[0m]: MULTI / EXEC is propagated correctly (write command, no effect) (1 ms)
+[[0;32;49mok[0m]: MULTI / EXEC with REPLICAOF (1 ms)
+[[0;32;49mok[0m]: DISCARD should not fail during OOM (1 ms)
+[[0;32;49mok[0m]: MULTI and script timeout (407 ms)
+[[0;32;49mok[0m]: EXEC and script timeout (409 ms)
+[[0;32;49mok[0m]: MULTI-EXEC body and script timeout (407 ms)
+[[0;32;49mok[0m]: just EXEC and script timeout (409 ms)
+[[0;32;49mok[0m]: exec with write commands and state change (0 ms)
+[[0;32;49mok[0m]: exec with read commands and stale replica state change (1 ms)
+[[0;32;49mok[0m]: EXEC with only read commands should not be rejected when OOM (1 ms)
+[[0;32;49mok[0m]: EXEC with at least one use-memory command should fail (1 ms)
+[[0;32;49mok[0m]: Blocking commands ignores the timeout (1 ms)
+[[0;32;49mok[0m]: MULTI propagation of PUBLISH (1 ms)
+[[0;32;49mok[0m]: MULTI propagation of SCRIPT LOAD (0 ms)
+[[0;32;49mok[0m]: MULTI propagation of EVAL (0 ms)
+[[0;32;49mok[0m]: MULTI propagation of SCRIPT FLUSH (0 ms)
+[[0;32;49mok[0m]: MULTI propagation of XREADGROUP (1 ms)
+[[0;32;49mok[0m]: MULTI with SAVE (0 ms)
+[[0;32;49mok[0m]: MULTI with SHUTDOWN (0 ms)
+[[0;36;49mignore[0m]: MULTI with BGREWRITEAOF: Not supported on external server
+[[0;36;49mignore[0m]: MULTI with config set appendonly: Not supported on external server
+[[0;32;49mok[0m]: MULTI with config error (1 ms)
+[[0;32;49mok[0m]: Flushall while watching several keys by one client (0 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[26/147 [0;33;49mdone[0m]: unit/multi (2 seconds)
+[1;37;49mTesting unit/networking[0m
+[[0;36;49mignore[0m]: CONFIG SET port number: Not supported on external server
+[[0;36;49mignore[0m]: CONFIG SET bind address: Not supported on external server
+[[0;36;49mignore[0m]: CONFIG SET bind-source-addr: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;32;49mok[0m]: Pending command pool expansion and shrinking (0 ms)
+[27/147 [0;33;49mdone[0m]: unit/networking (0 seconds)
+[1;37;49mTesting unit/obuf-limits[0m
+[[0;36;49mignore[0m]: Not supported on external server
+[28/147 [0;33;49mdone[0m]: unit/obuf-limits (0 seconds)
+[1;37;49mTesting unit/oom-score-adj[0m
+[29/147 [0;33;49mdone[0m]: unit/oom-score-adj (0 seconds)
+[1;37;49mTesting unit/other[0m
+[[0;31;49merr[0m]: Coverage: HELP commands in tests/unit/other.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r HOTKEYS HELP"
+    ("uplevel" body line 11)
+    invoked from within
+"uplevel 1 $code"
+[[0;32;49mok[0m]: Coverage: MEMORY MALLOC-STATS (0 ms)
+[[0;32;49mok[0m]: Coverage: MEMORY PURGE (0 ms)
+[[0;32;49mok[0m]: SAVE - make sure there are all the types as values (6 ms)
+[[0;32;49mok[0m]: FUZZ stresser with data model binary (150 ms)
+[[0;32;49mok[0m]: FUZZ stresser with data model alpha (154 ms)
+[[0;32;49mok[0m]: FUZZ stresser with data model compr (137 ms)
+[[0;36;49mignore[0m]: Not supported on external server
+[[0;32;49mok[0m]: BGSAVE (9 ms)
+[[0;32;49mok[0m]: SELECT an out of range DB (0 ms)
+[[0;32;49mok[0m]: Check consistency of different data types after a reload (309 ms)
+[[0;32;49mok[0m]: Same dataset digest if saving/reloading as AOF? (57 ms)
+[[0;32;49mok[0m]: EXPIRES after a reload (snapshot + append only file rewrite) (9 ms)
+[[0;32;49mok[0m]: EXPIRES after AOF reload (without rewrite) (3012 ms)
+[[0;31;49mTIMEOUT[0m]: clients state report follows.
+sock6 => (IN PROGRESS) PIPELINING stresser (also a regression for the old epoll bug)
+
+                   The End
+
+Execution time of different units:
+  0 seconds - unit/acl-v2
+  0 seconds - unit/acl
+  0 seconds - unit/aofrw
+  0 seconds - unit/auth
+  0 seconds - unit/bitfield
+  7 seconds - unit/bitops
+  0 seconds - unit/client-eviction
+  15 seconds - unit/dump
+  11 seconds - unit/expire
+  6 seconds - unit/functions
+  0 seconds - unit/gcra
+  7 seconds - unit/geo
+  0 seconds - unit/hotkeys
+  9 seconds - unit/hyperloglog
+  0 seconds - unit/info-command
+  5 seconds - unit/info-keysizes
+  0 seconds - unit/info
+  9 seconds - unit/introspection-2
+  13 seconds - unit/introspection
+  1 seconds - unit/keyspace
+  5 seconds - unit/latency-monitor
+  2 seconds - unit/lazyfree
+  0 seconds - unit/limits
+  0 seconds - unit/maxmemory
+  0 seconds - unit/memefficiency
+  2 seconds - unit/multi
+  0 seconds - unit/networking
+  0 seconds - unit/obuf-limits
+  0 seconds - unit/oom-score-adj
+
+[1;31;49m!!! WARNING[0m The following tests failed:
+
+*** [[0;31;49merr[0m]: RESTORE with ABSTTL in the past in tests/unit/dump.tcl
+Expected '1' to be equal to '0' (context: type source line 51 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/dump.tcl cmd {assert_equal [expr $expiredkeys + 1] [s expired_keys]} proc ::test)
+*** [[0;31;49merr[0m]: GEOADD out-of-range longitude/latitude error reply is well-formed in tests/unit/geo.tcl
+Expected '-ERR value is out of range' to match '-ERR invalid longitude,latitude pair*' (context: type source line 231 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/geo.tcl cmd {assert_match {-ERR invalid longitude,latitude pair*} $reply} proc ::test) 
+*** [[0;31;49merr[0m]: COMMAND GETKEYS PFMERGE with and without source keys in tests/unit/introspection-2.tcl
+ error
+ERR syntax error
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r command getkeys PFMERGE dest src1 src2"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: CLIENT LIST in tests/unit/introspection.tcl
+Expected 'id=230 addr=127.0.0.1:60465 laddr=127.0.0.1:6396 fd=8 name= age=36 idle=36 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=1024 rbp=0 obl=0 oll=0 omem=0 tot-mem=21504 events=r cmd=fcall|test user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=46 tot-net-out=48 tot-cmds=5
+id=232 addr=127.0.0.1:60467 laddr=127.0.0.1:6396 fd=8 name= age=36 idle=36 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=1024 rbp=0 obl=0 oll=0 omem=0 tot-mem=21504 events=r cmd=fcall|test user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=46 tot-net-out=48 tot-cmds=5
+id=234 addr=127.0.0.1:60469 laddr=127.0.0.1:6396 fd=8 name= age=36 idle=35 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=1024 rbp=0 obl=0 oll=0 omem=0 tot-mem=21504 events=r cmd=eval|local a = 1 while true do a = a + 1 end user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=81 tot-net-out=84 tot-cmds=5
+id=468 addr=127.0.0.1:60708 laddr=127.0.0.1:6396 fd=8 name= age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=3246 rbp=0 obl=0 oll=0 omem=0 tot-mem=23726 events=r cmd=client|list user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=238 tot-net-out=3334 tot-cmds=8' to match 'id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*' (context: type source line 26 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client_list} proc ::test) 
+*** [[0;31;49merr[0m]: CLIENT INFO in tests/unit/introspection.tcl
+Expected 'id=468 addr=127.0.0.1:60708 laddr=127.0.0.1:6396 fd=8 name= age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=3246 rbp=0 obl=0 oll=0 omem=0 tot-mem=23726 events=r cmd=client|info user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=373 tot-net-out=5096 tot-cmds=12' to match 'id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*' (context: type source line 41 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client} proc ::test) 
+*** [[0;31;49merr[0m]: CLIENT INFO read-events and pipeline-length stats in tests/unit/introspection.tcl
+empty string as operand of "+"
+can't use empty string as operand of "+"
+    while executing
+"expr {$re1 + 4}"
+    ("uplevel" body line 23)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: CLIENT INFO pipeline-length stats for pipelined commands in tests/unit/introspection.tcl
+empty string as operand of "-"
+can't use empty string as operand of "-"
+    while executing
+"expr {$plsum2 - $plsum1}"
+    ("uplevel" body line 26)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: Coverage: HELP commands in tests/unit/other.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r HOTKEYS HELP"
+    ("uplevel" body line 11)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49mTIMEOUT[0m]: clients state report follows.

@@ -1,0 +1,4 @@
+case,status,details
+redis_runtest_full_external,FAIL,mode=full; large_memory=0; tsavorite_pages=16384; skipunit_querybuf=0; skipunit_scripting=0; skiptest_scripting_noreplicas=0; skipunit_other=0; skiptest_other_pipeline=0; skiptest_redis_cli_connecting_as_replica=0; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=606; err=8; timeout=1; ignore=128; failed_tests=9; expected_failed_tests=0; unexpected_failed_tests=9 
+redis_cli_type_probe,PASS,redis-cli TYPE probe passed 
+redis_cli_scripting_probe,PASS,scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok 

@@ -1,6 +1,7 @@
 schema_version: 1
 last_updated: "2026-05-10"
-source: "docs/compatibility/redis-command-maturity.csv"
+source: "redis_runtest_external_full"
+source_log: "docs/compatibility/redis-runtest-full-20260510-092535.log"
 summary:
   redis_command_count: 267
   arilkv_declared_count: 259
@@ -9,8 +10,13 @@ summary:
   full_count: 230
   partial_minimal_count: 17
   disabled_count: 12
-  test_case_count: 5
-  test_pass_count: 5
+  test_case_count: 743
+  test_pass_count: 606
+  test_fail_count: 8
+  test_timeout_count: 1
+  test_ignore_count: 128
+  result_status: "FAIL"
+  result_dir: "/tmp/arilkv-redis-runtest-full-20260510-092535"
 commands:
   - command: "ACL"
     declaration_status: "SUPPORTED_DECLARED"
@@ -1615,28 +1621,3718 @@ commands:
     arilkv_present: true
     comment: ""
 test_cases:
-  - case: "redis_runtest_string_mget_mset"
+  - case: "External-server skip #1"
+    status: "IGNORE"
+    unit: "unit/acl-v2"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #2"
+    status: "IGNORE"
+    unit: "unit/acl-v2"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #3"
+    status: "IGNORE"
+    unit: "unit/acl"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #4"
+    status: "IGNORE"
+    unit: "unit/acl"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #5"
+    status: "IGNORE"
+    unit: "unit/acl"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #6"
+    status: "IGNORE"
+    unit: "unit/acl"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #7"
+    status: "IGNORE"
+    unit: "unit/acl"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #8"
+    status: "IGNORE"
+    unit: "unit/acl"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #9"
+    status: "IGNORE"
+    unit: "unit/acl"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #10"
+    status: "IGNORE"
+    unit: "unit/acl"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #11"
+    status: "IGNORE"
+    unit: "unit/aofrw"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #12"
+    status: "IGNORE"
+    unit: "unit/aofrw"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #13"
+    status: "IGNORE"
+    unit: "unit/auth"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #14"
+    status: "IGNORE"
+    unit: "unit/auth"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #15"
+    status: "IGNORE"
+    unit: "unit/auth"
+    commands: []
+    details: "Not supported on external server"
+  - case: "BITFIELD signed SET and GET basics"
     status: "PASS"
-    unit: "unit/type/string"
-    commands: ["MGET", "MSET", "GET", "SET"]
-    details: "unit=unit/type/string; expected_ok=6; actual_ok=6"
-  - case: "redis_runtest_incrby_decrby"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD", "SET", "GET"]
+    details: "1 ms"
+  - case: "BITFIELD unsigned SET and GET basics"
     status: "PASS"
-    unit: "unit/type/incr"
-    commands: ["INCRBY", "DECRBY", "INCR", "DECR"]
-    details: "unit=unit/type/incr; expected_ok=4; actual_ok=4"
-  - case: "redis_runtest_keyspace_exists"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD", "SET", "GET"]
+    details: "0 ms"
+  - case: "BITFIELD signed SET and GET together"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD", "SET", "GET"]
+    details: "1 ms"
+  - case: "BITFIELD unsigned with SET, GET and INCRBY arguments"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD", "SET", "GET", "INCRBY"]
+    details: "0 ms"
+  - case: "BITFIELD with only key as argument"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "0 ms"
+  - case: "BITFIELD #<idx> form"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "1 ms"
+  - case: "BITFIELD basic INCRBY form"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD", "INCRBY"]
+    details: "0 ms"
+  - case: "BITFIELD chaining of multiple commands"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "0 ms"
+  - case: "BITFIELD unsigned overflow wrap"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "0 ms"
+  - case: "BITFIELD unsigned overflow sat"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "0 ms"
+  - case: "BITFIELD signed overflow wrap"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "0 ms"
+  - case: "BITFIELD signed overflow sat"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "0 ms"
+  - case: "BITFIELD overflow detection fuzzing"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "108 ms"
+  - case: "BITFIELD overflow wrap fuzzing"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "127 ms"
+  - case: "BITFIELD regression for #3221"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "0 ms"
+  - case: "BITFIELD regression for #3564"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD"]
+    details: "1 ms"
+  - case: "BITFIELD_RO with only key as argument"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD_RO"]
+    details: "0 ms"
+  - case: "BITFIELD_RO fails when write option is used"
+    status: "PASS"
+    unit: "unit/bitfield"
+    commands: ["BITFIELD_RO"]
+    details: "0 ms"
+  - case: "External-server skip #16"
+    status: "IGNORE"
+    unit: "unit/bitfield"
+    commands: []
+    details: "Not supported on external server"
+  - case: "BITCOUNT against wrong type"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT", "TYPE"]
+    details: "0 ms"
+  - case: "BITCOUNT returns 0 against non existing key"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT returns 0 with out of range indexes"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT returns 0 with negative indexes where start > end"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT against test vector #1"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT against test vector #2"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT against test vector #3"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT against test vector #4"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT against test vector #5"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT fuzzing without start/end"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "64 ms"
+  - case: "BITCOUNT fuzzing with start/end"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "105 ms"
+  - case: "BITCOUNT with start, end"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT with illegal arguments"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "1 ms"
+  - case: "BITCOUNT against non-integer value"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT regression test for github issue #582"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT misaligned prefix"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITCOUNT misaligned prefix + full words + remainder"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITCOUNT"]
+    details: "0 ms"
+  - case: "BITOP NOT (empty string)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "0 ms"
+  - case: "BITOP NOT (known string)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "0 ms"
+  - case: "BITOP NOT with multiple source keys"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP", "KEYS"]
+    details: "0 ms"
+  - case: "BITOP where dest and target are the same key"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "1 ms"
+  - case: "BITOP AND|OR|XOR|ONE don't change the string with single input key"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "0 ms"
+  - case: "BITOP DIFF|DIFF1|ANDOR with one source key"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "0 ms"
+  - case: "BITOP missing key is considered a stream of zero"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "1 ms"
+  - case: "BITOP shorter keys are zero-padded to the key with max length"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP", "KEYS"]
+    details: "1 ms"
+  - case: "BITOP and fuzzing"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "89 ms"
+  - case: "BITOP or fuzzing"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "96 ms"
+  - case: "BITOP xor fuzzing"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "81 ms"
+  - case: "BITOP diff fuzzing"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "134 ms"
+  - case: "BITOP diff1 fuzzing"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "136 ms"
+  - case: "BITOP andor fuzzing"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "123 ms"
+  - case: "BITOP one fuzzing"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "199 ms"
+  - case: "BITOP NOT fuzzing"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "19 ms"
+  - case: "BITOP and with large values (AVX-512 path)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "586 ms"
+  - case: "BITOP or with large values (AVX-512 path)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "644 ms"
+  - case: "BITOP xor with large values (AVX-512 path)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "588 ms"
+  - case: "BITOP diff with large values (AVX-512 path)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "571 ms"
+  - case: "BITOP diff1 with large values (AVX-512 path)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "577 ms"
+  - case: "BITOP andor with large values (AVX-512 path)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "583 ms"
+  - case: "BITOP one with large values (AVX-512 path)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "1476 ms"
+  - case: "BITOP with integer encoded source objects"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "0 ms"
+  - case: "BITOP with non string source key"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "0 ms"
+  - case: "BITOP with empty string after non empty string (issue #529)"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITOP"]
+    details: "1 ms"
+  - case: "BITPOS against wrong type"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS", "TYPE"]
+    details: "0 ms"
+  - case: "BITPOS will illegal arguments"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "BITPOS against non-integer value"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "BITPOS bit=0 with empty key returns 0"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "BITPOS bit=1 with empty key returns -1"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "BITPOS bit=0 with string less than 1 word works"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "BITPOS bit=1 with string less than 1 word works"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "BITPOS bit=0 starting at unaligned address"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "1 ms"
+  - case: "BITPOS bit=1 starting at unaligned address"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "BITPOS bit=0 unaligned+full word+reminder"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "2 ms"
+  - case: "BITPOS bit=1 unaligned+full word+reminder"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "2 ms"
+  - case: "BITPOS bit=1 returns -1 if string is all 0 bits"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "4 ms"
+  - case: "BITPOS bit=0 works with intervals"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "1 ms"
+  - case: "BITPOS bit=1 works with intervals"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "BITPOS bit=0 changes behavior if end is given"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS"]
+    details: "0 ms"
+  - case: "SETBIT/BITFIELD only increase dirty when the value changed"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["SETBIT", "BITFIELD"]
+    details: "2 ms"
+  - case: "BITPOS bit=1 fuzzy testing using SETBIT"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS", "SETBIT"]
+    details: "146 ms"
+  - case: "BITPOS bit=0 fuzzy testing using SETBIT"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS", "SETBIT"]
+    details: "138 ms"
+  - case: "BITPOS/BITCOUNT fuzzy testing using SETBIT"
+    status: "PASS"
+    unit: "unit/bitops"
+    commands: ["BITPOS", "BITCOUNT", "SETBIT"]
+    details: "93 ms"
+  - case: "BIT pos larger than UINT_MAX: large memory flag not provided"
+    status: "IGNORE"
+    unit: "unit/bitops"
+    commands: ["MEMORY"]
+    details: ""
+  - case: "SETBIT values larger than UINT32_MAX and lzf_compress/lzf_decompress correctly: large memory flag not provided"
+    status: "IGNORE"
+    unit: "unit/bitops"
+    commands: ["SETBIT", "MEMORY"]
+    details: ""
+  - case: "External-server skip #17"
+    status: "IGNORE"
+    unit: "unit/client-eviction"
+    commands: []
+    details: "Not supported on external server"
+  - case: "DUMP / RESTORE are able to serialize / unserialize a simple key"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["DUMP", "RESTORE"]
+    details: "1 ms"
+  - case: "RESTORE can set an arbitrary expire to the materialized key"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE", "SET", "EXPIRE"]
+    details: "0 ms"
+  - case: "RESTORE can set an expire that overflows a 32 bit integer"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE", "SET", "EXPIRE"]
+    details: "0 ms"
+  - case: "RESTORE can set an absolute expire"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE", "SET", "EXPIRE"]
+    details: "1 ms"
+  - case: "RESTORE with ABSTTL in the past in tests/unit/dump.tcl"
+    status: "FAIL"
+    unit: "unit/dump"
+    commands: ["RESTORE", "DUMP"]
+    details: ""
+  - case: "RESTORE can set LRU"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE", "SET"]
+    details: "1 ms"
+  - case: "RESTORE with TTL maintain valid object"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE", "TTL", "OBJECT"]
+    details: "9 ms"
+  - case: "RESTORE can set LFU"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE", "SET"]
+    details: "6 ms"
+  - case: "RESTORE returns an error of the key already exists"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE", "EXISTS"]
+    details: "0 ms"
+  - case: "RESTORE can overwrite an existing key with REPLACE"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE"]
+    details: "0 ms"
+  - case: "RESTORE can detect a syntax error for unrecognized options"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE"]
+    details: "0 ms"
+  - case: "RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["RESTORE", "DEL", "UNLINK"]
+    details: "1 ms"
+  - case: "DUMP of non existing key returns nil"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["DUMP"]
+    details: "0 ms"
+  - case: "MIGRATE is caching connections: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE"]
+    details: ""
+  - case: "MIGRATE cached connections are released after some time"
+    status: "PASS"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "TIME"]
+    details: "15005 ms"
+  - case: "MIGRATE is able to migrate a key between two instances: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE"]
+    details: ""
+  - case: "MIGRATE is able to copy a key between two instances: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "COPY"]
+    details: ""
+  - case: "MIGRATE will not overwrite existing keys, unless REPLACE is used: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "KEYS"]
+    details: ""
+  - case: "MIGRATE propagates TTL correctly: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "TTL"]
+    details: ""
+  - case: "MIGRATE can correctly transfer large values: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE"]
+    details: ""
+  - case: "MIGRATE can correctly transfer hashes: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE"]
+    details: ""
+  - case: "MIGRATE timeout actually works: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE"]
+    details: ""
+  - case: "MIGRATE can migrate multiple keys at once: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "KEYS"]
+    details: ""
+  - case: "MIGRATE with multiple keys must have empty key arg: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "KEYS"]
+    details: ""
+  - case: "MIGRATE with multiple keys migrate just existing ones: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "KEYS"]
+    details: ""
+  - case: "MIGRATE with multiple keys: stress command rewriting: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "KEYS", "COMMAND"]
+    details: ""
+  - case: "MIGRATE with multiple keys: delete just ack keys: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "KEYS"]
+    details: ""
+  - case: "MIGRATE AUTH: correct and wrong password cases: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/dump"
+    commands: ["MIGRATE", "AUTH"]
+    details: ""
+  - case: "EXPIRE - set timeouts multiple times"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "SET"]
+    details: "0 ms"
+  - case: "EXPIRE - It should be still possible to read 'x'"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE - After 2.1 seconds the key should no longer be here"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "2104 ms"
+  - case: "EXPIRE - write on expire should work"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "1 ms"
+  - case: "EXPIREAT - Check for EXPIRE alike behavior"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIREAT", "EXPIRE"]
+    details: "1 ms"
+  - case: "SETEX - Set + Expire combo operation. Check for TTL"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SETEX", "SET", "EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "SETEX - Check value"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SETEX"]
+    details: "0 ms"
+  - case: "SETEX - Overwrite old key"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SETEX"]
+    details: "0 ms"
+  - case: "SETEX - Wait for the key to expire"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SETEX", "WAIT", "EXPIRE"]
+    details: "1105 ms"
+  - case: "SETEX - Wrong time parameter"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SETEX", "TIME"]
+    details: "0 ms"
+  - case: "PERSIST can undo an EXPIRE"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PERSIST", "EXPIRE"]
+    details: "1 ms"
+  - case: "PERSIST returns 0 against non existing or non volatile keys"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PERSIST", "KEYS"]
+    details: "1 ms"
+  - case: "EXPIRE precision is now the millisecond"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "1109 ms"
+  - case: "PSETEX can set sub-second expires"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PSETEX", "SET"]
+    details: "105 ms"
+  - case: "PEXPIRE can set sub-second expires"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PEXPIRE", "SET"]
+    details: "104 ms"
+  - case: "PEXPIREAT can set sub-second expires"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PEXPIREAT", "SET"]
+    details: "205 ms"
+  - case: "TTL returns time to live in seconds"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["TTL", "TIME"]
+    details: "1 ms"
+  - case: "PTTL returns time to live in milliseconds"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PTTL", "TIME"]
+    details: "1 ms"
+  - case: "TTL / PTTL / EXPIRETIME / PEXPIRETIME return -1 if key has no expire"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["TTL", "PTTL", "EXPIRETIME", "PEXPIRETIME", "EXPIRE"]
+    details: "0 ms"
+  - case: "TTL / PTTL / EXPIRETIME / PEXPIRETIME return -2 if key does not exit"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["TTL", "PTTL", "EXPIRETIME", "PEXPIRETIME"]
+    details: "0 ms"
+  - case: "EXPIRETIME returns absolute expiration time in seconds"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRETIME", "TIME"]
+    details: "0 ms"
+  - case: "PEXPIRETIME returns absolute expiration time in milliseconds"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PEXPIRETIME", "TIME"]
+    details: "0 ms"
+  - case: "Redis should actively expire keys incrementally"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "KEYS"]
+    details: "623 ms"
+  - case: "Redis should lazy expire keys"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "KEYS"]
+    details: "1005 ms"
+  - case: "EXPIRE should not resurrect keys (issue #1026)"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "KEYS"]
+    details: "1005 ms"
+  - case: "5 keys in, 5 keys out"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["KEYS"]
+    details: "0 ms"
+  - case: "EXPIRE with empty string as TTL should report an error"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "SET with EX with big integer should report an error"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SET"]
+    details: "0 ms"
+  - case: "SET with EX with smallest integer should report an error"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SET"]
+    details: "0 ms"
+  - case: "GETEX with big integer should report an error"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["GETEX"]
+    details: "0 ms"
+  - case: "GETEX with smallest integer should report an error"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["GETEX"]
+    details: "1 ms"
+  - case: "EXPIRE with big integer overflows when converted to milliseconds"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "1 ms"
+  - case: "PEXPIRE with big integer overflow when basetime is added"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PEXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with big negative integer"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "PEXPIREAT with big integer works"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PEXPIREAT"]
+    details: "0 ms"
+  - case: "PEXPIREAT with big negative integer works"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["PEXPIREAT"]
+    details: "0 ms"
+  - case: "External-server skip #18"
+    status: "IGNORE"
+    unit: "unit/expire"
+    commands: []
+    details: "Not supported on external server"
+  - case: "All TTL in commands are propagated as absolute timestamp in replication stream"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["TTL"]
+    details: "3 ms"
+  - case: "External-server skip #19"
+    status: "IGNORE"
+    unit: "unit/expire"
+    commands: []
+    details: "Not supported on external server"
+  - case: "SET command will remove expire"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SET", "COMMAND", "EXPIRE"]
+    details: "0 ms"
+  - case: "SET command will remove expire with large string (optimization path)"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SET", "COMMAND", "EXPIRE"]
+    details: "1 ms"
+  - case: "SET - use KEEPTTL option, TTL should not be removed"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SET", "TTL"]
+    details: "0 ms"
+  - case: "SET - use KEEPTTL option, TTL should not be removed after loadaof"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SET", "TTL"]
+    details: "2013 ms"
+  - case: "GETEX use of PERSIST option should remove TTL"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["GETEX", "PERSIST", "TTL"]
+    details: "0 ms"
+  - case: "GETEX use of PERSIST option should remove TTL after loadaof"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["GETEX", "PERSIST", "TTL"]
+    details: "1 ms"
+  - case: "GETEX propagate as to replica as PERSIST, DEL, or nothing"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["GETEX", "PERSIST", "DEL"]
+    details: "1 ms"
+  - case: "EXPIRE with NX option on a key with ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with NX option on a key without ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with XX option on a key with ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with XX option on a key without ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with GT option on a key with lower ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with GT option on a key with higher ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with GT option on a key without ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with LT option on a key with higher ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with LT option on a key with lower ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "1 ms"
+  - case: "EXPIRE with LT option on a key without ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with LT and XX option on a key with ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "1 ms"
+  - case: "EXPIRE with LT and XX option on a key without ttl"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE", "TTL"]
+    details: "0 ms"
+  - case: "EXPIRE with conflicting options: LT GT"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with conflicting options: NX GT"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with conflicting options: NX LT"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with conflicting options: NX XX"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with unsupported options"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with unsupported options"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with negative expiry"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with negative expiry on a non-valitale key"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "EXPIRE with non-existed key"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "0 ms"
+  - case: "Redis should not propagate the read command on lazy expire"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["COMMAND", "EXPIRE"]
+    details: "105 ms"
+  - case: "SCAN: Lazy-expire should not be wrapped in MULTI/EXEC"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["SCAN", "MULTI", "EXEC"]
+    details: "3 ms"
+  - case: "RANDOMKEY: Lazy-expire should not be wrapped in MULTI/EXEC"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["RANDOMKEY", "MULTI", "EXEC"]
+    details: "3 ms"
+  - case: "Lazy expire should increment expired_keys but not expired_keys_active"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "4 ms"
+  - case: "Active expire should increment both expired_keys and expired_keys_active"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["EXPIRE"]
+    details: "105 ms"
+  - case: "External-server skip #20"
+    status: "IGNORE"
+    unit: "unit/expire"
+    commands: []
+    details: "Not supported on external server"
+  - case: "Config lazyexpire-nested-arbitrary-keys (yes, direct)"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["CONFIG"]
+    details: "3 ms"
+  - case: "Config lazyexpire-nested-arbitrary-keys (yes, multi)"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["CONFIG", "MULTI"]
+    details: "4 ms"
+  - case: "Config lazyexpire-nested-arbitrary-keys (yes, lua)"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["CONFIG"]
+    details: "4 ms"
+  - case: "Config lazyexpire-nested-arbitrary-keys (no, direct)"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["CONFIG"]
+    details: "3 ms"
+  - case: "Config lazyexpire-nested-arbitrary-keys (no, multi)"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["CONFIG", "MULTI"]
+    details: "4 ms"
+  - case: "Config lazyexpire-nested-arbitrary-keys (no, lua)"
+    status: "PASS"
+    unit: "unit/expire"
+    commands: ["CONFIG"]
+    details: "3 ms"
+  - case: "FUNCTION - Basic usage"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - Load with unknown argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - Create an already exiting library raise error"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - Create an already exiting library raise error (case insensitive)"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - Create a library with wrong name format"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - Create library with unexisting engine"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - Test uncompiled script"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "SCRIPT"]
+    details: "0 ms"
+  - case: "FUNCTION - test replace argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - test function case insensitive"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test replace argument with failure keeps old libraries"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - test function delete"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test fcall bad arguments"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "FCALL"]
+    details: "0 ms"
+  - case: "FUNCTION - test fcall bad number of keys arguments"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "FCALL", "KEYS"]
+    details: "0 ms"
+  - case: "FUNCTION - test fcall negative number of keys"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "FCALL", "KEYS"]
+    details: "0 ms"
+  - case: "FUNCTION - test delete on not exiting library"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - test function kill when function is not running"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test wrong subcommand"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test loading from rdb"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - test debug reload different options"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "DEBUG"]
+    details: "0 ms"
+  - case: "FUNCTION - test debug reload with nosave and noflush"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "DEBUG"]
+    details: "1 ms"
+  - case: "FUNCTION - test flushall and flushdb do not clean functions"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "FLUSHALL", "FLUSHDB"]
+    details: "0 ms"
+  - case: "FUNCTION - test function dump and restore"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "DUMP", "RESTORE"]
+    details: "1 ms"
+  - case: "FUNCTION - test function dump and restore with flush argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "DUMP", "RESTORE"]
+    details: "0 ms"
+  - case: "FUNCTION - test function dump and restore with append argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "DUMP", "RESTORE", "APPEND"]
+    details: "1 ms"
+  - case: "FUNCTION - test function dump and restore with replace argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "DUMP", "RESTORE"]
+    details: "1 ms"
+  - case: "FUNCTION - test function restore with bad payload do not drop existing functions"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "RESTORE"]
+    details: "1 ms"
+  - case: "FUNCTION - test function restore with wrong number of arguments"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "RESTORE"]
+    details: "0 ms"
+  - case: "FUNCTION - test fcall_ro with write command"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "FCALL_RO", "COMMAND"]
+    details: "0 ms"
+  - case: "FUNCTION - test fcall_ro with read only commands"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "FCALL_RO"]
+    details: "1 ms"
+  - case: "FUNCTION - test keys and argv"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "KEYS"]
+    details: "0 ms"
+  - case: "FUNCTION - test command get keys on fcall"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "COMMAND", "GET", "KEYS", "FCALL"]
+    details: "0 ms"
+  - case: "FUNCTION - test command get keys on fcall_ro"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "COMMAND", "GET", "KEYS", "FCALL_RO"]
+    details: "0 ms"
+  - case: "FUNCTION - test function kill"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "409 ms"
+  - case: "FUNCTION - test script kill not working on function"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "SCRIPT"]
+    details: "409 ms"
+  - case: "FUNCTION - test function kill not working on eval"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "EVAL"]
+    details: "408 ms"
+  - case: "FUNCTION - test function flush"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "2 ms"
+  - case: "FUNCTION - async function flush rebuilds Lua VM without causing race condition between main and lazyfree thread"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "113 ms"
+  - case: "FUNCTION - test function wrong argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "External-server skip #21"
+    status: "IGNORE"
+    unit: "unit/functions"
+    commands: []
+    details: "Not supported on external server"
+  - case: "FUNCTION can processes create, delete and flush commands in AOF when doing \"debug loadaof\" in read-only slaves: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "DEBUG"]
+    details: ""
+  - case: "LIBRARIES - test shared function can access default globals"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "LIBRARIES - usage and code sharing"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - test registration failure revert the entire load"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - test registration function name collision"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "LIBRARIES - test registration function name collision on same library"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "LIBRARIES - test registration with no argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - test registration with only name"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - test registration with to many arguments"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "1 ms"
+  - case: "LIBRARIES - test registration with no string name"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - test registration with wrong name format"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - test registration with empty name"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - math.random from function load"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "LIBRARIES - redis.call from function load"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "LIBRARIES - redis.setresp from function load"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "LIBRARIES - redis.set_repl from function load"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "LIBRARIES - redis.acl_check_cmd from function load"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "LIBRARIES - malicious access test"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - delete removed all functions on library"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "1 ms"
+  - case: "LIBRARIES - register function inside a function"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "LIBRARIES - register library with no functions"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - load timeout"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "5000 ms"
+  - case: "LIBRARIES - verify global protection on the load run"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - named arguments"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "1 ms"
+  - case: "LIBRARIES - named arguments, bad function name"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "LIBRARIES - named arguments, bad callback type"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["TYPE"]
+    details: "0 ms"
+  - case: "LIBRARIES - named arguments, bad description"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - named arguments, unknown argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "LIBRARIES - named arguments, missing function name"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "LIBRARIES - named arguments, missing callback"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: []
+    details: "0 ms"
+  - case: "FUNCTION - test function restore with function name collision"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "RESTORE"]
+    details: "3 ms"
+  - case: "FUNCTION - test function list with code"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - test function list with pattern"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test function list wrong argument"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test function list with bad argument to library name"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test function list withcode multiple times"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test function list libraryname multiple times"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - verify OOM on function load and function restore"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "RESTORE"]
+    details: "1 ms"
+  - case: "FUNCTION - verify allow-omm allows running any command"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "COMMAND"]
+    details: "1 ms"
+  - case: "FUNCTION - wrong flags type named arguments"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "TYPE"]
+    details: "0 ms"
+  - case: "FUNCTION - wrong flag type"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "TYPE"]
+    details: "0 ms"
+  - case: "FUNCTION - unknown flag"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - write script on fcall_ro"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "SCRIPT", "FCALL_RO"]
+    details: "0 ms"
+  - case: "FUNCTION - write script with no-writes flag"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "SCRIPT"]
+    details: "1 ms"
+  - case: "FUNCTION - deny oom"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - deny oom on no-writes function"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - allow stale: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: ""
+  - case: "FUNCTION - redis version api"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - function stats"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - function stats reloaded correctly from rdb"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - function stats delete library"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - test function stats on loading failure"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - function stats cleaned after flush"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - function test empty engine"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - function test unknown metadata value"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - function test no name"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - function test multiple names"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - function test name with quotes"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "0 ms"
+  - case: "FUNCTION - trick global protection 1"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION"]
+    details: "1 ms"
+  - case: "FUNCTION - test getmetatable on script load"
+    status: "PASS"
+    unit: "unit/functions"
+    commands: ["FUNCTION", "SCRIPT"]
+    details: "0 ms"
+  - case: "External-server skip #22"
+    status: "IGNORE"
+    unit: "unit/gcra"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #23"
+    status: "IGNORE"
+    unit: "unit/gcra"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #24"
+    status: "IGNORE"
+    unit: "unit/gcra"
+    commands: []
+    details: "Not supported on external server"
+  - case: "GEO with wrong type src key"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["TYPE"]
+    details: "0 ms"
+  - case: "GEO with non existing src key"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: []
+    details: "1 ms"
+  - case: "GEO BYLONLAT with empty search"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: []
+    details: "0 ms"
+  - case: "GEO BYMEMBER with non existing member"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: []
+    details: "0 ms"
+  - case: "GEOADD create"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD update"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD update with CH option"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD update with NX option"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD update with XX option"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD update with CH NX option"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD update with CH XX option"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD update with XX NX option will return syntax error"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD update with invalid option"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD invalid coordinates"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "GEOADD out-of-range longitude/latitude error reply is well-formed in tests/unit/geo.tcl"
+    status: "FAIL"
+    unit: "unit/geo"
+    commands: ["GEOADD"]
+    details: ""
+  - case: "GEOADD multi add"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOADD", "MULTI"]
+    details: "0 ms"
+  - case: "Check geoset values"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: []
+    details: "0 ms"
+  - case: "GEORADIUS simple (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUS_RO simple (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS_RO"]
+    details: "0 ms"
+  - case: "GEOSEARCH simple (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEOSEARCH FROMLONLAT and FROMMEMBER cannot exist at the same time"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH", "TIME"]
+    details: "0 ms"
+  - case: "GEOSEARCH FROMLONLAT and FROMMEMBER one must exist"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEOSEARCH BYRADIUS and BYBOX cannot exist at the same time"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH", "TIME"]
+    details: "0 ms"
+  - case: "GEOSEARCH BYRADIUS and BYBOX one must exist"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEOSEARCH with STOREDIST option"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEORADIUS withdist (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEOSEARCH withdist (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEORADIUS with COUNT"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUS with multiple WITH* tokens"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUS with ANY not sorted by default"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUS with ANY sorted by ASC"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUS with ANY but no COUNT"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUS with COUNT but missing integer argument"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUS with COUNT DESC"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUS HUGE, issue #2767"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "0 ms"
+  - case: "GEORADIUSBYMEMBER simple (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUSBYMEMBER"]
+    details: "0 ms"
+  - case: "GEORADIUSBYMEMBER_RO simple (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUSBYMEMBER_RO"]
+    details: "0 ms"
+  - case: "GEORADIUSBYMEMBER search areas contain satisfied points in oblique direction"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUSBYMEMBER"]
+    details: "0 ms"
+  - case: "GEORADIUSBYMEMBER crossing pole search"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUSBYMEMBER"]
+    details: "0 ms"
+  - case: "GEOSEARCH FROMMEMBER simple (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEOSEARCH vs GEORADIUS"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH", "GEORADIUS"]
+    details: "1 ms"
+  - case: "GEOSEARCH non square, long and narrow"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEOSEARCH corner point test"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEORADIUSBYMEMBER withdist (sorted)"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUSBYMEMBER"]
+    details: "0 ms"
+  - case: "GEOHASH is able to return geohash strings"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOHASH"]
+    details: "0 ms"
+  - case: "GEOHASH with only key as argument"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOHASH"]
+    details: "0 ms"
+  - case: "GEOPOS simple"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOPOS"]
+    details: "0 ms"
+  - case: "GEOPOS missing element"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOPOS"]
+    details: "0 ms"
+  - case: "GEOPOS with only key as argument"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOPOS"]
+    details: "0 ms"
+  - case: "GEODIST simple & unit"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEODIST"]
+    details: "0 ms"
+  - case: "GEODIST missing elements"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEODIST"]
+    details: "0 ms"
+  - case: "GEORADIUS STORE option: syntax error"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUS"]
+    details: "1 ms"
+  - case: "GEOSEARCHSTORE STORE option: syntax error"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCHSTORE"]
+    details: "0 ms"
+  - case: "GEORANGE STORE option: incompatible options"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: []
+    details: "0 ms"
+  - case: "GEORANGE STORE option: plain usage"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: []
+    details: "0 ms"
+  - case: "GEORADIUSBYMEMBER STORE/STOREDIST option: plain usage"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEORADIUSBYMEMBER"]
+    details: "1 ms"
+  - case: "GEOSEARCHSTORE STORE option: plain usage"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCHSTORE"]
+    details: "0 ms"
+  - case: "GEORANGE STOREDIST option: plain usage"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: []
+    details: "0 ms"
+  - case: "GEOSEARCHSTORE STOREDIST option: plain usage"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCHSTORE"]
+    details: "1 ms"
+  - case: "GEORANGE STOREDIST option: COUNT ASC and DESC"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: []
+    details: "0 ms"
+  - case: "GEOSEARCH the box spans -180° or 180°"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "0 ms"
+  - case: "GEOSEARCH with small distance"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "1 ms"
+  - case: "GEOSEARCH fuzzy test - byradius"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "3540 ms"
+  - case: "GEOSEARCH fuzzy test - bybox"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "3124 ms"
+  - case: "GEOSEARCH box edges fuzzy test"
+    status: "PASS"
+    unit: "unit/geo"
+    commands: ["GEOSEARCH"]
+    details: "26 ms"
+  - case: "External-server skip #25"
+    status: "IGNORE"
+    unit: "unit/hotkeys"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #26"
+    status: "IGNORE"
+    unit: "unit/hotkeys"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #27"
+    status: "IGNORE"
+    unit: "unit/hotkeys"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #28"
+    status: "IGNORE"
+    unit: "unit/hotkeys"
+    commands: []
+    details: "Not supported on external server"
+  - case: "HyperLogLog self test passes"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "0 ms"
+  - case: "PFADD without arguments creates an HLL value"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFADD"]
+    details: "0 ms"
+  - case: "Approximated cardinality after creation is zero"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "0 ms"
+  - case: "PFADD returns 1 when at least 1 reg was modified"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFADD"]
+    details: "0 ms"
+  - case: "PFADD returns 0 when no reg was modified"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFADD"]
+    details: "0 ms"
+  - case: "PFADD works with empty string (regression)"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFADD"]
+    details: "0 ms"
+  - case: "PFCOUNT returns approximated cardinality of set"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFCOUNT", "SET"]
+    details: "0 ms"
+  - case: "HyperLogLogs are promote from sparse to dense"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "207 ms"
+  - case: "Change hll-sparse-max-bytes"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "1 ms"
+  - case: "Hyperloglog promote to dense well in different hll-sparse-max-bytes"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "15 ms"
+  - case: "HyperLogLog sparse encoding stress test"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "440 ms"
+  - case: "Corrupted sparse HyperLogLogs are detected: Additional at tail"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "0 ms"
+  - case: "Corrupted sparse HyperLogLogs are detected: Broken magic"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "0 ms"
+  - case: "Corrupted sparse HyperLogLogs are detected: Invalid encoding"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "0 ms"
+  - case: "Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "18 ms"
+  - case: "Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "4073 ms"
+  - case: "Corrupted dense HyperLogLogs are detected: Wrong length"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "1 ms"
+  - case: "Fuzzing dense/sparse encoding: Redis should always detect errors"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: []
+    details: "1544 ms"
+  - case: "PFADD, PFCOUNT, PFMERGE type checking works"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFADD", "PFCOUNT", "PFMERGE", "TYPE"]
+    details: "0 ms"
+  - case: "PFMERGE results on the cardinality of union of sets"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFMERGE"]
+    details: "1 ms"
+  - case: "PFMERGE on missing source keys will create an empty destkey"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFMERGE", "KEYS"]
+    details: "0 ms"
+  - case: "PFMERGE with one empty input key, create an empty destkey"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFMERGE"]
+    details: "0 ms"
+  - case: "PFMERGE with one non-empty input key, dest key is actually one of the source keys"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFMERGE", "KEYS"]
+    details: "0 ms"
+  - case: "PFMERGE results with simd"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFMERGE"]
+    details: "524 ms"
+  - case: "PFCOUNT multiple-keys merge returns cardinality of union #1"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFCOUNT"]
+    details: "1632 ms"
+  - case: "PFCOUNT multiple-keys merge returns cardinality of union #2"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFCOUNT"]
+    details: "1086 ms"
+  - case: "PFDEBUG GETREG returns the HyperLogLog raw registers"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFDEBUG"]
+    details: "238 ms"
+  - case: "PFADD / PFCOUNT cache invalidation works"
+    status: "PASS"
+    unit: "unit/hyperloglog"
+    commands: ["PFADD", "PFCOUNT"]
+    details: "1 ms"
+  - case: "PFADD with 2GB entry should not crash server due to overflow in MurmurHash64A: large memory flag not provided"
+    status: "IGNORE"
+    unit: "unit/hyperloglog"
+    commands: ["PFADD", "MEMORY"]
+    details: ""
+  - case: "info command with at most one sub command"
+    status: "PASS"
+    unit: "unit/info-command"
+    commands: ["INFO", "COMMAND"]
+    details: "0 ms"
+  - case: "info command with one sub-section"
+    status: "PASS"
+    unit: "unit/info-command"
+    commands: ["INFO", "COMMAND"]
+    details: "1 ms"
+  - case: "info command with multiple sub-sections"
+    status: "PASS"
+    unit: "unit/info-command"
+    commands: ["INFO", "COMMAND"]
+    details: "0 ms"
+  - case: "KEYSIZES - Test i'th bin counts keysizes between (2^i) and (2^(i+1)-1) as expected"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "1 ms"
+  - case: "KEYSIZES - Histogram values of Bytes, Kilo and Mega"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "10 ms"
+  - case: "KEYSIZES - Test hyperloglog"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "2671 ms"
+  - case: "KEYSIZES - Test List"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "80 ms"
+  - case: "KEYSIZES - Test SET"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: ["SET"]
+    details: "78 ms"
+  - case: "KEYSIZES - Test ZSET"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "84 ms"
+  - case: "KEYSIZES - Test STRING"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "57 ms"
+  - case: "KEYSIZES - Test UNLINK (async deletion)"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: ["UNLINK"]
+    details: "4 ms"
+  - case: "KEYSIZES - Test complex dataset"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "607 ms"
+  - case: "External-server skip #29"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "Not supported on external server"
+  - case: "KEYSIZES - Test HASH (listpackex)"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "377 ms"
+  - case: "KEYSIZES - Test Hash field lazy expiration (listpackex)"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "102 ms"
+  - case: "KEYSIZES - Test HASH (hashtable)"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "456 ms"
+  - case: "KEYSIZES - Test Hash field lazy expiration (hashtable)"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "100 ms"
+  - case: "KEYSIZES - Test STRING BITS"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "3 ms"
+  - case: "KEYSIZES - Test RESTORE"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: ["RESTORE"]
+    details: "1 ms"
+  - case: "KEYSIZES - Test RENAME"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: ["RENAME"]
+    details: "1 ms"
+  - case: "KEYSIZES - Test MOVE"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: ["MOVE"]
+    details: "1 ms"
+  - case: "KEYSIZES - Test SWAPDB : Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: ["SWAPDB"]
+    details: ""
+  - case: "KEYSIZES - DEBUG RELOAD reset keysizes"
+    status: "PASS"
+    unit: "unit/info-keysizes"
+    commands: ["DEBUG", "RESET"]
+    details: "1 ms"
+  - case: "KEYSIZES - Test RDB : Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: ""
+  - case: "External-server skip #30"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #31"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #32"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #33"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #34"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #35"
+    status: "IGNORE"
+    unit: "unit/info-keysizes"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #36"
+    status: "IGNORE"
+    unit: "unit/info"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #37"
+    status: "IGNORE"
+    unit: "unit/info"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #38"
+    status: "IGNORE"
+    unit: "unit/info"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #39"
+    status: "IGNORE"
+    unit: "unit/info"
+    commands: []
+    details: "Not supported on external server"
+  - case: "The microsecond part of the TIME command will not overflow"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["TIME", "COMMAND"]
+    details: "0 ms"
+  - case: "TTL, TYPE and EXISTS do not alter the last access time of a key"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["TTL", "TYPE", "EXISTS", "TIME"]
+    details: "3004 ms"
+  - case: "TOUCH alters the last access time of a key"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["TOUCH", "TIME"]
+    details: "3004 ms"
+  - case: "Operations in no-touch mode do not alter the last access time of a key"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["TIME"]
+    details: "1105 ms"
+  - case: "Operations in no-touch mode TOUCH alters the last access time of a key"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["TOUCH", "TIME"]
+    details: "1104 ms"
+  - case: "Operations in no-touch mode TOUCH from script alters the last access time of a key"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["TOUCH", "SCRIPT", "TIME"]
+    details: "1104 ms"
+  - case: "TOUCH returns the number of existing keys specified"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["TOUCH", "KEYS"]
+    details: "0 ms"
+  - case: "command stats for GEOADD"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "GEOADD"]
+    details: "0 ms"
+  - case: "errors stats for GEOADD"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["GEOADD"]
+    details: "0 ms"
+  - case: "command stats for EXPIRE"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "EXPIRE"]
+    details: "1 ms"
+  - case: "command stats for BRPOP"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "BRPOP"]
+    details: "3 ms"
+  - case: "command stats for MULTI"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "MULTI"]
+    details: "1 ms"
+  - case: "command stats for scripts"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND"]
+    details: "1 ms"
+  - case: "COMMAND COUNT get total number of Redis commands"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "GET"]
+    details: "0 ms"
+  - case: "COMMAND GETKEYS GET"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "GET"]
+    details: "0 ms"
+  - case: "COMMAND GETKEYSANDFLAGS"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND"]
+    details: "0 ms"
+  - case: "COMMAND GETKEYSANDFLAGS invalid args"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND"]
+    details: "0 ms"
+  - case: "COMMAND GETKEYSANDFLAGS MSETEX"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "MSETEX"]
+    details: "1 ms"
+  - case: "COMMAND GETKEYS MEMORY USAGE"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "MEMORY"]
+    details: "0 ms"
+  - case: "COMMAND GETKEYS XGROUP"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "XGROUP"]
+    details: "0 ms"
+  - case: "COMMAND GETKEYS EVAL with keys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "EVAL", "KEYS"]
+    details: "1 ms"
+  - case: "COMMAND GETKEYS EVAL without keys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "EVAL", "KEYS"]
+    details: "0 ms"
+  - case: "COMMAND GETKEYS LCS"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "LCS"]
+    details: "0 ms"
+  - case: "COMMAND GETKEYS PFMERGE with and without source keys in tests/unit/introspection-2.tcl"
+    status: "FAIL"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "PFMERGE", "KEYS"]
+    details: ""
+  - case: "COMMAND GETKEYS MORE THAN 256 KEYS"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "KEYS"]
+    details: "1 ms"
+  - case: "COMMAND LIST syntax error"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND"]
+    details: "0 ms"
+  - case: "COMMAND LIST WITHOUT FILTERBY"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND"]
+    details: "1 ms"
+  - case: "COMMAND LIST FILTERBY ACLCAT against non existing category"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND"]
+    details: "0 ms"
+  - case: "COMMAND LIST FILTERBY ACLCAT - list all commands/subcommands"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND"]
+    details: "0 ms"
+  - case: "COMMAND LIST FILTERBY PATTERN - list all commands/subcommands"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND"]
+    details: "1 ms"
+  - case: "COMMAND LIST FILTERBY MODULE against non existing module"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "MODULE"]
+    details: "0 ms"
+  - case: "COMMAND INFO of invalid subcommands"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["COMMAND", "INFO"]
+    details: "0 ms"
+  - case: "SET command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["SET", "COMMAND"]
+    details: "0 ms"
+  - case: "GET command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["GET", "COMMAND"]
+    details: "0 ms"
+  - case: "MSET command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["MSET", "COMMAND"]
+    details: "0 ms"
+  - case: "BITFIELD command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["BITFIELD", "COMMAND"]
+    details: "0 ms"
+  - case: "LMOVE command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["LMOVE", "COMMAND"]
+    details: "0 ms"
+  - case: "LPOP command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["LPOP", "COMMAND"]
+    details: "0 ms"
+  - case: "BLPOP command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["BLPOP", "COMMAND"]
+    details: "0 ms"
+  - case: "PING command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["PING", "COMMAND"]
+    details: "0 ms"
+  - case: "MEMORY command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["MEMORY", "COMMAND"]
+    details: "1 ms"
+  - case: "MEMORY|USAGE command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["MEMORY", "COMMAND"]
+    details: "0 ms"
+  - case: "RENAME command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["RENAME", "COMMAND"]
+    details: "0 ms"
+  - case: "GEORADIUS_RO command will not be marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["GEORADIUS_RO", "COMMAND"]
+    details: "0 ms"
+  - case: "ZUNIONSTORE command is marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["ZUNIONSTORE", "COMMAND"]
+    details: "1 ms"
+  - case: "XREAD command is marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["XREAD", "COMMAND"]
+    details: "0 ms"
+  - case: "EVAL command is marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["EVAL", "COMMAND"]
+    details: "0 ms"
+  - case: "SORT command is marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["SORT", "COMMAND"]
+    details: "0 ms"
+  - case: "SORT_RO command is marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["SORT_RO", "COMMAND"]
+    details: "0 ms"
+  - case: "MIGRATE command is marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["MIGRATE", "COMMAND"]
+    details: "0 ms"
+  - case: "GEORADIUS command is marked with movablekeys"
+    status: "PASS"
+    unit: "unit/introspection-2"
+    commands: ["GEORADIUS", "COMMAND"]
+    details: "0 ms"
+  - case: "PING"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["PING"]
+    details: "0 ms"
+  - case: "CLIENT LIST in tests/unit/introspection.tcl"
+    status: "FAIL"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: ""
+  - case: "CLIENT LIST with IDs"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "CLIENT INFO in tests/unit/introspection.tcl"
+    status: "FAIL"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "INFO"]
+    details: ""
+  - case: "CLIENT INFO input/output/cmds-processed stats"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "INFO"]
+    details: "0 ms"
+  - case: "CLIENT INFO input/output/cmds-processed stats for blocking command"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "INFO", "COMMAND"]
+    details: "108 ms"
+  - case: "CLIENT INFO cmds-processed stats for recursive command"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "INFO", "COMMAND"]
+    details: "0 ms"
+  - case: "CLIENT INFO read-events and pipeline-length stats in tests/unit/introspection.tcl"
+    status: "FAIL"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "INFO"]
+    details: ""
+  - case: "CLIENT INFO pipeline-length stats for pipelined commands in tests/unit/introspection.tcl"
+    status: "FAIL"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "INFO"]
+    details: ""
+  - case: "CLIENT KILL with illegal arguments"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "1 ms"
+  - case: "CLIENT KILL maxAGE will kill old clients"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "2003 ms"
+  - case: "CLIENT KILL SKIPME YES/NO will kill all clients"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "2 ms"
+  - case: "CLIENT command unhappy path coverage"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "COMMAND"]
+    details: "2 ms"
+  - case: "CLIENT KILL close the client connection during bgsave"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "BGSAVE"]
+    details: "10008 ms"
+  - case: "CLIENT REPLY OFF/ON: disable all commands reply"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "CLIENT REPLY SKIP: skip the next command reply"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "COMMAND"]
+    details: "1 ms"
+  - case: "CLIENT REPLY ON: unset SKIP flag"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "MONITOR can log executed commands"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["MONITOR"]
+    details: "26 ms"
+  - case: "MONITOR can log commands issued by the scripting engine"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["MONITOR"]
+    details: "27 ms"
+  - case: "MONITOR can log commands issued by functions"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["MONITOR"]
+    details: "27 ms"
+  - case: "MONITOR supports redacting command arguments"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["MONITOR", "COMMAND"]
+    details: "80 ms"
+  - case: "MONITOR correctly handles multi-exec cases"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["MONITOR"]
+    details: "54 ms"
+  - case: "MONITOR log blocked command only once"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["MONITOR", "COMMAND"]
+    details: "132 ms"
+  - case: "CLIENT GETNAME should return NIL if name is not assigned"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "CLIENT GETNAME check if name set correctly"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "SET"]
+    details: "0 ms"
+  - case: "CLIENT LIST shows empty fields for unassigned names"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "1 ms"
+  - case: "CLIENT SETNAME does not accept spaces"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "CLIENT SETNAME can assign a name to this connection"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "CLIENT SETNAME can change the name of an existing connection"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "After CLIENT SETNAME, connection can still be closed"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "CLIENT SETINFO can set a library name to this connection"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT", "SET"]
+    details: "0 ms"
+  - case: "CLIENT SETINFO invalid args"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "RESET does NOT clean library name"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["RESET"]
+    details: "0 ms"
+  - case: "CLIENT SETINFO can clear library name"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "CONFIG save params special case handled properly: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "SAVE"]
+    details: ""
+  - case: "CONFIG sanity"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CONFIG"]
+    details: "9 ms"
+  - case: "CONFIG REWRITE sanity: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["CONFIG"]
+    details: ""
+  - case: "CONFIG REWRITE handles save and shutdown properly: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "SAVE", "SHUTDOWN"]
+    details: ""
+  - case: "CONFIG SET with multiple args"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "SET"]
+    details: "1 ms"
+  - case: "CONFIG SET rollback on set error"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "SET"]
+    details: "1 ms"
+  - case: "CONFIG SET rollback on apply error"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "SET"]
+    details: "2 ms"
+  - case: "CONFIG SET duplicate configs"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "SET"]
+    details: "0 ms"
+  - case: "CONFIG SET set immutable"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "SET"]
+    details: "0 ms"
+  - case: "CONFIG GET hidden configs"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "GET"]
+    details: "1 ms"
+  - case: "CONFIG GET multiple args"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CONFIG", "GET"]
+    details: "0 ms"
+  - case: "redis-server command line arguments - error cases: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["COMMAND"]
+    details: ""
+  - case: "redis-server command line arguments - allow passing option name and option value in the same arg: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["COMMAND"]
+    details: ""
+  - case: "redis-server command line arguments - wrong usage that we support anyway: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["COMMAND"]
+    details: ""
+  - case: "redis-server command line arguments - allow option value to use the `--` prefix: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["COMMAND"]
+    details: ""
+  - case: "redis-server command line arguments - option name and option value in the same arg and `--` prefix: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["COMMAND"]
+    details: ""
+  - case: "redis-server command line arguments - save with empty input: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["COMMAND", "SAVE"]
+    details: ""
+  - case: "redis-server command line arguments - take one bulk string with spaces for MULTI_ARG configs parsing: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["COMMAND"]
+    details: ""
+  - case: "External-server skip #40"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #41"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: []
+    details: "Not supported on external server"
+  - case: "config during loading: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["CONFIG"]
+    details: ""
+  - case: "CONFIG REWRITE handles rename-command properly: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["CONFIG"]
+    details: ""
+  - case: "CONFIG REWRITE handles alias config properly: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: ["CONFIG"]
+    details: ""
+  - case: "External-server skip #42"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: []
+    details: "Not supported on external server"
+  - case: "IO threads client number"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: ["CLIENT"]
+    details: "0 ms"
+  - case: "External-server skip #43"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: []
+    details: "Not supported on external server"
+  - case: "Clients are evenly distributed among io threads"
+    status: "PASS"
+    unit: "unit/introspection"
+    commands: []
+    details: "0 ms"
+  - case: "External-server skip #44"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #45"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #46"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #47"
+    status: "IGNORE"
+    unit: "unit/introspection"
+    commands: []
+    details: "Not supported on external server"
+  - case: "DEL against a single item"
     status: "PASS"
     unit: "unit/keyspace"
-    commands: ["EXISTS", "TYPE", "DEL"]
-    details: "unit=unit/keyspace; expected_ok=2; actual_ok=2"
-  - case: "redis_cli_type_probe"
+    commands: ["DEL"]
+    details: "1 ms"
+  - case: "Vararg DEL"
     status: "PASS"
-    unit: "redis-cli probe"
-    commands: ["TYPE", "SET", "HSET", "LPUSH", "SADD", "ZADD", "XADD"]
-    details: "redis-cli TYPE probe passed"
-  - case: "redis_cli_scripting_probe"
+    unit: "unit/keyspace"
+    commands: ["DEL"]
+    details: "0 ms"
+  - case: "Untagged multi-key commands"
     status: "PASS"
-    unit: "redis-cli probe"
-    commands: ["EVAL", "FUNCTION", "FCALL_RO"]
-    details: "scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok"
+    unit: "unit/keyspace"
+    commands: []
+    details: "0 ms"
+  - case: "KEYS with pattern"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["KEYS"]
+    details: "0 ms"
+  - case: "KEYS to get all keys"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["KEYS", "GET"]
+    details: "0 ms"
+  - case: "DBSIZE"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["DBSIZE"]
+    details: "0 ms"
+  - case: "KEYS with hashtag"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["KEYS"]
+    details: "0 ms"
+  - case: "DEL all keys"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["DEL", "KEYS"]
+    details: "0 ms"
+  - case: "DEL against expired key"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["DEL"]
+    details: "1105 ms"
+  - case: "EXISTS"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["EXISTS"]
+    details: "1 ms"
+  - case: "Zero length value in key. SET/GET/EXISTS"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["SET", "GET", "EXISTS"]
+    details: "0 ms"
+  - case: "Commands pipelining"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: []
+    details: "0 ms"
+  - case: "Non existing command"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COMMAND"]
+    details: "0 ms"
+  - case: "RENAME basic usage"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAME"]
+    details: "1 ms"
+  - case: "RENAME source key should no longer exist"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAME"]
+    details: "0 ms"
+  - case: "RENAME against already existing key"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAME"]
+    details: "1 ms"
+  - case: "RENAMENX basic usage"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAMENX"]
+    details: "1 ms"
+  - case: "RENAMENX against already existing key"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAMENX"]
+    details: "0 ms"
+  - case: "RENAMENX against already existing key (2)"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAMENX"]
+    details: "1 ms"
+  - case: "RENAME against non existing source key"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAME"]
+    details: "0 ms"
+  - case: "RENAME where source and dest key are the same (existing)"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAME"]
+    details: "0 ms"
+  - case: "RENAMENX where source and dest key are the same (existing)"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAMENX"]
+    details: "0 ms"
+  - case: "RENAME where source and dest key are the same (non existing)"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAME"]
+    details: "0 ms"
+  - case: "RENAME with volatile key, should move the TTL as well"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAME", "MOVE", "TTL"]
+    details: "1 ms"
+  - case: "RENAME with volatile key, should not inherit TTL of target key"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RENAME", "TTL"]
+    details: "1 ms"
+  - case: "DEL all keys again (DB 0)"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["DEL", "KEYS"]
+    details: "0 ms"
+  - case: "DEL all keys again (DB 1): Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["DEL", "KEYS"]
+    details: ""
+  - case: "COPY basic usage for string"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: "1 ms"
+  - case: "COPY for string does not replace an existing key without REPLACE option: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: ""
+  - case: "COPY for string can replace an existing key with REPLACE option: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: ""
+  - case: "COPY for string ensures that copied data is independent of copying data: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: ""
+  - case: "COPY for string does not copy data to no-integer DB"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: "0 ms"
+  - case: "COPY can copy key expire metadata as well"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY", "EXPIRE"]
+    details: "1 ms"
+  - case: "COPY does not create an expire if it does not exist"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY", "EXPIRE"]
+    details: "0 ms"
+  - case: "COPY basic usage for list - quicklist"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: "1 ms"
+  - case: "COPY basic usage for list - listpack"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: "0 ms"
+  - case: "COPY basic usage for intset set"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY", "SET"]
+    details: "0 ms"
+  - case: "COPY basic usage for listpack set"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY", "SET"]
+    details: "1 ms"
+  - case: "COPY basic usage for hashtable set"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY", "SET"]
+    details: "13 ms"
+  - case: "COPY basic usage for listpack sorted set"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY", "SET"]
+    details: "0 ms"
+  - case: "COPY basic usage for skiplist sorted set"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY", "SET"]
+    details: "5 ms"
+  - case: "COPY basic usage for listpack hash"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: "1 ms"
+  - case: "COPY basic usage for hashtable hash"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: "4 ms"
+  - case: "COPY basic usage for stream"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: "180 ms"
+  - case: "COPY basic usage for stream-cgroups"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["COPY"]
+    details: "2 ms"
+  - case: "MOVE basic usage: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["MOVE"]
+    details: ""
+  - case: "MOVE against key existing in the target DB: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["MOVE"]
+    details: ""
+  - case: "MOVE against non-integer DB (#1428): Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["MOVE"]
+    details: ""
+  - case: "MOVE can move key expire metadata as well: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["MOVE", "EXPIRE"]
+    details: ""
+  - case: "MOVE does not create an expire if it does not exist: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["MOVE", "EXPIRE"]
+    details: ""
+  - case: "SET/GET keys in different DBs: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["SET", "GET", "KEYS"]
+    details: ""
+  - case: "RANDOMKEY"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RANDOMKEY"]
+    details: "4 ms"
+  - case: "RANDOMKEY against empty DB"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RANDOMKEY"]
+    details: "0 ms"
+  - case: "RANDOMKEY regression 1"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["RANDOMKEY"]
+    details: "0 ms"
+  - case: "KEYS * two times with long key, Github issue #1208"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: ["KEYS"]
+    details: "0 ms"
+  - case: "Regression for pattern matching long nested loops"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: []
+    details: "0 ms"
+  - case: "Regression for pattern matching very long nested loops"
+    status: "PASS"
+    unit: "unit/keyspace"
+    commands: []
+    details: "1 ms"
+  - case: "Coverage: basic SWAPDB test and unhappy path: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["SWAPDB"]
+    details: ""
+  - case: "Coverage: SWAPDB and FLUSHDB: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/keyspace"
+    commands: ["SWAPDB", "FLUSHDB"]
+    details: ""
+  - case: "LATENCY HISTOGRAM with empty histogram"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "LATENCY HISTOGRAM all commands"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "LATENCY HISTOGRAM sub commands"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "LATENCY HISTOGRAM with a subset of commands"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "LATENCY HISTOGRAM command"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY", "COMMAND"]
+    details: "0 ms"
+  - case: "LATENCY HISTOGRAM with wrong command name skips the invalid one"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY", "COMMAND"]
+    details: "0 ms"
+  - case: "Test latency events logging"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "3417 ms"
+  - case: "LATENCY HISTORY output is ok"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "LATENCY LATEST output is ok"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "LATENCY GRAPH can output the event graph"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "LATENCY GRAPH can output the expire event graph"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY", "EXPIRE"]
+    details: "0 ms"
+  - case: "LATENCY of expire events are correctly collected"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY", "EXPIRE"]
+    details: "1182 ms"
+  - case: "LATENCY HISTORY / RESET with wrong event name is fine"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY", "RESET"]
+    details: "0 ms"
+  - case: "LATENCY DOCTOR produces some output"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "LATENCY RESET is able to reset events"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY", "RESET"]
+    details: "1 ms"
+  - case: "LATENCY HELP should not have unexpected options"
+    status: "PASS"
+    unit: "unit/latency-monitor"
+    commands: ["LATENCY"]
+    details: "0 ms"
+  - case: "UNLINK can reclaim memory in background"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: ["UNLINK", "MEMORY"]
+    details: "54 ms"
+  - case: "FLUSHDB ASYNC can reclaim memory in background"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: ["FLUSHDB", "MEMORY"]
+    details: "57 ms"
+  - case: "lazy free a stream with all types of metadata"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: []
+    details: "158 ms"
+  - case: "lazy free a stream with deleted cgroup"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: []
+    details: "1 ms"
+  - case: "FLUSHALL SYNC optimized to run in bg as blocking FLUSHALL ASYNC"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: ["FLUSHALL", "SYNC"]
+    details: "13 ms"
+  - case: "Run consecutive blocking FLUSHALL ASYNC successfully"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: ["FLUSHALL"]
+    details: "0 ms"
+  - case: "FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: ["FLUSHALL", "SYNC", "MULTI"]
+    details: "0 ms"
+  - case: "Client closed in the middle of blocking FLUSHALL ASYNC"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: ["CLIENT", "FLUSHALL"]
+    details: "1309 ms"
+  - case: "Pending commands in querybuf processed once unblocking FLUSHALL ASYNC"
+    status: "PASS"
+    unit: "unit/lazyfree"
+    commands: ["FLUSHALL"]
+    details: "0 ms"
+  - case: "Unblocks client blocked on lazyfree via REPLICAOF command: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/lazyfree"
+    commands: ["CLIENT", "REPLICAOF", "COMMAND"]
+    details: ""
+  - case: "External-server skip #48"
+    status: "IGNORE"
+    unit: "unit/limits"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #49"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #50"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #51"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #52"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #53"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #54"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #55"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #56"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #57"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #58"
+    status: "IGNORE"
+    unit: "unit/maxmemory"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #59"
+    status: "IGNORE"
+    unit: "unit/memefficiency"
+    commands: []
+    details: "Not supported on external server"
+  - case: "Active defrag can't be triggered during replicaof database flush. See issue #14267: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/memefficiency"
+    commands: ["REPLICAOF"]
+    details: ""
+  - case: "External-server skip #60"
+    status: "IGNORE"
+    unit: "unit/memefficiency"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #61"
+    status: "IGNORE"
+    unit: "unit/memefficiency"
+    commands: []
+    details: "Not supported on external server"
+  - case: "MULTI / EXEC basics"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "EXEC"]
+    details: "0 ms"
+  - case: "DISCARD"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["DISCARD"]
+    details: "0 ms"
+  - case: "Nested MULTI are not allowed"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI"]
+    details: "1 ms"
+  - case: "MULTI where commands alter argc/argv"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI"]
+    details: "0 ms"
+  - case: "WATCH inside MULTI is not allowed"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["WATCH", "MULTI"]
+    details: "0 ms"
+  - case: "EXEC fails if there are errors while queueing commands #1"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "1 ms"
+  - case: "EXEC fails if there are errors while queueing commands #2"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "0 ms"
+  - case: "If EXEC aborts, the client MULTI state is cleared"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC", "CLIENT", "MULTI"]
+    details: "1 ms"
+  - case: "EXEC works on WATCHed key not modified"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "0 ms"
+  - case: "EXEC fail on WATCHed key modified (1 key of 1 watched)"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "0 ms"
+  - case: "EXEC fail on WATCHed key modified (1 key of 5 watched)"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "0 ms"
+  - case: "EXEC fail on WATCHed key modified by SORT with STORE even if the result is empty"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC", "SORT"]
+    details: "0 ms"
+  - case: "EXEC fail on lazy expired WATCHed key"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "106 ms"
+  - case: "WATCH stale keys should not fail EXEC"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["WATCH", "KEYS", "EXEC"]
+    details: "3 ms"
+  - case: "Delete WATCHed stale keys should not fail EXEC"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["KEYS", "EXEC"]
+    details: "3 ms"
+  - case: "FLUSHDB while watching stale keys should not fail EXEC"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["FLUSHDB", "KEYS", "EXEC"]
+    details: "3 ms"
+  - case: "After successful EXEC key is no longer watched"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "1 ms"
+  - case: "After failed EXEC key is no longer watched"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "0 ms"
+  - case: "It is possible to UNWATCH"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["UNWATCH"]
+    details: "1 ms"
+  - case: "UNWATCH when there is nothing watched works as expected"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["UNWATCH"]
+    details: "0 ms"
+  - case: "FLUSHALL is able to touch the watched keys"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["FLUSHALL", "TOUCH", "KEYS"]
+    details: "0 ms"
+  - case: "FLUSHALL does not touch non affected keys"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["FLUSHALL", "TOUCH", "KEYS"]
+    details: "0 ms"
+  - case: "FLUSHDB is able to touch the watched keys"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["FLUSHDB", "TOUCH", "KEYS"]
+    details: "0 ms"
+  - case: "FLUSHDB does not touch non affected keys"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["FLUSHDB", "TOUCH", "KEYS"]
+    details: "0 ms"
+  - case: "SWAPDB is able to touch the watched keys that exist: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["SWAPDB", "TOUCH", "KEYS"]
+    details: ""
+  - case: "SWAPDB is able to touch the watched keys that do not exist: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["SWAPDB", "TOUCH", "KEYS"]
+    details: ""
+  - case: "SWAPDB does not touch watched stale keys: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["SWAPDB", "TOUCH", "KEYS"]
+    details: ""
+  - case: "SWAPDB does not touch non-existing key replaced with stale key: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["SWAPDB", "TOUCH"]
+    details: ""
+  - case: "SWAPDB does not touch stale key replaced with another stale key: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["SWAPDB", "TOUCH"]
+    details: ""
+  - case: "WATCH is able to remember the DB a key belongs to: Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["WATCH"]
+    details: ""
+  - case: "WATCH will consider touched keys target of EXPIRE"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["WATCH", "KEYS", "EXPIRE"]
+    details: "1 ms"
+  - case: "WATCH will consider touched expired keys"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["WATCH", "KEYS"]
+    details: "1042 ms"
+  - case: "DISCARD should clear the WATCH dirty flag on the client"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["DISCARD", "WATCH", "CLIENT"]
+    details: "1 ms"
+  - case: "DISCARD should UNWATCH all the keys"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["DISCARD", "UNWATCH", "KEYS"]
+    details: "1 ms"
+  - case: "MULTI / EXEC is not propagated (single write command)"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "EXEC", "COMMAND"]
+    details: "1 ms"
+  - case: "MULTI / EXEC is propagated correctly (multiple commands)"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "EXEC"]
+    details: "1 ms"
+  - case: "MULTI / EXEC is propagated correctly (multiple commands with SELECT): Not supported on singledb"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["MULTI", "EXEC", "SELECT"]
+    details: ""
+  - case: "MULTI / EXEC is propagated correctly (empty transaction)"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "EXEC"]
+    details: "0 ms"
+  - case: "MULTI / EXEC is propagated correctly (read-only commands)"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "EXEC"]
+    details: "1 ms"
+  - case: "MULTI / EXEC is propagated correctly (write command, no effect)"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "EXEC", "COMMAND"]
+    details: "1 ms"
+  - case: "MULTI / EXEC with REPLICAOF"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "EXEC", "REPLICAOF"]
+    details: "1 ms"
+  - case: "DISCARD should not fail during OOM"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["DISCARD"]
+    details: "1 ms"
+  - case: "MULTI and script timeout"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "SCRIPT"]
+    details: "407 ms"
+  - case: "EXEC and script timeout"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC", "SCRIPT"]
+    details: "409 ms"
+  - case: "MULTI-EXEC body and script timeout"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["SCRIPT"]
+    details: "407 ms"
+  - case: "just EXEC and script timeout"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC", "SCRIPT"]
+    details: "409 ms"
+  - case: "exec with write commands and state change"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "0 ms"
+  - case: "exec with read commands and stale replica state change"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "1 ms"
+  - case: "EXEC with only read commands should not be rejected when OOM"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC"]
+    details: "1 ms"
+  - case: "EXEC with at least one use-memory command should fail"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["EXEC", "COMMAND"]
+    details: "1 ms"
+  - case: "Blocking commands ignores the timeout"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: []
+    details: "1 ms"
+  - case: "MULTI propagation of PUBLISH"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "PUBLISH"]
+    details: "1 ms"
+  - case: "MULTI propagation of SCRIPT LOAD"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "SCRIPT"]
+    details: "0 ms"
+  - case: "MULTI propagation of EVAL"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "EVAL"]
+    details: "0 ms"
+  - case: "MULTI propagation of SCRIPT FLUSH"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "SCRIPT"]
+    details: "0 ms"
+  - case: "MULTI propagation of XREADGROUP"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "XREADGROUP"]
+    details: "1 ms"
+  - case: "MULTI with SAVE"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "SAVE"]
+    details: "0 ms"
+  - case: "MULTI with SHUTDOWN"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "SHUTDOWN"]
+    details: "0 ms"
+  - case: "MULTI with BGREWRITEAOF: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["MULTI", "BGREWRITEAOF"]
+    details: ""
+  - case: "MULTI with config set appendonly: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: ["MULTI", "CONFIG", "SET"]
+    details: ""
+  - case: "MULTI with config error"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["MULTI", "CONFIG"]
+    details: "1 ms"
+  - case: "Flushall while watching several keys by one client"
+    status: "PASS"
+    unit: "unit/multi"
+    commands: ["FLUSHALL", "KEYS", "CLIENT"]
+    details: "0 ms"
+  - case: "External-server skip #62"
+    status: "IGNORE"
+    unit: "unit/multi"
+    commands: []
+    details: "Not supported on external server"
+  - case: "CONFIG SET port number: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/networking"
+    commands: ["CONFIG", "SET"]
+    details: ""
+  - case: "CONFIG SET bind address: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/networking"
+    commands: ["CONFIG", "SET"]
+    details: ""
+  - case: "CONFIG SET bind-source-addr: Not supported on external server"
+    status: "IGNORE"
+    unit: "unit/networking"
+    commands: ["CONFIG", "SET"]
+    details: ""
+  - case: "External-server skip #63"
+    status: "IGNORE"
+    unit: "unit/networking"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #64"
+    status: "IGNORE"
+    unit: "unit/networking"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #65"
+    status: "IGNORE"
+    unit: "unit/networking"
+    commands: []
+    details: "Not supported on external server"
+  - case: "External-server skip #66"
+    status: "IGNORE"
+    unit: "unit/networking"
+    commands: []
+    details: "Not supported on external server"
+  - case: "Pending command pool expansion and shrinking"
+    status: "PASS"
+    unit: "unit/networking"
+    commands: ["COMMAND"]
+    details: "0 ms"
+  - case: "External-server skip #67"
+    status: "IGNORE"
+    unit: "unit/obuf-limits"
+    commands: []
+    details: "Not supported on external server"
+  - case: "Coverage: HELP commands in tests/unit/other.tcl"
+    status: "FAIL"
+    unit: "unit/other"
+    commands: []
+    details: ""
+  - case: "Coverage: MEMORY MALLOC-STATS"
+    status: "PASS"
+    unit: "unit/other"
+    commands: ["MEMORY"]
+    details: "0 ms"
+  - case: "Coverage: MEMORY PURGE"
+    status: "PASS"
+    unit: "unit/other"
+    commands: ["MEMORY"]
+    details: "0 ms"
+  - case: "SAVE - make sure there are all the types as values"
+    status: "PASS"
+    unit: "unit/other"
+    commands: ["SAVE"]
+    details: "6 ms"
+  - case: "FUZZ stresser with data model binary"
+    status: "PASS"
+    unit: "unit/other"
+    commands: []
+    details: "150 ms"
+  - case: "FUZZ stresser with data model alpha"
+    status: "PASS"
+    unit: "unit/other"
+    commands: []
+    details: "154 ms"
+  - case: "FUZZ stresser with data model compr"
+    status: "PASS"
+    unit: "unit/other"
+    commands: []
+    details: "137 ms"
+  - case: "External-server skip #68"
+    status: "IGNORE"
+    unit: "unit/other"
+    commands: []
+    details: "Not supported on external server"
+  - case: "BGSAVE"
+    status: "PASS"
+    unit: "unit/other"
+    commands: ["BGSAVE"]
+    details: "9 ms"
+  - case: "SELECT an out of range DB"
+    status: "PASS"
+    unit: "unit/other"
+    commands: ["SELECT"]
+    details: "0 ms"
+  - case: "Check consistency of different data types after a reload"
+    status: "PASS"
+    unit: "unit/other"
+    commands: []
+    details: "309 ms"
+  - case: "Same dataset digest if saving/reloading as AOF?"
+    status: "PASS"
+    unit: "unit/other"
+    commands: ["DIGEST"]
+    details: "57 ms"
+  - case: "EXPIRES after a reload (snapshot + append only file rewrite)"
+    status: "PASS"
+    unit: "unit/other"
+    commands: ["APPEND"]
+    details: "9 ms"
+  - case: "EXPIRES after AOF reload (without rewrite)"
+    status: "PASS"
+    unit: "unit/other"
+    commands: []
+    details: "3012 ms"
+  - case: "PIPELINING stresser (also a regression for the old epoll bug)"
+    status: "TIMEOUT"
+    unit: ""
+    commands: []
+    details: "from failed-tests.txt"

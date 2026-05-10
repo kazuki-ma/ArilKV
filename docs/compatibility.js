@@ -138,10 +138,10 @@ function renderSummary(data) {
   const summary = data.summary || {};
   els.summary.innerHTML = `
     <dl>
-      <div><dt>Suite cases</dt><dd>${summary.test_case_count || 0}</dd></div>
-      <div><dt>Passing</dt><dd>${summary.test_pass_count || 0}</dd></div>
-      <div><dt>Declared commands</dt><dd>${summary.arilkv_declared_count || 0}</dd></div>
-      <div><dt>Full maturity</dt><dd>${summary.full_count || 0}</dd></div>
+      <div><dt>Cases</dt><dd>${summary.test_case_count || 0}</dd></div>
+      <div><dt>Pass</dt><dd>${summary.test_pass_count || 0}</dd></div>
+      <div><dt>Fail</dt><dd>${summary.test_fail_count || 0}</dd></div>
+      <div><dt>Timeout</dt><dd>${summary.test_timeout_count || 0}</dd></div>
     </dl>
   `;
 }
