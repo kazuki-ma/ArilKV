@@ -118,7 +118,8 @@ depending on test order.
 
 Set `ARILKV_TOKIO_WORKER_THREADS=<n>` to force the ArilKV Tokio runtime worker
 count inside the container. If it is unset, the harness also accepts the older
-`TOKIO_WORKER_THREADS=<n>` environment variable as a fallback.
+`TOKIO_WORKER_THREADS=<n>` environment variable as a fallback. When neither is
+set, ArilKV caps the single-port Tokio runtime default at 4 worker threads.
 
 Representative local snapshot with `SERVER_CPUSET=12-15`,
 `RESTART_BETWEEN_BENCHMARKS=1`, `REQUESTS=1000000`, `CLIENTS=50`,
@@ -159,7 +160,7 @@ Each run writes `redis-official-benchmark-<timestamp>.txt` with benchmark config
 - `GARNET_OWNER_THREAD_PINNING` (optional bool, default `0`; enable owner listener thread CPU pinning)
 - `GARNET_OWNER_THREAD_CPU_SET` (optional comma-separated CPU indices, e.g. `0,1,2,3`; if set, pinning is auto-enabled and owner threads are assigned round-robin over this set)
 - `GARNET_READ_BUFFER_SIZE`
-- `TOKIO_WORKER_THREADS` (optional positive integer; overrides the single-port Tokio runtime worker-thread count)
+- `TOKIO_WORKER_THREADS` (optional positive integer; overrides the single-port Tokio runtime worker-thread count, whose default is capped at 4)
 
 Note: app-side pinning is best-effort. On some platforms/container settings, affinity calls can fail and the server continues without pinning. Use `taskset -c ...` (Linux) for strict process-level pinning.
 

@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 const TOKIO_WORKER_THREADS_ENV: &str = "TOKIO_WORKER_THREADS";
+const DEFAULT_MAX_TOKIO_WORKER_THREADS: usize = 4;
 
 mod multi_port_runtime;
 mod server_launch_config;
@@ -60,6 +61,18 @@ fn parse_tokio_worker_threads(raw: Option<&str>) -> std::io::Result<Option<usize
     Ok(Some(parsed))
 }
 
+fn resolve_tokio_worker_threads(
+    raw: Option<&str>,
+    available_parallelism: usize,
+) -> std::io::Result<usize> {
+    if let Some(explicit) = parse_tokio_worker_threads(raw)? {
+        return Ok(explicit);
+    }
+    Ok(available_parallelism
+        .max(1)
+        .min(DEFAULT_MAX_TOKIO_WORKER_THREADS))
+}
+
 #[cfg(test)]
 fn parse_server_config_from_values(
     bind_addr: Option<&str>,
@@ -86,13 +99,16 @@ fn parse_server_config_from_values(
 }
 
 fn main() -> std::io::Result<()> {
-    let worker_threads =
-        parse_tokio_worker_threads(std::env::var(TOKIO_WORKER_THREADS_ENV).ok().as_deref())?;
+    let available_parallelism = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(DEFAULT_MAX_TOKIO_WORKER_THREADS);
+    let worker_threads = resolve_tokio_worker_threads(
+        std::env::var(TOKIO_WORKER_THREADS_ENV).ok().as_deref(),
+        available_parallelism,
+    )?;
     let mut runtime = tokio::runtime::Builder::new_multi_thread();
     runtime.enable_all();
-    if let Some(worker_threads) = worker_threads {
-        runtime.worker_threads(worker_threads);
-    }
+    runtime.worker_threads(worker_threads);
     runtime.build()?.block_on(async_main())
 }
 

@@ -45,6 +45,14 @@ fn parse_tokio_worker_threads_rejects_invalid_or_zero_value() {
 }
 
 #[test]
+fn resolve_tokio_worker_threads_uses_explicit_or_capped_default() {
+    assert_eq!(resolve_tokio_worker_threads(Some("8"), 18).unwrap(), 8);
+    assert_eq!(resolve_tokio_worker_threads(None, 18).unwrap(), 4);
+    assert_eq!(resolve_tokio_worker_threads(None, 2).unwrap(), 2);
+    assert_eq!(resolve_tokio_worker_threads(None, 0).unwrap(), 1);
+}
+
+#[test]
 fn parse_server_launch_config_defaults_to_single_default_bind_addr() {
     let config =
         parse_server_launch_config_from_values(None, None, None, None, None, None, None, None)
