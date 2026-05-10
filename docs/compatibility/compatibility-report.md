@@ -15,10 +15,10 @@
 
 ## Implementation Maturity Snapshot
 
-- `FULL`: `230`
-- `PARTIAL_MINIMAL`: `17`
+- `FULL`: `231`
+- `PARTIAL_MINIMAL`: `16`
 - `DISABLED`: `12`
-- Full ratio over declared commands: `88.80%`
+- Full ratio over declared commands: `89.19%`
 
 ## External Probe Snapshot
 
@@ -40,7 +40,6 @@
 
 | Command | Maturity | Comment |
 |---|---|---|
-| `ACL` | `PARTIAL_MINIMAL` | Minimal ACL subcommand surface only. |
 | `BGREWRITEAOF` | `PARTIAL_MINIMAL` | Compatibility response surface only; full AOF rewrite lifecycle semantics are not implemented. |
 | `BGSAVE` | `PARTIAL_MINIMAL` | Compatibility response surface only; does not provide full Redis background-save lifecycle behavior. |
 | `CLUSTER` | `PARTIAL_MINIMAL` | Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled. |

@@ -1,10 +1,10 @@
 schema_version: 1
-last_updated: 2026-03-14
+last_updated: 2026-05-10
 status_enum: [FULL, PARTIAL_MINIMAL, DISABLED]
 commands:
   - command: ACL
-    status: PARTIAL_MINIMAL
-    comment: "Minimal ACL subcommand surface only."
+    status: FULL
+    comment: "Full Redis ACL command surface verified against upstream unit/acl and unit/acl-v2 external suites, including users, selectors, key/channel/database permissions, ACL LOG, ACL SAVE/LOAD, DRYRUN, pubsub revocation, and OIDC config validation."
   - command: APPEND
     status: FULL
     comment: ""

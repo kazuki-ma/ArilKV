@@ -1,5 +1,5 @@
 command,declaration_status,redis_present,garnet_present,implementation_status,comment
-ACL,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal ACL subcommand surface only.
+ACL,SUPPORTED_DECLARED,1,1,FULL,Full Redis ACL command surface verified against upstream unit/acl and unit/acl-v2 external suites; including users; selectors; key/channel/database permissions; ACL LOG; ACL SAVE/LOAD; DRYRUN; pubsub revocation; and OIDC config validation.
 APPEND,SUPPORTED_DECLARED,1,1,FULL,
 ASKING,SUPPORTED_DECLARED,1,1,FULL,
 AUTH,SUPPORTED_DECLARED,1,1,FULL,

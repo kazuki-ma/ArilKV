@@ -7,8 +7,8 @@ summary:
   arilkv_declared_count: 259
   supported_declared_count: 259
   not_implemented_count: 8
-  full_count: 230
-  partial_minimal_count: 17
+  full_count: 231
+  partial_minimal_count: 16
   disabled_count: 12
   test_case_count: 743
   test_pass_count: 606
@@ -20,10 +20,10 @@ summary:
 commands:
   - command: "ACL"
     declaration_status: "SUPPORTED_DECLARED"
-    implementation_status: "PARTIAL_MINIMAL"
+    implementation_status: "FULL"
     redis_present: true
     arilkv_present: true
-    comment: "Minimal ACL subcommand surface only."
+    comment: "Full Redis ACL command surface verified against upstream unit/acl and unit/acl-v2 external suites, including users, selectors, key/channel/database permissions, ACL LOG, ACL SAVE/LOAD, DRYRUN, pubsub revocation, and OIDC config validation."
   - command: "APPEND"
     declaration_status: "SUPPORTED_DECLARED"
     implementation_status: "FULL"
