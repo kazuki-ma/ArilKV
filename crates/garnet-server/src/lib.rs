@@ -251,6 +251,7 @@ pub struct StartupConfigOverrides {
     pub appendfsync: Option<String>,
     pub appendfilename: Option<String>,
     pub aclfile: Option<PathBuf>,
+    pub users: Vec<String>,
 }
 
 impl StartupConfigOverrides {
@@ -261,6 +262,7 @@ impl StartupConfigOverrides {
             && self.appendfsync.is_none()
             && self.appendfilename.is_none()
             && self.aclfile.is_none()
+            && self.users.is_empty()
     }
 }
 

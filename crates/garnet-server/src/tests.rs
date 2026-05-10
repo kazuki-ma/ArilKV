@@ -13254,6 +13254,28 @@ async fn startup_config_overrides_apply_aof_and_aclfile_before_serving_traffic()
     let _ = std::fs::remove_dir_all(temp_dir);
 }
 
+#[test]
+fn startup_config_overrides_reject_duplicate_acl_user_directives() {
+    let processor = RequestProcessor::new().unwrap();
+    let error = apply_startup_config_overrides_to_processor(
+        &processor,
+        &StartupConfigOverrides {
+            users: vec![
+                "foo on nopass +@all ~*".to_string(),
+                "foo on nopass +acl".to_string(),
+            ],
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        error.to_string().contains("Duplicate user 'foo'"),
+        "unexpected duplicate user error: {error}"
+    );
+}
+
 #[tokio::test]
 async fn startup_with_dump_snapshot_replays_before_serving_traffic() {
     let temp_dir = unique_test_temp_dir("startup-dump-snapshot");

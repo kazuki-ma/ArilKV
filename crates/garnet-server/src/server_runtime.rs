@@ -1,5 +1,6 @@
 // TLA+ model: formal/tla/specs/ScriptActiveExpireFreeze.tla
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
@@ -89,6 +90,33 @@ pub(crate) fn apply_startup_config_overrides_to_processor(
         processor
             .load_acl_users_from_configured_file()
             .map_err(io::Error::other)?;
+    }
+    if !overrides.users.is_empty() {
+        let mut seen_users = HashSet::<Vec<u8>>::new();
+        for definition in &overrides.users {
+            let tokens = definition
+                .split_ascii_whitespace()
+                .map(str::as_bytes)
+                .collect::<Vec<_>>();
+            let Some(username) = tokens.first().copied() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "ERR Invalid empty ACL user definition",
+                ));
+            };
+            if !seen_users.insert(username.to_vec()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "ERR Duplicate user '{}' found in startup config",
+                        String::from_utf8_lossy(username)
+                    ),
+                ));
+            }
+            processor
+                .set_acl_user_from_startup_definition(definition)
+                .map_err(io::Error::other)?;
+        }
     }
     Ok(())
 }

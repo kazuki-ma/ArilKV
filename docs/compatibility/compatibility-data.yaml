@@ -2,6 +2,9 @@ schema_version: 1
 last_updated: "2026-05-10"
 source: "redis_runtest_external_full"
 source_log: "docs/compatibility/redis-runtest-full-20260510-092535.txt"
+targeted_source_logs:
+  - "docs/compatibility/redis-runtest-unit-acl-20260510-172107.txt"
+  - "docs/compatibility/redis-runtest-unit-acl-v2-20260510-172139.txt"
 summary:
   redis_command_count: 267
   arilkv_declared_count: 259
@@ -10,13 +13,13 @@ summary:
   full_count: 231
   partial_minimal_count: 16
   disabled_count: 12
-  test_case_count: 743
-  test_pass_count: 606
+  test_case_count: 881
+  test_pass_count: 754
   test_fail_count: 8
   test_timeout_count: 1
-  test_ignore_count: 128
+  test_ignore_count: 118
   result_status: "FAIL"
-  result_dir: "/tmp/arilkv-redis-runtest-full-20260510-092535"
+  result_dir: "/tmp/arilkv-redis-runtest-full-20260510-092535 + targeted ACL reruns"
 commands:
   - command: "ACL"
     declaration_status: "SUPPORTED_DECLARED"
@@ -1621,56 +1624,746 @@ commands:
     arilkv_present: true
     comment: ""
 test_cases:
-  - case: "External-server skip #1"
-    status: "IGNORE"
+  - case: "Test basic multiple selectors"
+    status: "PASS"
     unit: "unit/acl-v2"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #2"
-    status: "IGNORE"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test ACL selectors by default have no permissions"
+    status: "PASS"
     unit: "unit/acl-v2"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #3"
-    status: "IGNORE"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test deleting selectors"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test selector syntax error reports the error in the selector context"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test flexible selector definition"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test separate read permission"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test separate write permission"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test separate read and write permissions"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Validate read and write permissions format - empty permission"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Validate read and write permissions format - empty selector"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Validate read and write permissions format - empty pattern"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Validate read and write permissions format - no pattern"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test separate read and write permissions on different selectors are not additive"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test SET with separate read permission"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "SET"]
+    details: "1 ms"
+  - case: "Test SET with separate write permission"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "SET"]
+    details: "1 ms"
+  - case: "Test SET with read and write permissions"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "SET"]
+    details: "1 ms"
+  - case: "Test BITFIELD with separate read permission"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "BITFIELD"]
+    details: "0 ms"
+  - case: "Test BITFIELD with separate write permission"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "BITFIELD"]
+    details: "1 ms"
+  - case: "Test BITFIELD with read and write permissions"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "BITFIELD"]
+    details: "0 ms"
+  - case: "Test ACL log correctly identifies the relevant item when selectors are used"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test ACL GETUSER response information"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test ACL list idempotency"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test R+W is the same as all permissions"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test basic dry run functionality"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test various commands for command permissions"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "COMMAND"]
+    details: "0 ms"
+  - case: "Test various odd commands for key permissions"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "2 ms"
+  - case: "Existence test commands are not marked as access"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Intersection cardinaltiy commands are access commands"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test general keyspace commands require some type of permission to execute"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "TYPE"]
+    details: "1 ms"
+  - case: "Cardinality commands require some type of permission to execute"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL", "TYPE"]
+    details: "1 ms"
+  - case: "Test sharded channel permissions"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test sort with ACL permissions"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["SORT", "ACL"]
+    details: "1 ms"
+  - case: "Test DRYRUN with wrong number of arguments"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test behavior of loading ACLs"
+    status: "PASS"
+    unit: "unit/acl-v2"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Connections start with the default user"
+    status: "PASS"
     unit: "unit/acl"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #4"
-    status: "IGNORE"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "It is possible to create new users"
+    status: "PASS"
     unit: "unit/acl"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #5"
-    status: "IGNORE"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Coverage: ACL USERS"
+    status: "PASS"
     unit: "unit/acl"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #6"
-    status: "IGNORE"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Usernames can not contain spaces or null characters"
+    status: "PASS"
     unit: "unit/acl"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #7"
-    status: "IGNORE"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "New users start disabled"
+    status: "PASS"
     unit: "unit/acl"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #8"
-    status: "IGNORE"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Enabling the user allows the login"
+    status: "PASS"
     unit: "unit/acl"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #9"
-    status: "IGNORE"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Only the set of correct passwords work"
+    status: "PASS"
     unit: "unit/acl"
-    commands: []
-    details: "Not supported on external server"
-  - case: "External-server skip #10"
-    status: "IGNORE"
+    commands: ["ACL", "SET"]
+    details: "0 ms"
+  - case: "It is possible to remove passwords from the set of valid ones"
+    status: "PASS"
     unit: "unit/acl"
-    commands: []
-    details: "Not supported on external server"
+    commands: ["ACL", "SET"]
+    details: "1 ms"
+  - case: "Test password hashes can be added"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Test password hashes validate input"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL GETUSER returns the password hash instead of the actual password"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Test hashed passwords removal"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "By default users are not able to access any command"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "COMMAND"]
+    details: "0 ms"
+  - case: "By default users are not able to access any key"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "It's possible to allow the access of a subset of keys"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "KEYS"]
+    details: "0 ms"
+  - case: "By default, only default user is able to publish to any channel"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "PUBLISH"]
+    details: "1 ms"
+  - case: "By default, only default user is not able to publish to any shard channel"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "PUBLISH"]
+    details: "0 ms"
+  - case: "By default, only default user is able to subscribe to any channel"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "SUBSCRIBE"]
+    details: "1 ms"
+  - case: "By default, only default user is able to subscribe to any shard channel"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "SUBSCRIBE"]
+    details: "1 ms"
+  - case: "By default, only default user is able to subscribe to any pattern"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "SUBSCRIBE"]
+    details: "0 ms"
+  - case: "It's possible to allow publishing to a subset of channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "It's possible to allow publishing to a subset of shard channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Validate subset of channels is prefixed with resetchannels flag"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "In transaction queue publish/subscribe/psubscribe to unauthorized channel will fail"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "PSUBSCRIBE", "SUBSCRIBE", "PUBLISH"]
+    details: "1 ms"
+  - case: "It's possible to allow subscribing to a subset of channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "It's possible to allow subscribing to a subset of shard channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "It's possible to allow subscribing to a subset of channel patterns"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Subscribers are killed when revoked of channel permission"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Subscribers are killed when revoked of channel permission"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Subscribers are killed when revoked of channel permission"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Subscribers are killed when revoked of pattern permission"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "Subscribers are killed when revoked of allchannels permission"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Subscribers are pardoned if literal permissions are retained and/or gaining allchannels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "blocked command gets rejected when reprocessed after permission change"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "COMMAND"]
+    details: "108 ms"
+  - case: "Users can be configured to authenticate with any password"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACLs can exclude single commands"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACLs can include or exclude whole classes of commands"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACLs can include single subcommands"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACLs can exclude single subcommands, case 1"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACLs can exclude single subcommands, case 2"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACLs cannot include a subcommand with a specific arg"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACLs cannot exclude or include a container commands with a specific arg"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACLs cannot exclude or include a container command with two args"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "COMMAND"]
+    details: "1 ms"
+  - case: "ACLs including of a type includes also subcommands"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "TYPE"]
+    details: "0 ms"
+  - case: "ACLs can block SELECT of all but a specific DB"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "SELECT"]
+    details: "0 ms"
+  - case: "ACLs can block all DEBUG subcommands except one"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "DEBUG"]
+    details: "1 ms"
+  - case: "ACLs set can include subcommands, if already full command exists"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "COMMAND", "EXISTS", "SET"]
+    details: "1 ms"
+  - case: "ACLs set can exclude subcommands, if already full command exists"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "COMMAND", "EXISTS", "SET"]
+    details: "1 ms"
+  - case: "ACL SETUSER RESET reverting to default newly created user"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["RESET", "ACL"]
+    details: "1 ms"
+  - case: "ACL GETUSER is able to translate back command permissions"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["COMMAND", "ACL"]
+    details: "0 ms"
+  - case: "ACL GETUSER provides reasonable results"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "7 ms"
+  - case: "ACL GETUSER provides correct results"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "2 ms"
+  - case: "ACL CAT with illegal arguments"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL CAT without category - list all categories"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL CAT category - list all commands/subcommands that belong to category"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL requires explicit permission for scripting for EVAL_RO, EVALSHA_RO and FCALL_RO"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["EVALSHA_RO", "FCALL_RO", "EVAL_RO", "ACL"]
+    details: "1 ms"
+  - case: "ACL #5998 regression: memory leaks adding / removing subcommands"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["MEMORY", "ACL"]
+    details: "0 ms"
+  - case: "ACL LOG aggregates similar errors together and assigns unique entry-id to new errors"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "3 ms"
+  - case: "ACL LOG shows failed command executions at toplevel"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["COMMAND", "ACL"]
+    details: "0 ms"
+  - case: "ACL LOG shows failed subcommand executions at toplevel"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL LOG is able to test similar events"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL LOG is able to log keys access violations and key name"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["KEYS", "ACL"]
+    details: "0 ms"
+  - case: "ACL LOG is able to log channel access violations and channel name"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL LOG RESET is able to flush the entries in the log"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["RESET", "ACL"]
+    details: "0 ms"
+  - case: "ACL LOG can distinguish the transaction context (1)"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL LOG can distinguish the transaction context (2)"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL can log errors in the context of Lua scripting"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL LOG can accept a numerical argument to show less entries"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL LOG can log failed auth attempts"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["AUTH", "ACL"]
+    details: "1 ms"
+  - case: "ACLLOG - zero max length is correctly handled"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL LOG entries are limited to a maximum amount"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL LOG entries are still present on update of max len config"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["CONFIG", "ACL"]
+    details: "0 ms"
+  - case: "When default user is off, new connections are not authenticated"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "When default user has no command permission, hello command still works for other users"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "COMMAND", "HELLO"]
+    details: "0 ms"
+  - case: "When an authentication chain is used in the HELLO cmd, the last auth cmd has precedence"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "HELLO", "AUTH"]
+    details: "0 ms"
+  - case: "When a setname chain is used in the HELLO cmd, the last setname cmd has precedence"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "HELLO"]
+    details: "0 ms"
+  - case: "When authentication fails in the HELLO cmd, the client setname should not be applied"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "CLIENT", "HELLO"]
+    details: "0 ms"
+  - case: "ACL HELP should not have unexpected options"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Delete a user that the client doesn't use"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "CLIENT"]
+    details: "0 ms"
+  - case: "Delete a user that the client is using"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "CLIENT"]
+    details: "0 ms"
+  - case: "ACL GENPASS command failed test"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["COMMAND", "ACL"]
+    details: "0 ms"
+  - case: "Default user can not be removed"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL load non-existing configured ACL file"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL-Metrics user AUTH failure"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["AUTH", "ACL"]
+    details: "1 ms"
+  - case: "ACL-Metrics invalid command accesses"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["COMMAND", "ACL"]
+    details: "1 ms"
+  - case: "ACL-Metrics invalid key accesses"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL-Metrics invalid channels accesses"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "default: load from include file, can access any channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "default: with config acl-pubsub-default allchannels after reset, can access any channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["CONFIG", "PUBSUB", "RESET", "ACL"]
+    details: "1 ms"
+  - case: "default: with config acl-pubsub-default resetchannels after reset, can not access any channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["CONFIG", "PUBSUB", "RESET", "ACL"]
+    details: "0 ms"
+  - case: "Alice: can execute all command"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "COMMAND"]
+    details: "0 ms"
+  - case: "Bob: just execute @set and acl command"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["COMMAND", "ACL", "SET"]
+    details: "1 ms"
+  - case: "ACL LOAD only disconnects affected clients"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL LOAD disconnects affected subscriber"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "ACL LOAD disconnects clients of deleted users"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "1 ms"
+  - case: "ACL load and save"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["SAVE", "ACL"]
+    details: "0 ms"
+  - case: "ACL load and save with restricted channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["SAVE", "ACL"]
+    details: "1 ms"
+  - case: "First server should have role slave after SLAVEOF"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "SLAVEOF", "ROLE"]
+    details: "1 ms"
+  - case: "ACL load on replica when connected to replica"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Check for memory leaks (pid 23368)"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "MEMORY"]
+    details: "424 ms"
+  - case: "Default user has access to all channels irrespective of flag"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Update acl-pubsub-default, existing users shouldn't get affected"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["PUBSUB", "ACL", "GET"]
+    details: "1 ms"
+  - case: "Single channel is valid"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Single channel is not valid with allchannels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "Only default user has access to all channels irrespective of flag"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "0 ms"
+  - case: "default: load from config file, without channel permission default user can't access any channels"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "CONFIG"]
+    details: "0 ms"
+  - case: "default: load from config file with all channels permissions"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "CONFIG"]
+    details: "1 ms"
+  - case: "Test loading an ACL file with duplicate users"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "9 ms"
+  - case: "Test loading an ACL file with duplicate default user"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "10 ms"
+  - case: "Test loading duplicate users in config on startup"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "CONFIG"]
+    details: "321 ms"
+  - case: "Test loading an ACL file with comments"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL"]
+    details: "7 ms"
+  - case: "Check for memory leaks (pid 23410)"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "MEMORY"]
+    details: "429 ms"
+  - case: "ACL from config file and config rewrite"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["CONFIG", "ACL"]
+    details: "655 ms"
+  - case: "Check for memory leaks (pid 23444)"
+    status: "PASS"
+    unit: "unit/acl"
+    commands: ["ACL", "MEMORY"]
+    details: "426 ms"
   - case: "External-server skip #11"
     status: "IGNORE"
     unit: "unit/aofrw"

@@ -4930,6 +4930,32 @@ impl RequestProcessor {
         "ERR This Redis instance is not configured to use an ACL file".to_string()
     }
 
+    pub(crate) fn set_acl_user_from_startup_definition(
+        &self,
+        definition: &str,
+    ) -> Result<(), String> {
+        let tokens = definition
+            .split_ascii_whitespace()
+            .map(str::as_bytes)
+            .collect::<Vec<_>>();
+        let Some(username) = tokens.first().copied() else {
+            return Err("ERR Invalid empty ACL user definition".to_string());
+        };
+        if !server_commands::acl_username_is_valid(username) {
+            return Err(format!(
+                "ERR Invalid user '{}' found in startup config",
+                String::from_utf8_lossy(username)
+            ));
+        }
+        let profile = server_commands::parse_acl_setuser_profile(
+            None,
+            &tokens[1..],
+            self.acl_pubsub_default_allchannels(),
+        )?;
+        self.set_acl_user_profile(username, profile)
+            .map_err(|_| "ERR ACL state is unavailable".to_string())
+    }
+
     pub(crate) fn save_acl_users_to_configured_file(&self) -> Result<(), String> {
         let Some(path) = self.configured_acl_file_path() else {
             return Err(Self::acl_file_not_configured_error());

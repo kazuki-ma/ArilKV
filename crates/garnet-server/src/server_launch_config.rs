@@ -96,6 +96,21 @@ fn parse_appendfsync_value(raw: Option<&str>) -> std::io::Result<Option<String>>
     }
 }
 
+fn parse_startup_user_definitions(raw: Option<&str>) -> std::io::Result<Vec<String>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let mut users = Vec::new();
+    for definition in raw.lines() {
+        let trimmed = definition.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        users.push(trimmed.to_string());
+    }
+    Ok(users)
+}
+
 fn parse_bool_env_flag(raw: Option<&str>, key: &str) -> std::io::Result<bool> {
     match raw {
         None => Ok(false),
@@ -208,6 +223,7 @@ pub(super) fn parse_startup_config_overrides_from_values(
     appendfsync: Option<&str>,
     appendfilename: Option<&str>,
     aclfile: Option<&str>,
+    users: Option<&str>,
 ) -> std::io::Result<StartupConfigOverrides> {
     Ok(StartupConfigOverrides {
         dir: parse_non_empty_path_value(dir, "GARNET_DIR")?,
@@ -219,6 +235,7 @@ pub(super) fn parse_startup_config_overrides_from_values(
         appendfsync: parse_appendfsync_value(appendfsync)?,
         appendfilename: parse_filename_value(appendfilename, "GARNET_APPENDFILENAME")?,
         aclfile: parse_non_empty_path_value(aclfile, "GARNET_ACLFILE")?,
+        users: parse_startup_user_definitions(users)?,
     })
 }
 
@@ -343,6 +360,7 @@ pub(super) fn parse_server_launch_config_from_env() -> std::io::Result<ServerLau
         std::env::var("GARNET_APPENDFSYNC").ok().as_deref(),
         std::env::var("GARNET_APPENDFILENAME").ok().as_deref(),
         std::env::var("GARNET_ACLFILE").ok().as_deref(),
+        std::env::var("GARNET_USERS").ok().as_deref(),
     )?;
     Ok(launch)
 }

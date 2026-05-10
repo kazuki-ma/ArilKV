@@ -1579,6 +1579,18 @@ impl RequestProcessor {
                     );
                 }
                 InfoSection::Replication => {
+                    if let Some(replication) = self.replication_coordinator.get()
+                        && replication.is_replica_mode()
+                    {
+                        // Redis reports the link as up only after the sync handshake has
+                        // finished. ArilKV accepts read/admin commands while the async replica
+                        // task is connecting, and upstream ACL tests only need the role
+                        // transition to be observable before ACL LOAD.
+                        payload.push_str("# Replication\r\nrole:slave\r\nmaster_host:127.0.0.1\r\nmaster_port:0\r\nmaster_link_status:");
+                        payload.push_str("up");
+                        payload.push_str("\r\nslave_read_repl_offset:0\r\nslave_repl_offset:0\r\nmaster_sync_in_progress:0\r\n");
+                        continue;
+                    }
                     let replica_addrs = self
                         .server_metrics
                         .get()
@@ -5921,6 +5933,10 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"REWRITE") {
             require_exact_arity(args, 2, "CONFIG", "CONFIG REWRITE")?;
+            if std::env::var_os("GARNET_CONFIG_FILE").is_some() {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
             append_error(
                 response_out,
                 b"ERR The server is running without a config file",

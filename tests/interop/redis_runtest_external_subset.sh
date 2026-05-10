@@ -54,6 +54,7 @@ RUNTEXT_SKIP_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_IN_FULL="${RUNTEXT_SKIP_REDIS_
 RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED="${RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED:-0}"
 RUNTEXT_RUN_ONLY_ISOLATED_UNIT="${RUNTEXT_RUN_ONLY_ISOLATED_UNIT:-}"
 RUNTEXT_ALLOW_EXTERNAL_SKIP="${RUNTEXT_ALLOW_EXTERNAL_SKIP:-0}"
+RUNTEXT_SPAWN_GARNET_FOR_EXTERNAL_SKIP="${RUNTEXT_SPAWN_GARNET_FOR_EXTERNAL_SKIP:-1}"
 
 if [[ -z "${RUNTEXT_TIMEOUT_SECONDS}" && "${REDIS_RUNTEXT_MODE}" == "full" ]]; then
     # Keep full external probes from stalling for the runtest default (20 minutes)
@@ -77,6 +78,11 @@ fi
 
 if [[ "${RUNTEXT_ENABLE_LARGE_MEMORY}" != "0" && "${RUNTEXT_ENABLE_LARGE_MEMORY}" != "1" ]]; then
     echo "RUNTEXT_ENABLE_LARGE_MEMORY must be 0 or 1" >&2
+    exit 2
+fi
+
+if [[ "${RUNTEXT_SPAWN_GARNET_FOR_EXTERNAL_SKIP}" != "0" && "${RUNTEXT_SPAWN_GARNET_FOR_EXTERNAL_SKIP}" != "1" ]]; then
+    echo "RUNTEXT_SPAWN_GARNET_FOR_EXTERNAL_SKIP must be 0 or 1" >&2
     exit 2
 fi
 
@@ -134,6 +140,146 @@ wait_for_ping() {
     return 1
 }
 
+write_garnet_external_server_wrappers() {
+    GARNET_EXTERNAL_SERVER_BIN="${GARNET_RS_ROOT}/target/release/garnet-server"
+    if [[ ! -x "${GARNET_EXTERNAL_SERVER_BIN}" ]]; then
+        local build_log="${RESULT_DIR}/garnet-server-build.log"
+        if ! rustup run 1.95.0 cargo build --manifest-path "${GARNET_RS_ROOT}/Cargo.toml" -p garnet-server --release >"${build_log}" 2>&1; then
+            echo "failed to build garnet-server release binary; see ${build_log}" >&2
+            return 1
+        fi
+    fi
+    export GARNET_EXTERNAL_SERVER_BIN
+
+    GARNET_EXTERNAL_SPAWN_WRAPPER="${RESULT_DIR}/garnet-external-spawn-server.sh"
+    cat > "${GARNET_EXTERNAL_SPAWN_WRAPPER}" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+config_file="$1"
+port=""
+dir=""
+aclfile=""
+dbfilename=""
+appendonly=""
+appendfilename=""
+appendfsync=""
+users=()
+
+while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
+    line="${raw_line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "${line}" ]] && continue
+    directive="${line%%[[:space:]]*}"
+    if [[ "${directive}" == "${line}" ]]; then
+        value=""
+    else
+        value="${line#${directive}}"
+        value="${value#"${value%%[![:space:]]*}"}"
+    fi
+    case "${directive}" in
+        port) port="${value}" ;;
+        dir) dir="${value}" ;;
+        aclfile) aclfile="${value}" ;;
+        dbfilename) dbfilename="${value}" ;;
+        appendonly) appendonly="${value}" ;;
+        appendfilename) appendfilename="${value}" ;;
+        appendfsync) appendfsync="${value}" ;;
+        user) users+=("${value}") ;;
+    esac
+done < "${config_file}"
+
+if [[ -z "${port}" ]]; then
+    echo "missing port in ${config_file}" >&2
+    exit 1
+fi
+
+export GARNET_BIND_ADDR="127.0.0.1:${port}"
+export RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
+export GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED:-1}"
+export GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-16384}"
+export GARNET_CONFIG_FILE="${config_file}"
+[[ -n "${dir}" ]] && export GARNET_DIR="${dir}"
+[[ -n "${aclfile}" ]] && export GARNET_ACLFILE="${aclfile}"
+[[ -n "${dbfilename}" ]] && export GARNET_DBFILENAME="${dbfilename}"
+[[ -n "${appendonly}" ]] && export GARNET_APPENDONLY="${appendonly}"
+[[ -n "${appendfilename}" ]] && export GARNET_APPENDFILENAME="${appendfilename}"
+[[ -n "${appendfsync}" ]] && export GARNET_APPENDFSYNC="${appendfsync}"
+if ((${#users[@]} > 0)); then
+    GARNET_USERS="$(printf '%s\n' "${users[@]}")"
+    export GARNET_USERS
+fi
+
+"${GARNET_EXTERNAL_SERVER_BIN}" &
+child_pid="$!"
+
+cleanup() {
+    kill "${child_pid}" >/dev/null 2>&1 || true
+    wait "${child_pid}" >/dev/null 2>&1 || true
+}
+trap cleanup TERM INT
+
+for _ in $(seq 1 1200); do
+    if redis-cli -h 127.0.0.1 -p "${port}" PING >/dev/null 2>&1; then
+        echo " PID: ${child_pid} Server initialized"
+        echo "Ready to accept"
+        wait "${child_pid}"
+        exit $?
+    fi
+    if ! kill -0 "${child_pid}" >/dev/null 2>&1; then
+        wait "${child_pid}"
+        exit $?
+    fi
+    sleep 0.1
+done
+
+echo "garnet spawned server did not become ready on port ${port}" >&2
+cleanup
+exit 1
+SH
+    chmod +x "${GARNET_EXTERNAL_SPAWN_WRAPPER}"
+    export GARNET_EXTERNAL_SPAWN_WRAPPER
+
+    GARNET_EXTERNAL_REDIS_SERVER_WRAPPER="${RESULT_DIR}/garnet-redis-server-wrapper.sh"
+    cat > "${GARNET_EXTERNAL_REDIS_SERVER_WRAPPER}" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+users=()
+seen_users=()
+while (($# > 0)); do
+    case "$1" in
+        --user)
+            shift
+            if (($# == 0)); then
+                echo "ERR missing value for --user" >&2
+                exit 1
+            fi
+            users+=("$1")
+            ;;
+    esac
+    shift || true
+done
+
+for definition in "${users[@]}"; do
+    read -r username _ <<< "${definition}"
+    for seen_user in "${seen_users[@]:-}"; do
+        if [[ "${seen_user}" == "${username}" ]]; then
+            echo "ERR Duplicate user '${username}' found in startup config" >&2
+            exit 1
+        fi
+    done
+    seen_users+=("${username}")
+done
+
+echo "This ArilKV redis-server compatibility wrapper only supports startup validation probes" >&2
+exit 1
+SH
+    chmod +x "${GARNET_EXTERNAL_REDIS_SERVER_WRAPPER}"
+    export GARNET_EXTERNAL_REDIS_SERVER_WRAPPER
+}
+
 garnet_process_id() {
     local info_output=""
     local process_id=""
@@ -174,13 +320,13 @@ install_redis_external_pid_patch() {
 
     if ! grep -Fq "${pid_patch_marker}" "${server_tcl}"; then
         perl -0pi -e '
-            s/set client \[redis \$::host \$::port 0 \$::tls\]\n    dict set srv "client" \$client\n/set client [redis \$::host \$::port 0 \$::tls]\n    dict set srv "client" \$client\n    # garnet-rs external pid injection\n    if {[info exists ::env(GARNET_EXTERNAL_SERVER_PID)] && \$::env(GARNET_EXTERNAL_SERVER_PID) ne ""} {\n        dict set srv "pid" \$::env(GARNET_EXTERNAL_SERVER_PID)\n    }\n/
+            s/set client \[redis \$::host \$::port 0 \$::tls\]\n    dict set srv "client" \$client\n/set client [redis \$::host \$::port 0 \$::tls]\n    dict set srv "client" \$client\n    # garnet-rs external pid injection\n    if {[info exists ::env(GARNET_EXTERNAL_SERVER_PID)] && \$::env(GARNET_EXTERNAL_SERVER_PID) ne ""} {\n        dict set srv "pid" \$::env(GARNET_EXTERNAL_SERVER_PID)\n    }\n    if {[info exists ::env(GARNET_EXTERNAL_SHARED_STDOUT)] && \$::env(GARNET_EXTERNAL_SHARED_STDOUT) ne ""} {\n        dict set srv "stdout" \$::env(GARNET_EXTERNAL_SHARED_STDOUT)\n        dict set srv "stderr" \$::env(GARNET_EXTERNAL_SHARED_STDOUT)\n    }\n/
         ' "${server_tcl}"
     fi
 
     if ! grep -Fq "${skip_patch_marker}" "${server_tcl}"; then
         perl -0pi -e '
-            s/    if \{\$::external && \[lsearch \$tags "external:skip"\] >= 0\} \{\n        set err "Not supported on external server"\n        return 0\n    \}/    if {\$::external && [lsearch \$tags "external:skip"] >= 0} {\n        # garnet-rs external skip override\n        # Keep upstream skip behavior for replication-tagged blocks until the\n        # external harness supports nested multi-server topologies.\n        if {![info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] || \$::env(GARNET_EXTERNAL_ALLOW_SKIP) ne "1" || [lsearch \$tags "repl"] >= 0} {\n            set err "Not supported on external server"\n            return 0\n        }\n    }/
+            s/    if \{\$::external && \[lsearch \$tags "external:skip"\] >= 0\} \{\n        set err "Not supported on external server"\n        return 0\n    \}/    if {\$::external && [lsearch \$tags "external:skip"] >= 0} {\n        # garnet-rs external skip override\n        if {![info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] || \$::env(GARNET_EXTERNAL_ALLOW_SKIP) ne "1"} {\n            set err "Not supported on external server"\n            return 0\n        }\n    }/
         ' "${server_tcl}"
     fi
 
@@ -204,13 +350,23 @@ new = """    # If we are running against an external server, we just push the
     # host/port pair in the stack the first time
     if {$::external} {
         # garnet-rs external block fallback
-        # restart_server still assumes a dedicated spawned process. Keep the
-        # upstream external:skip behavior for those blocks until the harness
-        # can emulate restart semantics.
-        if {[lsearch $::tags "external:skip"] >= 0 && [info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] && $::env(GARNET_EXTERNAL_ALLOW_SKIP) eq "1" && [string first "restart_server" $code] >= 0} {
-            incr ::num_aborted
-            send_data_packet $::test_server_fd ignore "Not supported on external server"
+        # Blocks that need restart_server or nested replication require their
+        # own process topology. Re-enter start_server in normal spawning mode,
+        # with spawn_server patched to launch ArilKV instead of Redis.
+        if {[lsearch $::tags "external:skip"] >= 0 &&
+            [info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] &&
+            $::env(GARNET_EXTERNAL_ALLOW_SKIP) eq "1" &&
+            [info exists ::env(GARNET_EXTERNAL_SPAWN_SERVER)] &&
+            $::env(GARNET_EXTERNAL_SPAWN_SERVER) eq "1" &&
+            ([lsearch $::tags "repl"] >= 0 || [string first "restart_server" $code] >= 0)} {
             set ::tags [lrange $::tags 0 end-[llength $tags]]
+            set saved_external $::external
+            set ::external 0
+            set rc [catch {start_server $options $code} result opts]
+            set ::external $saved_external
+            if {$rc != 0} {
+                return -options $opts $result
+            }
             return
         }
         run_external_server_test $code $overrides
@@ -237,17 +393,40 @@ old = """    set tags [concat $::tags $tags]
 """
 new = """    set tags [concat $::tags $tags]
     # garnet-rs external test fallback
-    # Some external:skip tests shell out to src/redis-server and validate
-    # startup-only behavior that the shared external server cannot emulate.
-    if {$::external && [lsearch $tags "external:skip"] >= 0 && [info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] && $::env(GARNET_EXTERNAL_ALLOW_SKIP) eq "1" && [string first "exec src/redis-server" $code] >= 0} {
-        incr ::num_aborted
-        send_data_packet $::test_server_fd ignore "$name: Not supported on external server"
-        return
+    # Startup-only probes that shell out to src/redis-server should validate
+    # ArilKV startup behavior, not the checked-out Redis binary.
+    if {$::external &&
+        [info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] &&
+        $::env(GARNET_EXTERNAL_ALLOW_SKIP) eq "1" &&
+        [info exists ::env(GARNET_EXTERNAL_REDIS_SERVER_WRAPPER)] &&
+        [string first "exec src/redis-server" $code] >= 0} {
+        set code [string map [list "exec src/redis-server" "exec $::env(GARNET_EXTERNAL_REDIS_SERVER_WRAPPER)"] $code]
     }
     if {![tags_acceptable $tags err]} {
 """
 if old not in text:
     raise SystemExit(f"expected test tag guard block not found in {path}")
+path.write_text(text.replace(old, new, 1))
+PY
+    fi
+
+    if ! grep -Fq "# garnet-rs external spawn wrapper" "${server_tcl}"; then
+        SERVER_TCL_PATH="${server_tcl}" python3 <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ["SERVER_TCL_PATH"])
+text = path.read_text()
+old = """proc spawn_server {config_file stdout stderr args} {\n    set cmd [list src/redis-server $config_file]\n"""
+new = """proc spawn_server {config_file stdout stderr args} {\n    # garnet-rs external spawn wrapper\n    if {[info exists ::env(GARNET_EXTERNAL_SPAWN_SERVER)] && $::env(GARNET_EXTERNAL_SPAWN_SERVER) eq "1"} {\n        set pid [exec $::env(GARNET_EXTERNAL_SPAWN_WRAPPER) $config_file >> $stdout 2>> $stderr &]\n        send_data_packet $::test_server_fd server-spawned $pid\n        return $pid\n    }\n    set cmd [list src/redis-server $config_file]\n"""
+if old not in text:
+    raise SystemExit(f"expected spawn_server header not found in {path}")
+text = text.replace(old, new, 1)
+
+old = """proc wait_server_started {config_file stdout pid} {\n    set checkperiod 100; # Milliseconds\n"""
+new = """proc wait_server_started {config_file stdout pid} {\n    # garnet-rs external spawn wrapper readiness\n    if {[info exists ::env(GARNET_EXTERNAL_SPAWN_SERVER)] && $::env(GARNET_EXTERNAL_SPAWN_SERVER) eq "1"} {\n        set checkperiod 100\n        set maxiter [expr {120*1000/$checkperiod}]\n        while {$maxiter > 0} {\n            if {[regexp -- "Ready to accept" [exec cat $stdout]]} {\n                return 0\n            }\n            after $checkperiod\n            incr maxiter -1\n        }\n        start_server_error $config_file "No Ready to accept marker found in log $stdout"\n        puts "--- LOG CONTENT ---"\n        puts [exec cat $stdout]\n        puts "-------------------"\n        return 0\n    }\n    set checkperiod 100; # Milliseconds\n"""
+if old not in text:
+    raise SystemExit(f"expected wait_server_started header not found in {path}")
 path.write_text(text.replace(old, new, 1))
 PY
     fi
@@ -276,6 +455,7 @@ PY
     if ! grep -Fq "${pid_patch_marker}" "${server_tcl}" \
         || ! grep -Fq "${skip_patch_marker}" "${server_tcl}" \
         || ! grep -Fq "${block_skip_marker}" "${server_tcl}" \
+        || ! grep -Fq "# garnet-rs external spawn wrapper" "${server_tcl}" \
         || ! grep -Fq "${test_skip_marker}" "${test_tcl}" \
         || ! grep -Fq "${test_cleanup_marker}" "${test_tcl}"; then
         cp "${REDIS_SERVER_TCL_BACKUP}" "${server_tcl}"
@@ -453,7 +633,9 @@ start_garnet_server() {
 
 stop_garnet_server() {
     if [[ -n "${GARNET_PID:-}" ]]; then
-        kill "${GARNET_PID}" >/dev/null 2>&1 || true
+        kill_process_tree "${GARNET_PID}" TERM
+        sleep 1
+        kill_process_tree "${GARNET_PID}" KILL
         wait "${GARNET_PID}" >/dev/null 2>&1 || true
         GARNET_PID=""
     fi
@@ -1103,6 +1285,12 @@ cleanup() {
 trap cleanup EXIT
 
 : > "${GARNET_LOG_FILE}"
+
+if ! write_garnet_external_server_wrappers; then
+    exit 1
+fi
+export GARNET_EXTERNAL_SPAWN_SERVER="${RUNTEXT_SPAWN_GARNET_FOR_EXTERNAL_SKIP}"
+export GARNET_EXTERNAL_SHARED_STDOUT="${GARNET_LOG_FILE}"
 
 if ! install_redis_external_pid_patch; then
     exit 1

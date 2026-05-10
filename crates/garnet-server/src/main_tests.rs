@@ -320,6 +320,7 @@ fn parse_startup_config_overrides_accepts_valid_persistence_and_acl_values() {
         Some("always"),
         Some("append.aof"),
         Some("users.acl"),
+        Some("alice on >alice +@all ~*\nbob on nopass +acl"),
     )
     .unwrap();
     assert_eq!(overrides.dir, Some(std::path::PathBuf::from("./data")));
@@ -331,6 +332,13 @@ fn parse_startup_config_overrides_accepts_valid_persistence_and_acl_values() {
         overrides.aclfile,
         Some(std::path::PathBuf::from("users.acl"))
     );
+    assert_eq!(
+        overrides.users,
+        vec![
+            "alice on >alice +@all ~*".to_string(),
+            "bob on nopass +acl".to_string()
+        ]
+    );
 }
 
 #[test]
@@ -341,6 +349,7 @@ fn parse_startup_config_overrides_rejects_invalid_appendfilename_and_appendfsync
         None,
         None,
         Some("nested/append.aof"),
+        None,
         None,
     )
     .unwrap_err();
@@ -354,9 +363,16 @@ fn parse_startup_config_overrides_rejects_invalid_appendfilename_and_appendfsync
             .contains("GARNET_APPENDFILENAME")
     );
 
-    let appendfsync_error =
-        parse_startup_config_overrides_from_values(None, None, None, Some("sometimes"), None, None)
-            .unwrap_err();
+    let appendfsync_error = parse_startup_config_overrides_from_values(
+        None,
+        None,
+        None,
+        Some("sometimes"),
+        None,
+        None,
+        None,
+    )
+    .unwrap_err();
     assert_eq!(appendfsync_error.kind(), std::io::ErrorKind::InvalidInput);
     assert!(appendfsync_error.to_string().contains("GARNET_APPENDFSYNC"));
 }
@@ -374,9 +390,16 @@ fn validate_server_launch_config_rejects_multi_port_with_startup_overrides() {
         None,
     )
     .unwrap();
-    launch.startup_config_overrides =
-        parse_startup_config_overrides_from_values(Some("./data"), None, None, None, None, None)
-            .unwrap();
+    launch.startup_config_overrides = parse_startup_config_overrides_from_values(
+        Some("./data"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let error = validate_server_launch_config(&launch).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
