@@ -18896,6 +18896,16 @@ fn config_set_validates_maxmemory_policy_loglevel_hz_and_boolean_params() {
     );
     assert_command_response(
         &processor,
+        "CONFIG SET maxmemory-policy allkeys-lrm",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "CONFIG SET maxmemory-policy volatile-lrm",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
         "CONFIG SET maxmemory-policy noeviction",
         b"+OK\r\n",
     );
@@ -18964,6 +18974,43 @@ fn config_set_validates_maxmemory_policy_loglevel_hz_and_boolean_params() {
         bad_repl_min_slaves_to_write.starts_with(b"-ERR"),
         "Non-integer repl-min-slaves-to-write should error"
     );
+}
+
+#[test]
+fn config_set_maxmemory_accepts_redis_memory_units() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "CONFIG SET maxmemory 11mb", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG GET maxmemory",
+        b"*2\r\n$9\r\nmaxmemory\r\n$8\r\n11534336\r\n",
+    );
+    assert_command_response(&processor, "CONFIG SET maxmemory 2k", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG GET maxmemory",
+        b"*2\r\n$9\r\nmaxmemory\r\n$4\r\n2000\r\n",
+    );
+
+    let bad_value = execute_command_line(&processor, "CONFIG SET maxmemory 5xb").unwrap();
+    assert!(
+        bad_value.starts_with(b"-ERR"),
+        "invalid maxmemory unit should error"
+    );
+}
+
+#[test]
+fn maxmemory_rejects_direct_allocating_writes_after_eviction_attempt() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "CONFIG SET maxmemory 1", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "SET key value",
+        b"-OOM command not allowed when used memory > 'maxmemory'.\r\n",
+    );
+    assert_command_response(&processor, "DEL key", b":0\r\n");
 }
 
 #[test]

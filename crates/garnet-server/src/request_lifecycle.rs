@@ -167,6 +167,7 @@ thread_local! {
             client_id: None,
             in_transaction: false,
             tracking_reads_enabled: false,
+            oom_allowed: false,
             connection_effects: RequestConnectionEffects::NONE,
         })
     };
@@ -269,6 +270,7 @@ struct RequestExecutionContext {
     client_id: Option<ClientId>,
     in_transaction: bool,
     tracking_reads_enabled: bool,
+    oom_allowed: bool,
     connection_effects: RequestConnectionEffects,
 }
 
@@ -280,6 +282,10 @@ struct ExpirationStats {
 
 struct RequestExecutionContextScope {
     previous: RequestExecutionContext,
+}
+
+struct RequestOomAllowedScope {
+    previous: bool,
 }
 
 struct CurrentProcessorScope {
@@ -319,6 +325,20 @@ impl RequestExecutionContextScope {
     fn enter(context: RequestExecutionContext) -> Self {
         let previous = REQUEST_EXECUTION_CONTEXT.with(|state| {
             let previous = state.get();
+            state.set(context);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl RequestOomAllowedScope {
+    #[inline]
+    fn enter(oom_allowed: bool) -> Self {
+        let previous = REQUEST_EXECUTION_CONTEXT.with(|state| {
+            let mut context = state.get();
+            let previous = context.oom_allowed;
+            context.oom_allowed = oom_allowed;
             state.set(context);
             previous
         });
@@ -380,6 +400,16 @@ impl Drop for RequestExecutionContextScope {
     }
 }
 
+impl Drop for RequestOomAllowedScope {
+    fn drop(&mut self) {
+        REQUEST_EXECUTION_CONTEXT.with(|state| {
+            let mut context = state.get();
+            context.oom_allowed = self.previous;
+            state.set(context);
+        });
+    }
+}
+
 #[inline]
 fn current_client_no_touch_mode() -> bool {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().client_no_touch)
@@ -403,6 +433,16 @@ pub(crate) fn acl_username_is_oidc_sentinel(username: &[u8]) -> bool {
 #[inline]
 fn current_request_tracking_reads_enabled() -> bool {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().tracking_reads_enabled)
+}
+
+#[inline]
+fn current_request_oom_allowed() -> bool {
+    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().oom_allowed)
+}
+
+fn with_request_oom_allowed<T>(oom_allowed: bool, f: impl FnOnce() -> T) -> T {
+    let _scope = RequestOomAllowedScope::enter(oom_allowed);
+    f()
 }
 
 #[inline]
@@ -7547,6 +7587,7 @@ impl RequestProcessor {
             client_id,
             in_transaction,
             tracking_reads_enabled: client_tracks_reads,
+            oom_allowed: false,
             connection_effects: RequestConnectionEffects::NONE,
         });
         begin_deferred_replication_frame_collection();
@@ -7696,6 +7737,17 @@ impl RequestProcessor {
                 for pending in self.take_pending_pubsub_messages(client_id) {
                     response_out.extend_from_slice(&pending);
                 }
+            }
+            if command_mutating
+                && !command_allowed_while_oom(command)
+                && !current_request_oom_allowed()
+                && self.maxmemory_limit_exceeded(selected_db).unwrap_or(false)
+            {
+                append_error(
+                    response_out,
+                    b"OOM command not allowed when used memory > 'maxmemory'.",
+                );
+                return Ok(());
             }
         }
 
@@ -8010,6 +8062,34 @@ impl RequestProcessor {
         }
         execution_result
     }
+}
+
+fn command_allowed_while_oom(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Del
+            | CommandId::Unlink
+            | CommandId::Delex
+            | CommandId::Expire
+            | CommandId::Expireat
+            | CommandId::Pexpire
+            | CommandId::Pexpireat
+            | CommandId::Persist
+            | CommandId::Flushdb
+            | CommandId::Flushall
+            | CommandId::Function
+            | CommandId::Script
+            | CommandId::Eval
+            | CommandId::EvalRo
+            | CommandId::Evalsha
+            | CommandId::EvalshaRo
+            | CommandId::Fcall
+            | CommandId::FcallRo
+            | CommandId::Get
+            | CommandId::Mget
+            | CommandId::Exists
+            | CommandId::Type
+    )
 }
 
 pub(crate) fn acl_category_is_known(category: &[u8]) -> bool {

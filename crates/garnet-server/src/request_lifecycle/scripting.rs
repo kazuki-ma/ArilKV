@@ -2240,9 +2240,11 @@ impl RequestProcessor {
 
         self.record_command_call(arg_refs[0]);
         let execution = self.with_resp_protocol_version_override(call_resp_protocol, || {
-            let mut response = Vec::new();
-            let result = self.execute_bytes_in_db(&arg_refs, &mut response, selected_db);
-            (result, response)
+            with_request_oom_allowed(allow_oom, || {
+                let mut response = Vec::new();
+                let result = self.execute_bytes_in_db(&arg_refs, &mut response, selected_db);
+                (result, response)
+            })
         });
         let (execution_result, response) = execution;
         match execution_result {

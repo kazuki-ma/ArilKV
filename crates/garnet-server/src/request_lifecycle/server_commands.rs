@@ -1540,14 +1540,17 @@ impl RequestProcessor {
                     );
                 }
                 InfoSection::Memory => {
+                    let maxmemory_policy =
+                        String::from_utf8_lossy(&self.maxmemory_policy_value()).into_owned();
                     payload.push_str(
                         format!(
-                            "# Memory\r\nused_memory:{used_memory}\r\nused_memory_human:{used_memory_human}\r\nused_memory_rss:{used_memory}\r\nused_memory_peak:{used_memory}\r\nused_memory_peak_human:{used_memory_human}\r\nallocator_allocated:{used_memory}\r\nallocator_active:{used_memory}\r\nallocator_resident:{used_memory}\r\nnumber_of_cached_scripts:{cached_script_count}\r\nmaxmemory:{maxmemory}\r\nmaxmemory_human:{maxmemory_human}\r\nmaxmemory_policy:noeviction\r\nmem_not_counted_for_evict:0\r\nmem_fragmentation_ratio:1.00\r\n",
+                            "# Memory\r\nused_memory:{used_memory}\r\nused_memory_human:{used_memory_human}\r\nused_memory_rss:{used_memory}\r\nused_memory_peak:{used_memory}\r\nused_memory_peak_human:{used_memory_human}\r\nallocator_allocated:{used_memory}\r\nallocator_active:{used_memory}\r\nallocator_resident:{used_memory}\r\nnumber_of_cached_scripts:{cached_script_count}\r\nmaxmemory:{maxmemory}\r\nmaxmemory_human:{maxmemory_human}\r\nmaxmemory_policy:{maxmemory_policy}\r\nmem_not_counted_for_evict:0\r\nmem_fragmentation_ratio:1.00\r\n",
                             used_memory = used_memory,
                             used_memory_human = format_human_bytes(used_memory),
                             cached_script_count = cached_script_count,
                             maxmemory = self.maxmemory_limit_bytes.load(Ordering::Acquire),
                             maxmemory_human = format_human_bytes(self.maxmemory_limit_bytes.load(Ordering::Acquire)),
+                            maxmemory_policy = maxmemory_policy,
                         )
                         .as_str(),
                     );
@@ -5302,7 +5305,9 @@ impl RequestProcessor {
                     let valid = [
                         &b"noeviction"[..],
                         b"allkeys-lru",
+                        b"allkeys-lrm",
                         b"volatile-lru",
+                        b"volatile-lrm",
                         b"allkeys-lfu",
                         b"volatile-lfu",
                         b"allkeys-random",
@@ -5698,7 +5703,7 @@ impl RequestProcessor {
                     self.set_max_intset_entries
                         .store(parsed as usize, Ordering::Release);
                 } else if parameter == b"maxmemory" {
-                    let Some(parsed) = parse_u64_ascii(&value) else {
+                    let Some(parsed) = parse_memory_bytes_value(&value) else {
                         append_error(
                             response_out,
                             b"ERR CONFIG SET failed (possibly related to argument 'maxmemory') - argument must be a memory value",
@@ -5706,7 +5711,9 @@ impl RequestProcessor {
                         return Ok(());
                     };
                     self.set_maxmemory_limit_bytes(parsed);
+                    self.set_config_value(&parameter, parsed.to_string().into_bytes());
                     self.evict_keys_to_fit_maxmemory(selected_db, parsed)?;
+                    continue;
                 } else if parameter == b"min-replicas-to-write"
                     || parameter == b"min-slaves-to-write"
                 {
@@ -6250,6 +6257,18 @@ impl RequestProcessor {
         Ok(used_memory_bytes > maxmemory_limit_bytes)
     }
 
+    pub(crate) fn maxmemory_limit_exceeded(
+        &self,
+        selected_db: DbName,
+    ) -> Result<bool, RequestExecutionError> {
+        let maxmemory_limit_bytes = self.maxmemory_limit_bytes();
+        if maxmemory_limit_bytes == 0 {
+            return Ok(false);
+        }
+        let used_memory_bytes = self.estimated_used_memory_bytes(selected_db)?;
+        Ok(used_memory_bytes > maxmemory_limit_bytes)
+    }
+
     pub(crate) fn evict_keys_to_fit_maxmemory(
         &self,
         selected_db: DbName,
@@ -6291,6 +6310,7 @@ impl RequestProcessor {
         }
 
         let policy_is_volatile = maxmemory_policy.eq_ignore_ascii_case(b"volatile-lru")
+            || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lrm")
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lfu")
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-random")
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl");
@@ -6306,7 +6326,9 @@ impl RequestProcessor {
         }
 
         if maxmemory_policy.eq_ignore_ascii_case(b"allkeys-lru")
+            || maxmemory_policy.eq_ignore_ascii_case(b"allkeys-lrm")
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lru")
+            || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lrm")
             || maxmemory_policy.eq_ignore_ascii_case(b"allkeys-lfu")
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lfu")
         {
@@ -10749,6 +10771,42 @@ fn format_human_bytes(bytes: u64) -> String {
     } else {
         format!("{bytes}B")
     }
+}
+
+fn parse_memory_bytes_value(value: &[u8]) -> Option<u64> {
+    if value.is_empty() {
+        return None;
+    }
+
+    let digit_count = value
+        .iter()
+        .position(|byte| !byte.is_ascii_digit())
+        .unwrap_or(value.len());
+    if digit_count == 0 {
+        return None;
+    }
+
+    let base = parse_u64_ascii(&value[..digit_count])?;
+    let suffix = &value[digit_count..];
+    let multiplier = if suffix.is_empty() || suffix.eq_ignore_ascii_case(b"b") {
+        1
+    } else if suffix.eq_ignore_ascii_case(b"k") {
+        1_000
+    } else if suffix.eq_ignore_ascii_case(b"kb") {
+        1024
+    } else if suffix.eq_ignore_ascii_case(b"m") {
+        1_000_000
+    } else if suffix.eq_ignore_ascii_case(b"mb") {
+        1024 * 1024
+    } else if suffix.eq_ignore_ascii_case(b"g") {
+        1_000_000_000
+    } else if suffix.eq_ignore_ascii_case(b"gb") {
+        1024 * 1024 * 1024
+    } else {
+        return None;
+    };
+
+    base.checked_mul(multiplier)
 }
 
 pub(super) fn redis_glob_match(
