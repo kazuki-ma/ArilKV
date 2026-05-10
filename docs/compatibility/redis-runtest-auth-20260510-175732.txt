@@ -1,0 +1,22 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 52192
+[1;37;49mTesting unit/auth[0m
+[[0;32;49mok[0m]: AUTH fails if there is no password configured server side (1 ms)
+[[0;32;49mok[0m]: Arity check for auth command (0 ms)
+[[0;32;49mok[0m]: AUTH fails when a wrong password is given (0 ms)
+[[0;32;49mok[0m]: Arbitrary command gives an error when AUTH is required (0 ms)
+[[0;32;49mok[0m]: AUTH succeeds when the right password is given (0 ms)
+[[0;32;49mok[0m]: Once AUTH succeeded we can actually send commands to the server (1 ms)
+[[0;32;49mok[0m]: For unauthenticated clients multibulk and bulk length are limited (0 ms)
+[[0;31;49mTIMEOUT[0m]: clients state report follows.
+sock6 => (IN PROGRESS) For unauthenticated clients output buffer is limited
+Killing still running Redis server 52196
+
+                   The End
+
+Execution time of different units:
+
+[1;31;49m!!! WARNING[0m The following tests failed:
+
+*** [[0;31;49mTIMEOUT[0m]: clients state report follows.

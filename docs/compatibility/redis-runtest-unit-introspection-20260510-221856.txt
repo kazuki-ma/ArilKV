@@ -1,0 +1,527 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 57175
+[1;37;49mTesting unit/introspection[0m
+[[0;32;49mok[0m]: PING (0 ms)
+[[0;31;49merr[0m]: CLIENT LIST in tests/unit/introspection.tcl
+Expected 'id=5 addr=127.0.0.1:52605 laddr=127.0.0.1:6397 fd=8 name= age=0 idle=0 flags=N db=9 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=3087 rbp=0 obl=0 oll=0 omem=0 tot-mem=23567 events=r cmd=client|list user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=261 tot-net-out=3180 tot-cmds=9' to match 'id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*' (context: type source line 26 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client_list} proc ::test) 
+[[0;32;49mok[0m]: CLIENT LIST with IDs (0 ms)
+[[0;31;49merr[0m]: CLIENT INFO in tests/unit/introspection.tcl
+Expected 'id=5 addr=127.0.0.1:52605 laddr=127.0.0.1:6397 fd=8 name= age=0 idle=0 flags=N db=9 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=3087 rbp=0 obl=0 oll=0 omem=0 tot-mem=23567 events=r cmd=client|info user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=394 tot-net-out=3881 tot-cmds=13' to match 'id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*' (context: type source line 41 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client} proc ::test) 
+[[0;32;49mok[0m]: CLIENT INFO input/output/cmds-processed stats (0 ms)
+[[0;32;49mok[0m]: CLIENT INFO input/output/cmds-processed stats for blocking command (107 ms)
+[[0;32;49mok[0m]: CLIENT INFO cmds-processed stats for recursive command (1 ms)
+[[0;31;49merr[0m]: CLIENT INFO read-events and pipeline-length stats in tests/unit/introspection.tcl
+empty string as operand of "+"
+can't use empty string as operand of "+"
+    while executing
+"expr {$re1 + 4}"
+    ("uplevel" body line 23)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: CLIENT INFO pipeline-length stats for pipelined commands in tests/unit/introspection.tcl
+empty string as operand of "-"
+can't use empty string as operand of "-"
+    while executing
+"expr {$plsum2 - $plsum1}"
+    ("uplevel" body line 26)
+    invoked from within
+"uplevel 1 $code"
+[[0;32;49mok[0m]: CLIENT KILL with illegal arguments (1 ms)
+[[0;32;49mok[0m]: CLIENT KILL maxAGE will kill old clients (2004 ms)
+[[0;32;49mok[0m]: CLIENT KILL SKIPME YES/NO will kill all clients (2 ms)
+[[0;32;49mok[0m]: CLIENT command unhappy path coverage (1 ms)
+[[0;32;49mok[0m]: CLIENT KILL close the client connection during bgsave (10011 ms)
+[[0;32;49mok[0m]: CLIENT REPLY OFF/ON: disable all commands reply (1 ms)
+[[0;32;49mok[0m]: CLIENT REPLY SKIP: skip the next command reply (0 ms)
+[[0;32;49mok[0m]: CLIENT REPLY ON: unset SKIP flag (0 ms)
+[[0;32;49mok[0m]: MONITOR can log executed commands (27 ms)
+[[0;32;49mok[0m]: MONITOR can log commands issued by the scripting engine (28 ms)
+[[0;32;49mok[0m]: MONITOR can log commands issued by functions (28 ms)
+[[0;32;49mok[0m]: MONITOR supports redacting command arguments (80 ms)
+[[0;32;49mok[0m]: MONITOR correctly handles multi-exec cases (53 ms)
+[[0;32;49mok[0m]: MONITOR log blocked command only once (133 ms)
+[[0;32;49mok[0m]: CLIENT GETNAME should return NIL if name is not assigned (0 ms)
+[[0;32;49mok[0m]: CLIENT GETNAME check if name set correctly (1 ms)
+[[0;32;49mok[0m]: CLIENT LIST shows empty fields for unassigned names (0 ms)
+[[0;32;49mok[0m]: CLIENT SETNAME does not accept spaces (1 ms)
+[[0;32;49mok[0m]: CLIENT SETNAME can assign a name to this connection (0 ms)
+[[0;32;49mok[0m]: CLIENT SETNAME can change the name of an existing connection (0 ms)
+[[0;32;49mok[0m]: After CLIENT SETNAME, connection can still be closed (1 ms)
+[[0;32;49mok[0m]: CLIENT SETINFO can set a library name to this connection (0 ms)
+[[0;32;49mok[0m]: CLIENT SETINFO invalid args (1 ms)
+[[0;32;49mok[0m]: RESET does NOT clean library name (0 ms)
+[[0;32;49mok[0m]: CLIENT SETINFO can clear library name (0 ms)
+[[0;31;49merr[0m]: Expected 'save {3600 1 300 100 60 10000}' to match 'save {}' (context: type source line 605 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {3600 1 300 100 60 10000}}} proc ::run_external_server_test) 
+assertion:Expected 'save {3600 1 300 100 60 10000}' to match 'save {}' (context: type source line 605 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {3600 1 300 100 60 10000}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {3600 1 300 100 60 10000}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;31;49merr[0m]: Expected 'save {900 1 100 100}' to match 'save {900 1}' (context: type source line 616 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {900 1 100 100}}} proc ::run_external_server_test) 
+assertion:Expected 'save {900 1 100 100}' to match 'save {900 1}' (context: type source line 616 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {900 1 100 100}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {900 1 100 100}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;31;49merr[0m]: Expected 'save {}' to match 'save {900 1}' (context: type source line 621 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {900 1}' (context: type source line 621 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: CONFIG save params special case handled properly (36 ms)
+[[0;32;49mok[0m]: CONFIG sanity (7 ms)
+[[0;31;49merr[0m]: CONFIG REWRITE sanity in tests/unit/introspection.tcl
+n subcommand
+ERR unknown subcommand
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r debug config-rewrite-force-all"
+    ("uplevel" body line 10)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: CONFIG REWRITE handles save and shutdown properly in tests/unit/introspection.tcl
+rver is running without a config file
+ERR The server is running without a config file
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r config rewrite"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+[[0;32;49mok[0m]: CONFIG SET with multiple args (0 ms)
+[[0;32;49mok[0m]: CONFIG SET rollback on set error (0 ms)
+[[0;32;49mok[0m]: CONFIG SET rollback on apply error (1 ms)
+[[0;32;49mok[0m]: CONFIG SET duplicate configs (0 ms)
+[[0;32;49mok[0m]: CONFIG SET set immutable (0 ms)
+[[0;32;49mok[0m]: CONFIG GET hidden configs (1 ms)
+[[0;32;49mok[0m]: CONFIG GET multiple args (0 ms)
+[[0;31;49merr[0m]: redis-server command line arguments - error cases in tests/unit/introspection.tcl
+Expected '/tmp/arilkv-unit_introspection-20260510-221856/garnet-redis-server-wrapper.sh: line 29: users[@]: unbound variable' to match '*Bad directive or wrong number of arguments*' (context: type eval line 4 cmd {assert_match {*Bad directive or wrong number of arguments*} $err} proc ::test) 
+[[0;31;49merr[0m]: Expected 'maxmemory 734003200' to match 'maxmemory 0' (context: type source line 953 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get maxmemory] {maxmemory 734003200}} proc ::run_external_server_test) 
+assertion:Expected 'maxmemory 734003200' to match 'maxmemory 0' (context: type source line 953 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get maxmemory] {maxmemory 734003200}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get maxmemory] {maxmemory 734003200}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: redis-server command line arguments - allow passing option name and option value in the same arg (11 ms)
+[[0;31;49merr[0m]: Expected 'loglevel verbose' to match 'loglevel notice' (context: type source line 960 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get loglevel] {loglevel verbose}} proc ::run_external_server_test) 
+assertion:Expected 'loglevel verbose' to match 'loglevel notice' (context: type source line 960 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get loglevel] {loglevel verbose}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get loglevel] {loglevel verbose}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: redis-server command line arguments - wrong usage that we support anyway (9 ms)
+[[0;31;49merr[0m]: Expected 'proc-title-template --my--title--template' to match '' (context: type source line 968 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --my--title--template}} proc ::run_external_server_test) 
+assertion:Expected 'proc-title-template --my--title--template' to match '' (context: type source line 968 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --my--title--template}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get proc-title-template] {proc-title-template --my--title--template}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: redis-server command line arguments - allow option value to use the `--` prefix (8 ms)
+[[0;31;49merr[0m]: Expected 'proc-title-template --my--title--template' to match '' (context: type source line 975 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --my--title--template}} proc ::run_external_server_test) 
+assertion:Expected 'proc-title-template --my--title--template' to match '' (context: type source line 975 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --my--title--template}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get proc-title-template] {proc-title-template --my--title--template}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: redis-server command line arguments - option name and option value in the same arg and `--` prefix (8 ms)
+[[0;31;49merr[0m]: Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 982 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 982 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;31;49merr[0m]: Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 987 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 987 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;31;49merr[0m]: Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 992 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 992 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;31;49merr[0m]: Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 997 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 997 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;31;49merr[0m]: Expected 'proc-title-template --save' to match '' (context: type source line 1002 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --save}} proc ::run_external_server_test) 
+assertion:Expected 'proc-title-template --save' to match '' (context: type source line 1002 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --save}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get proc-title-template] {proc-title-template --save}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: redis-server command line arguments - save with empty input (27 ms)
+[[0;31;49merr[0m]: Expected 'shutdown-on-sigint {nosave now force}' to match 'shutdown-on-sigint save' (context: type source line 1011 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get shutdown-on-sigint] {shutdown-on-sigint {nosave now force}}} proc ::run_external_server_test) 
+assertion:Expected 'shutdown-on-sigint {nosave now force}' to match 'shutdown-on-sigint save' (context: type source line 1011 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get shutdown-on-sigint] {shutdown-on-sigint {nosave now force}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get shutdown-on-sigint] {shutdown-on-sigint {nosave now force}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: redis-server command line arguments - take one bulk string with spaces for MULTI_ARG configs parsing (4 ms)
+[[0;31;49merr[0m]: cannot modify protected configuration - no in tests/unit/introspection.tcl
+Expected an error matching 'ERR *protected*' but got 'OK' (context: type source line 1022 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_error "ERR *protected*" {r config set dir somedir}} proc ::test)
+[[0;32;49mok[0m]: Check for memory leaks (pid 57243) (424 ms)
+[[0;32;49mok[0m]: cannot modify protected configuration - local (15 ms)
+[[0;32;49mok[0m]: Check for memory leaks (pid 57273) (418 ms)
+[[0;31;49merr[0m]: g_file" not known in dictionary
+key "config_file" not known in dictionary
+    while executing
+"dict get $srv "config_file""
+    (procedure "restart_server" line 28)
+    invoked from within
+"restart_server 0 false false"
+    ("uplevel" body line 7)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: config during loading (70 ms)
+[[0;31;49merr[0m]: Expected an error matching 'ERR unknown command*' but got 'OK' (context: type source line 1073 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_error {ERR unknown command*} {r flushdb}} proc ::run_external_server_test)
+assertion:Expected an error matching 'ERR unknown command*' but got 'OK' (context: type source line 1073 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_error {ERR unknown command*} {r flushdb}} proc ::run_external_server_test)
+    while executing
+"error "assertion:$expected_err $detail""
+    (procedure "assert_failed" line 7)
+    invoked from within
+"assert_failed "Expected an error matching '$pattern' but got '$error'" $detail"
+    (procedure "assert_error" line 5)
+    invoked from within
+"assert_error {ERR unknown command*} {r flushdb}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: CONFIG REWRITE handles rename-command properly (49 ms)
+[[0;31;49merr[0m]: rver is running without a config file
+ERR The server is running without a config file
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r config rewrite"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 2 $code"
+[[0;31;49merr[0m]: rver is running without a config file
+ERR The server is running without a config file
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r config rewrite"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: CONFIG REWRITE handles alias config properly (15 ms)
+[[0;31;49merr[0m]: IO threads client number in tests/unit/introspection.tcl
+Expected '-1' to be equal to '1' (context: type source line 1109 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_equal $iothread_clients [s connected_clients]} proc ::start_server)
+[[0;31;49merr[0m]: Clients are evenly distributed among io threads in tests/unit/introspection.tcl
+Expected '-1' to be equal to '3' (context: type source line 1150 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_equal [get_io_thread_clients $i] 3} proc ::start_server)
+[[0;31;49merr[0m]: Warning shown when no auth and binding all interfaces in tests/unit/introspection.tcl
+log message of '"*WARNING: Redis does not require authentication and is not protected by network restrictions*"' not found in ./tests/tmp/server.57175.9/stdout after line: 0 till line: 4
+[[0;32;49mok[0m]: Check for memory leaks (pid 57356) (437 ms)
+[[0;31;49merr[0m]: Warning shown for configured interface when binding specific address in tests/unit/introspection.tcl
+log message of '"*WARNING: Redis does not require authentication*configured network interface*"' not found in ./tests/tmp/server.57175.11/stdout after line: 0 till line: 4
+[[0;32;49mok[0m]: Check for memory leaks (pid 57401) (440 ms)
+[[0;31;49merr[0m]: Warning shown for local clients when protected mode is on in tests/unit/introspection.tcl
+log message of '"*WARNING: Redis does not require authentication*local client*"' not found in ./tests/tmp/server.57175.13/stdout after line: 0 till line: 4
+[[0;32;49mok[0m]: Check for memory leaks (pid 57438) (430 ms)
+[[0;32;49mok[0m]: No warning shown when password is set (6 ms)
+[[0;32;49mok[0m]: Check for memory leaks (pid 57483) (414 ms)
+[1/1 [0;33;49mdone[0m]: unit/introspection (22 seconds)
+
+                   The End
+
+Execution time of different units:
+  22 seconds - unit/introspection
+
+[1;31;49m!!! WARNING[0m The following tests failed:
+
+*** [[0;31;49merr[0m]: CLIENT LIST in tests/unit/introspection.tcl
+Expected 'id=5 addr=127.0.0.1:52605 laddr=127.0.0.1:6397 fd=8 name= age=0 idle=0 flags=N db=9 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=3087 rbp=0 obl=0 oll=0 omem=0 tot-mem=23567 events=r cmd=client|list user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=261 tot-net-out=3180 tot-cmds=9' to match 'id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*' (context: type source line 26 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|list user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client_list} proc ::test) 
+*** [[0;31;49merr[0m]: CLIENT INFO in tests/unit/introspection.tcl
+Expected 'id=5 addr=127.0.0.1:52605 laddr=127.0.0.1:6397 fd=8 name= age=0 idle=0 flags=N db=9 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=3087 rbp=0 obl=0 oll=0 omem=0 tot-mem=23567 events=r cmd=client|info user=default redir=-1 resp=3 lib-name= lib-ver= io-thread=0 tot-net-in=394 tot-net-out=3881 tot-cmds=13' to match 'id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*' (context: type source line 41 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match {id=* addr=*:* laddr=*:* fd=* name=* age=* idle=* flags=N db=* sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=* argv-mem=* multi-mem=0 rbs=* rbp=* obl=0 oll=0 omem=0 omem-shared=0 omem-unshared=0 tot-mem=* events=r cmd=client|info user=* redir=-1 resp=* lib-name=* lib-ver=* io-thread=* tot-net-in=* tot-net-out=* tot-cmds=* read-events=* avg-pipeline-len-sum=* avg-pipeline-len-cnt=*} $client} proc ::test) 
+*** [[0;31;49merr[0m]: CLIENT INFO read-events and pipeline-length stats in tests/unit/introspection.tcl
+empty string as operand of "+"
+can't use empty string as operand of "+"
+    while executing
+"expr {$re1 + 4}"
+    ("uplevel" body line 23)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: CLIENT INFO pipeline-length stats for pipelined commands in tests/unit/introspection.tcl
+empty string as operand of "-"
+can't use empty string as operand of "-"
+    while executing
+"expr {$plsum2 - $plsum1}"
+    ("uplevel" body line 26)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: Expected 'save {3600 1 300 100 60 10000}' to match 'save {}' (context: type source line 605 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {3600 1 300 100 60 10000}}} proc ::run_external_server_test) 
+assertion:Expected 'save {3600 1 300 100 60 10000}' to match 'save {}' (context: type source line 605 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {3600 1 300 100 60 10000}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {3600 1 300 100 60 10000}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'save {900 1 100 100}' to match 'save {900 1}' (context: type source line 616 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {900 1 100 100}}} proc ::run_external_server_test) 
+assertion:Expected 'save {900 1 100 100}' to match 'save {900 1}' (context: type source line 616 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {900 1 100 100}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {900 1 100 100}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'save {}' to match 'save {900 1}' (context: type source line 621 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {900 1}' (context: type source line 621 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: CONFIG REWRITE sanity in tests/unit/introspection.tcl
+n subcommand
+ERR unknown subcommand
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r debug config-rewrite-force-all"
+    ("uplevel" body line 10)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: CONFIG REWRITE handles save and shutdown properly in tests/unit/introspection.tcl
+rver is running without a config file
+ERR The server is running without a config file
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r config rewrite"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: redis-server command line arguments - error cases in tests/unit/introspection.tcl
+Expected '/tmp/arilkv-unit_introspection-20260510-221856/garnet-redis-server-wrapper.sh: line 29: users[@]: unbound variable' to match '*Bad directive or wrong number of arguments*' (context: type eval line 4 cmd {assert_match {*Bad directive or wrong number of arguments*} $err} proc ::test) 
+*** [[0;31;49merr[0m]: Expected 'maxmemory 734003200' to match 'maxmemory 0' (context: type source line 953 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get maxmemory] {maxmemory 734003200}} proc ::run_external_server_test) 
+assertion:Expected 'maxmemory 734003200' to match 'maxmemory 0' (context: type source line 953 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get maxmemory] {maxmemory 734003200}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get maxmemory] {maxmemory 734003200}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'loglevel verbose' to match 'loglevel notice' (context: type source line 960 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get loglevel] {loglevel verbose}} proc ::run_external_server_test) 
+assertion:Expected 'loglevel verbose' to match 'loglevel notice' (context: type source line 960 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get loglevel] {loglevel verbose}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get loglevel] {loglevel verbose}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'proc-title-template --my--title--template' to match '' (context: type source line 968 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --my--title--template}} proc ::run_external_server_test) 
+assertion:Expected 'proc-title-template --my--title--template' to match '' (context: type source line 968 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --my--title--template}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get proc-title-template] {proc-title-template --my--title--template}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'proc-title-template --my--title--template' to match '' (context: type source line 975 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --my--title--template}} proc ::run_external_server_test) 
+assertion:Expected 'proc-title-template --my--title--template' to match '' (context: type source line 975 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --my--title--template}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get proc-title-template] {proc-title-template --my--title--template}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 982 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 982 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 987 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 987 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 992 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 992 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 997 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+assertion:Expected 'save {}' to match 'save {3600 1 300 100 60 10000}' (context: type source line 997 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get save] {save {}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get save] {save {}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'proc-title-template --save' to match '' (context: type source line 1002 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --save}} proc ::run_external_server_test) 
+assertion:Expected 'proc-title-template --save' to match '' (context: type source line 1002 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get proc-title-template] {proc-title-template --save}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get proc-title-template] {proc-title-template --save}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected 'shutdown-on-sigint {nosave now force}' to match 'shutdown-on-sigint save' (context: type source line 1011 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get shutdown-on-sigint] {shutdown-on-sigint {nosave now force}}} proc ::run_external_server_test) 
+assertion:Expected 'shutdown-on-sigint {nosave now force}' to match 'shutdown-on-sigint save' (context: type source line 1011 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_match [r config get shutdown-on-sigint] {shutdown-on-sigint {nosave now force}}} proc ::run_external_server_test) 
+    while executing
+"error "assertion:Expected '$value' to match '$pattern' $context $detail""
+    (procedure "assert_match" line 6)
+    invoked from within
+"assert_match [r config get shutdown-on-sigint] {shutdown-on-sigint {nosave now force}}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: cannot modify protected configuration - no in tests/unit/introspection.tcl
+Expected an error matching 'ERR *protected*' but got 'OK' (context: type source line 1022 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_error "ERR *protected*" {r config set dir somedir}} proc ::test)
+*** [[0;31;49merr[0m]: g_file" not known in dictionary
+key "config_file" not known in dictionary
+    while executing
+"dict get $srv "config_file""
+    (procedure "restart_server" line 28)
+    invoked from within
+"restart_server 0 false false"
+    ("uplevel" body line 7)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: Expected an error matching 'ERR unknown command*' but got 'OK' (context: type source line 1073 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_error {ERR unknown command*} {r flushdb}} proc ::run_external_server_test)
+assertion:Expected an error matching 'ERR unknown command*' but got 'OK' (context: type source line 1073 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_error {ERR unknown command*} {r flushdb}} proc ::run_external_server_test)
+    while executing
+"error "assertion:$expected_err $detail""
+    (procedure "assert_failed" line 7)
+    invoked from within
+"assert_failed "Expected an error matching '$pattern' but got '$error'" $detail"
+    (procedure "assert_error" line 5)
+    invoked from within
+"assert_error {ERR unknown command*} {r flushdb}"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: rver is running without a config file
+ERR The server is running without a config file
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r config rewrite"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: rver is running without a config file
+ERR The server is running without a config file
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r config rewrite"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 2 $code"
+*** [[0;31;49merr[0m]: IO threads client number in tests/unit/introspection.tcl
+Expected '-1' to be equal to '1' (context: type source line 1109 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_equal $iothread_clients [s connected_clients]} proc ::start_server)
+*** [[0;31;49merr[0m]: Clients are evenly distributed among io threads in tests/unit/introspection.tcl
+Expected '-1' to be equal to '3' (context: type source line 1150 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/introspection.tcl cmd {assert_equal [get_io_thread_clients $i] 3} proc ::start_server)
+*** [[0;31;49merr[0m]: Warning shown when no auth and binding all interfaces in tests/unit/introspection.tcl
+log message of '"*WARNING: Redis does not require authentication and is not protected by network restrictions*"' not found in ./tests/tmp/server.57175.9/stdout after line: 0 till line: 4
+*** [[0;31;49merr[0m]: Warning shown for configured interface when binding specific address in tests/unit/introspection.tcl
+log message of '"*WARNING: Redis does not require authentication*configured network interface*"' not found in ./tests/tmp/server.57175.11/stdout after line: 0 till line: 4
+*** [[0;31;49merr[0m]: Warning shown for local clients when protected mode is on in tests/unit/introspection.tcl
+log message of '"*WARNING: Redis does not require authentication*local client*"' not found in ./tests/tmp/server.57175.13/stdout after line: 0 till line: 4

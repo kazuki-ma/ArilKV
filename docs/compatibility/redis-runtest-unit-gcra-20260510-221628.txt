@@ -1,0 +1,417 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 55543
+[1;37;49mTesting unit/gcra[0m
+[[0;31;49merr[0m]: GCRA - argument validation in tests/unit/gcra.tcl
+Expected 'ERR unknown command' to match '*wrong number of arguments*' (context: type source line 5 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/gcra.tcl cmd {assert_match "*wrong number of arguments*" $err} proc ::test) 
+[[0;31;49merr[0m]: GCRA - first request is allowed in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 10 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - requests within burst are allowed in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - retry_after is positive when limited in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 2 1 60"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - retry_after is negative when allowed in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - num_avail_req decreases with each request in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - multiple tokens consumed per request in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - rate recovery over time in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 1 1 1"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - full_burst_after indicates time to full recovery in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 4)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - different keys are independent in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra key1 2 1 60"
+    ("uplevel" body line 7)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - max_burst of 0 allows only sustained rate in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 0 1 1"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - wrong type error in tests/unit/gcra.tcl
+Expected 'ERR unknown command' to match '*WRONGTYPE*' (context: type source line 209 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/gcra.tcl cmd {assert_match "*WRONGTYPE*" $err} proc ::test) 
+[[0;31;49merr[0m]: GCRA - overflow in tests/unit/gcra.tcl
+Expected 'ERR unknown command' to match '*would cause an overflow*' (context: type source line 220 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/gcra.tcl cmd {assert_match "*would cause an overflow*" $err} proc ::test) 
+[[0;31;49merr[0m]: GCRASETVALUE - basic functionality in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcrasetvalue mykey $tat_us"
+    ("uplevel" body line 4)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - RDB save and reload preserves value in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - RDB save and reload preserves TTL in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - DUMP and RESTORE roundtrip in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - AOF rewrite preserves value in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - AOF rewrite preserves TTL in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - DEBUG DIGEST consistent after RDB reload in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GCRA - Replication works in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"$master gcra mykey 2 1 1000 TOKENS 2"
+    ("uplevel" body line 16)
+    invoked from within
+"uplevel 1 $code"
+[[0;32;49mok[0m]: Check for memory leaks (pid 55563) (431 ms)
+[[0;32;49mok[0m]: Check for memory leaks (pid 55549) (431 ms)
+[1/1 [0;33;49mdone[0m]: unit/gcra (3 seconds)
+
+                   The End
+
+Execution time of different units:
+  3 seconds - unit/gcra
+
+[1;31;49m!!! WARNING[0m The following tests failed:
+
+*** [[0;31;49merr[0m]: GCRA - argument validation in tests/unit/gcra.tcl
+Expected 'ERR unknown command' to match '*wrong number of arguments*' (context: type source line 5 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/gcra.tcl cmd {assert_match "*wrong number of arguments*" $err} proc ::test) 
+*** [[0;31;49merr[0m]: GCRA - first request is allowed in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 10 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - requests within burst are allowed in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - retry_after is positive when limited in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 2 1 60"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - retry_after is negative when allowed in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - num_avail_req decreases with each request in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - multiple tokens consumed per request in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - rate recovery over time in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 1 1 1"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - full_burst_after indicates time to full recovery in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 4)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - different keys are independent in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra key1 2 1 60"
+    ("uplevel" body line 7)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - max_burst of 0 allows only sustained rate in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 0 1 1"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - wrong type error in tests/unit/gcra.tcl
+Expected 'ERR unknown command' to match '*WRONGTYPE*' (context: type source line 209 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/gcra.tcl cmd {assert_match "*WRONGTYPE*" $err} proc ::test) 
+*** [[0;31;49merr[0m]: GCRA - overflow in tests/unit/gcra.tcl
+Expected 'ERR unknown command' to match '*would cause an overflow*' (context: type source line 220 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/gcra.tcl cmd {assert_match "*would cause an overflow*" $err} proc ::test) 
+*** [[0;31;49merr[0m]: GCRASETVALUE - basic functionality in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcrasetvalue mykey $tat_us"
+    ("uplevel" body line 4)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - RDB save and reload preserves value in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - RDB save and reload preserves TTL in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - DUMP and RESTORE roundtrip in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - AOF rewrite preserves value in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - AOF rewrite preserves TTL in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 6)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - DEBUG DIGEST consistent after RDB reload in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r gcra mykey 5 1 60"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: GCRA - Replication works in tests/unit/gcra.tcl
+n command
+ERR unknown command
+    while executing
+"$master gcra mykey 2 1 1000 TOKENS 2"
+    ("uplevel" body line 16)
+    invoked from within
+"uplevel 1 $code"

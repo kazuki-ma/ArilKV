@@ -1,0 +1,47 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 37485
+[1;37;49mTesting unit/aofrw[0m
+[[0;31;49merr[0m]: AOF rewrite during write load: RDB preamble=yes in tests/unit/aofrw.tcl
+Expected 9fa9e2d9f0f2fe3f eq 04ad60340fb2c3b5 (context: type source line 57 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/aofrw.tcl cmd {assert {$d1 eq $d2}} proc ::test)
+[[0;32;49mok[0m]: AOF rewrite during write load: RDB preamble=no (29638 ms)
+[[0;31;49merr[0m]: Turning off AOF kills the background writing child if any in tests/unit/aofrw.tcl
+Can't find 'Killing AOF child' into recent logs
+[[0;32;49mok[0m]: AOF rewrite of list with listpack encoding, string data (8 ms)
+[[0;32;49mok[0m]: AOF rewrite of list with quicklist encoding, string data (72 ms)
+[[0;32;49mok[0m]: AOF rewrite of list with listpack encoding, int data (5 ms)
+[[0;32;49mok[0m]: AOF rewrite of list with quicklist encoding, int data (44 ms)
+[[0;32;49mok[0m]: AOF rewrite of set with intset encoding, string data (4 ms)
+[[0;32;49mok[0m]: AOF rewrite of set with hashtable encoding, string data (40 ms)
+[[0;32;49mok[0m]: AOF rewrite of set with intset encoding, int data (4 ms)
+[[0;32;49mok[0m]: AOF rewrite of set with hashtable encoding, int data (42 ms)
+[[0;32;49mok[0m]: AOF rewrite of hash with listpack encoding, string data (4 ms)
+[[0;32;49mok[0m]: AOF rewrite of hash with hashtable encoding, string data (43 ms)
+[[0;32;49mok[0m]: AOF rewrite of hash with listpack encoding, int data (4 ms)
+[[0;32;49mok[0m]: AOF rewrite of hash with hashtable encoding, int data (38 ms)
+[[0;32;49mok[0m]: AOF rewrite of zset with listpack encoding, string data (4 ms)
+[[0;32;49mok[0m]: AOF rewrite of zset with skiplist encoding, string data (85 ms)
+[[0;32;49mok[0m]: AOF rewrite of zset with listpack encoding, int data (4 ms)
+[[0;32;49mok[0m]: AOF rewrite of zset with skiplist encoding, int data (71 ms)
+[[0;32;49mok[0m]: AOF rewrite functions (5 ms)
+[[0;31;49merr[0m]: BGREWRITEAOF is delayed if BGSAVE is in progress in tests/unit/aofrw.tcl
+Expected 'Background append only file rewriting started' to match '*scheduled*' (context: type source line 212 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/aofrw.tcl cmd {assert_match {*scheduled*} [r bgrewriteaof]} proc ::test) 
+[[0;31;49merr[0m]: BGREWRITEAOF is refused if already in progress in tests/unit/aofrw.tcl
+Expected 'Background append only file rewriting started' to match '*ERR*already*' (context: type source line 228 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/aofrw.tcl cmd {assert_match {*ERR*already*} $e} proc ::test) 
+[1/1 [0;33;49mdone[0m]: unit/aofrw (59 seconds)
+
+                   The End
+
+Execution time of different units:
+  59 seconds - unit/aofrw
+
+[1;31;49m!!! WARNING[0m The following tests failed:
+
+*** [[0;31;49merr[0m]: AOF rewrite during write load: RDB preamble=yes in tests/unit/aofrw.tcl
+Expected 9fa9e2d9f0f2fe3f eq 04ad60340fb2c3b5 (context: type source line 57 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/aofrw.tcl cmd {assert {$d1 eq $d2}} proc ::test)
+*** [[0;31;49merr[0m]: Turning off AOF kills the background writing child if any in tests/unit/aofrw.tcl
+Can't find 'Killing AOF child' into recent logs
+*** [[0;31;49merr[0m]: BGREWRITEAOF is delayed if BGSAVE is in progress in tests/unit/aofrw.tcl
+Expected 'Background append only file rewriting started' to match '*scheduled*' (context: type source line 212 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/aofrw.tcl cmd {assert_match {*scheduled*} [r bgrewriteaof]} proc ::test) 
+*** [[0;31;49merr[0m]: BGREWRITEAOF is refused if already in progress in tests/unit/aofrw.tcl
+Expected 'Background append only file rewriting started' to match '*ERR*already*' (context: type source line 228 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/aofrw.tcl cmd {assert_match {*ERR*already*} $e} proc ::test) 

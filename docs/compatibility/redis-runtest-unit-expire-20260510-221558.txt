@@ -1,0 +1,433 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 54829
+[1;37;49mTesting unit/expire[0m
+[[0;32;49mok[0m]: EXPIRE - set timeouts multiple times (1 ms)
+[[0;32;49mok[0m]: EXPIRE - It should be still possible to read 'x' (0 ms)
+[[0;32;49mok[0m]: EXPIRE - After 2.1 seconds the key should no longer be here (2105 ms)
+[[0;32;49mok[0m]: EXPIRE - write on expire should work (0 ms)
+[[0;32;49mok[0m]: EXPIREAT - Check for EXPIRE alike behavior (0 ms)
+[[0;32;49mok[0m]: SETEX - Set + Expire combo operation. Check for TTL (1 ms)
+[[0;32;49mok[0m]: SETEX - Check value (0 ms)
+[[0;32;49mok[0m]: SETEX - Overwrite old key (0 ms)
+[[0;32;49mok[0m]: SETEX - Wait for the key to expire (1103 ms)
+[[0;32;49mok[0m]: SETEX - Wrong time parameter (0 ms)
+[[0;32;49mok[0m]: PERSIST can undo an EXPIRE (0 ms)
+[[0;32;49mok[0m]: PERSIST returns 0 against non existing or non volatile keys (1 ms)
+[[0;32;49mok[0m]: EXPIRE precision is now the millisecond (1107 ms)
+[[0;32;49mok[0m]: PSETEX can set sub-second expires (105 ms)
+[[0;32;49mok[0m]: PEXPIRE can set sub-second expires (105 ms)
+[[0;32;49mok[0m]: PEXPIREAT can set sub-second expires (207 ms)
+[[0;32;49mok[0m]: TTL returns time to live in seconds (0 ms)
+[[0;32;49mok[0m]: PTTL returns time to live in milliseconds (1 ms)
+[[0;32;49mok[0m]: TTL / PTTL / EXPIRETIME / PEXPIRETIME return -1 if key has no expire (0 ms)
+[[0;32;49mok[0m]: TTL / PTTL / EXPIRETIME / PEXPIRETIME return -2 if key does not exit (1 ms)
+[[0;32;49mok[0m]: EXPIRETIME returns absolute expiration time in seconds (0 ms)
+[[0;32;49mok[0m]: PEXPIRETIME returns absolute expiration time in milliseconds (0 ms)
+[[0;32;49mok[0m]: Redis should actively expire keys incrementally (522 ms)
+[[0;32;49mok[0m]: Redis should lazy expire keys (1006 ms)
+[[0;32;49mok[0m]: EXPIRE should not resurrect keys (issue #1026) (1005 ms)
+[[0;32;49mok[0m]: 5 keys in, 5 keys out (1 ms)
+[[0;32;49mok[0m]: EXPIRE with empty string as TTL should report an error (0 ms)
+[[0;32;49mok[0m]: SET with EX with big integer should report an error (0 ms)
+[[0;32;49mok[0m]: SET with EX with smallest integer should report an error (0 ms)
+[[0;32;49mok[0m]: GETEX with big integer should report an error (0 ms)
+[[0;32;49mok[0m]: GETEX with smallest integer should report an error (1 ms)
+[[0;32;49mok[0m]: EXPIRE with big integer overflows when converted to milliseconds (0 ms)
+[[0;32;49mok[0m]: PEXPIRE with big integer overflow when basetime is added (1 ms)
+[[0;32;49mok[0m]: EXPIRE with big negative integer (0 ms)
+[[0;32;49mok[0m]: PEXPIREAT with big integer works (0 ms)
+[[0;32;49mok[0m]: PEXPIREAT with big negative integer works (0 ms)
+[[0;31;49merr[0m]: All time-to-live(TTL) in commands are propagated as absolute timestamp in milliseconds in AOF in tests/unit/expire.tcl
+pen "/Users/kazuki-matsuda/dev/src/github.com/redis/redis/./tests/tmp/server.54829.1/appendonly.aof.manifest": no such file or directory
+couldn't open "/Users/kazuki-matsuda/dev/src/github.com/redis/redis/./tests/tmp/server.54829.1/appendonly.aof.manifest": no such file or directory
+    while executing
+"open $manifest_filepath r+"
+    (procedure "get_last_incr_aof_name" line 2)
+    invoked from within
+"get_last_incr_aof_name $manifest_filepath"
+    (procedure "get_last_incr_aof_path" line 6)
+    invoked from within
+"get_last_incr_aof_path r"
+    ("uplevel" body line 7)
+    invoked from within
+"uplevel 1 $code"
+[[0;32;49mok[0m]: Check for memory leaks (pid 54901) (2332 ms)
+[[0;32;49mok[0m]: All TTL in commands are propagated as absolute timestamp in replication stream (3 ms)
+[[0;32;49mok[0m]: First server should have role slave after REPLICAOF (0 ms)
+[[0;31;49merr[0m]: For all replicated TTL-related commands, absolute expire times are identical on primary and replica in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"$primary set foo1 bar ex 100"
+    ("uplevel" body line 4)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: expired key which is created in writeable replicas should be deleted by active expiry in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"$primary flushall"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: SET command will remove expire in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r set foo bar EX 100"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: SET command will remove expire with large string (optimization path) in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r set foo $large_value EX 100"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: SET - use KEEPTTL option, TTL should not be removed in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r set foo bar EX 100"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: SET - use KEEPTTL option, TTL should not be removed after loadaof in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r set foo bar EX 100"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GETEX use of PERSIST option should remove TTL in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r set foo bar EX 100"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GETEX use of PERSIST option should remove TTL after loadaof in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r set foo bar EX 100"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: GETEX propagate as to replica as PERSIST, DEL, or nothing in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r flushall"
+    ("uplevel" body line 4)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with NX option on a key with ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar EX 100"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with NX option on a key without ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with XX option on a key with ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar EX 100"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with XX option on a key without ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with GT option on a key with lower ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar EX 100"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with GT option on a key with higher ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar EX 200"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with GT option on a key without ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with LT option on a key with higher ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar EX 100"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with LT option on a key with lower ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar EX 200"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with LT option on a key without ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with LT and XX option on a key with ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar EX 200"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with LT and XX option on a key without ttl in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with conflicting options: LT GT in tests/unit/expire.tcl
+Expected 'ERR GT and LT options at the same time are not compatible' to equal or match 'READONLY You can't write against a read only replica.'
+[[0;31;49merr[0m]: EXPIRE with conflicting options: NX GT in tests/unit/expire.tcl
+Expected 'ERR NX and XX, GT or LT options at the same time are not compatible' to equal or match 'READONLY You can't write against a read only replica.'
+[[0;31;49merr[0m]: EXPIRE with conflicting options: NX LT in tests/unit/expire.tcl
+Expected 'ERR NX and XX, GT or LT options at the same time are not compatible' to equal or match 'READONLY You can't write against a read only replica.'
+[[0;31;49merr[0m]: EXPIRE with conflicting options: NX XX in tests/unit/expire.tcl
+Expected 'ERR NX and XX, GT or LT options at the same time are not compatible' to equal or match 'READONLY You can't write against a read only replica.'
+[[0;31;49merr[0m]: EXPIRE with unsupported options in tests/unit/expire.tcl
+Expected 'ERR Unsupported option AB' to equal or match 'READONLY You can't write against a read only replica.'
+[[0;31;49merr[0m]: EXPIRE with unsupported options in tests/unit/expire.tcl
+Expected 'ERR Unsupported option AB' to equal or match 'READONLY You can't write against a read only replica.'
+[[0;31;49merr[0m]: EXPIRE with negative expiry in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar EX 100"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with negative expiry on a non-valitale key in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r SET foo bar"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: EXPIRE with non-existed key in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r EXPIRE none 100 NX"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r flushall "
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: SCAN: Lazy-expire should not be wrapped in MULTI/EXEC in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r flushall"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: RANDOMKEY: Lazy-expire should not be wrapped in MULTI/EXEC in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r flushall"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: Lazy expire should increment expired_keys but not expired_keys_active in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r flushall"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: Active expire should increment both expired_keys and expired_keys_active in tests/unit/expire.tcl
+ou can't write against a read only replica.
+READONLY You can't write against a read only replica.
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r flushall"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: nstance has cluster support disabled
+ERR This instance has cluster support disabled
+    while executing
+"[Rn $n] {*}$args"
+    (procedure "R" line 2)
+    invoked from within
+"R $j cluster addslotsrange $slot_start $slot_end"
+    (procedure "continuous_slot_allocation" line 6)
+    invoked from within
+"$slot_allocator $masters"
+    (procedure "cluster_setup" line 16)
+    invoked from within
+"cluster_setup 1 1 continuous_slot_allocation {
+    test "expire scan should skip dictionaries with lot's of empty buckets" {
+        r debug set-activ..."
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel 1 $code "
+[[0;31;49mexception[0m]: Executing test client: key "pid" not known in dictionary.
+key "pid" not known in dictionary
+    while executing
+"dict get $config pid"
+    (procedure "kill_server" line 11)
+    invoked from within
+"kill_server $srv"
+    (procedure "start_server" line 343)
+    invoked from within
+"start_server $options $code"
+    (procedure "start_server" line 75)
+    invoked from within
+"start_server {overrides {cluster-enabled yes cluster-ping-interval 100 cluster-node-timeout 3000 cluster-slot-stats-enabled yes} tags {"expire externa..."
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel 1 $code"
+    (procedure "start_multiple_servers" line 5)
+    invoked from within
+"start_multiple_servers $node_count $options $code"
+    (procedure "start_cluster" line 18)
+    invoked from within
+"start_cluster 1 0 {tags {"expire external:skip cluster"}} {
+    test "expire scan should skip dictionaries with lot's of empty buckets" {
+        r de..."
+    (file "tests/unit/expire.tcl" line 894)
+    invoked from within
+"source $path"
+    (procedure "execute_test_file" line 4)
+    invoked from within
+"execute_test_file $data"
+    (procedure "test_client_main" line 10)
+    invoked from within
+"test_client_main $::test_server_port "

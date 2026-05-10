@@ -1677,12 +1677,22 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
+        if args.len() > 3 {
+            return Err(RequestExecutionError::SyntaxError);
+        }
         ensure_ranged_arity(args, 2, 3, "AUTH", "AUTH [username] password")?;
         let (user, password, single_arg_default_auth) = if args.len() == 2 {
             (b"default".as_slice(), args[1], true)
         } else {
             (args[1], args[2], false)
         };
+        if single_arg_default_auth
+            && self
+                .acl_user_profile(b"default")
+                .is_some_and(|profile| profile.password_hashes.is_empty())
+        {
+            return Err(RequestExecutionError::AuthNotEnabled);
+        }
         match self.authenticate_acl_user(user, password, single_arg_default_auth) {
             AclAuthenticationResult::Authenticated(authenticated_user) => {
                 self.mark_current_client_authenticated_as(&authenticated_user);
@@ -5729,6 +5739,10 @@ impl RequestProcessor {
                         append_error(response_out, message.as_bytes());
                         return Ok(());
                     }
+                    continue;
+                } else if parameter == b"requirepass" {
+                    self.set_default_acl_user_requirepass(&value)?;
+                    self.set_config_value(&parameter, value);
                     continue;
                 } else if parameter == b"user" {
                     let user_tokens = value

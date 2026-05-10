@@ -16,6 +16,7 @@ use crate::AclUserProfile;
 use crate::ClientId;
 use crate::CommandId;
 use crate::RequestTimeSnapshot;
+use crate::acl_password_hash_hex;
 use crate::aof_durability::AppendFsyncPolicy;
 use crate::aof_durability::LiveAofDurabilityConfig;
 use crate::aof_durability::LiveAofDurabilityRuntime;
@@ -5128,6 +5129,26 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(crate) fn set_default_acl_user_requirepass(
+        &self,
+        password: &[u8],
+    ) -> Result<(), RequestExecutionError> {
+        let mut profile = self
+            .acl_user_profile(b"default")
+            .unwrap_or_else(AclUserProfile::default_superuser);
+        profile.password_hashes.clear();
+        if password.is_empty() {
+            profile.nopass = true;
+        } else {
+            profile.enabled = true;
+            profile.nopass = false;
+            profile
+                .password_hashes
+                .insert(acl_password_hash_hex(password));
+        }
+        self.set_acl_user_profile(b"default", profile)
+    }
+
     pub(crate) fn delete_acl_users(
         &self,
         usernames: &[&[u8]],
@@ -5168,19 +5189,19 @@ impl RequestProcessor {
             }
             return AclAuthenticationResult::WrongPass;
         }
+        if single_arg_default_auth
+            && ascii_eq_ignore_case(user, b"default")
+            && self
+                .acl_user_profile(user)
+                .is_some_and(|profile| profile.password_hashes.is_empty())
+        {
+            return AclAuthenticationResult::DefaultPasswordNotConfigured;
+        }
         if let Some(profile) = self.acl_user_profile(user)
             && profile.enabled
             && (profile.nopass || profile.password_matches(password))
         {
             return AclAuthenticationResult::Authenticated(user.to_vec());
-        }
-        if single_arg_default_auth
-            && ascii_eq_ignore_case(user, b"default")
-            && self
-                .acl_user_profile(user)
-                .is_some_and(|profile| profile.password_hashes.is_empty() && !profile.nopass)
-        {
-            return AclAuthenticationResult::DefaultPasswordNotConfigured;
         }
         AclAuthenticationResult::WrongPass
     }

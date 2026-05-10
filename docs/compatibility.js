@@ -121,7 +121,7 @@ function caseMatches(testCase) {
   const commands = testCase.commands || [];
   const commandHit = !state.regexes.length || commands.some(commandMatches);
   const statusHit = !status || testCase.status === status;
-  const haystack = `${testCase.case} ${testCase.unit} ${testCase.details} ${commands.join(" ")}`.toLowerCase();
+  const haystack = `${testCase.case} ${testCase.unit} ${testCase.details} ${testCase.evidence} ${commands.join(" ")}`.toLowerCase();
   const textHit = !text || haystack.includes(text);
   return commandHit && statusHit && textHit;
 }
@@ -162,6 +162,7 @@ function renderSuiteCases(cases) {
           <span class="status-badge ${badgeClass(testCase.status)}">${testCase.status}</span>
           <h3>${testCase.case}</h3>
           <p>${testCase.details || ""}</p>
+          ${testCase.evidence ? `<p class="case-evidence">${testCase.evidence}</p>` : ""}
         </div>
         <div class="case-meta">
           <span>${testCase.unit || "suite"}</span>

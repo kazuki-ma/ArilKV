@@ -1,0 +1,315 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 55771
+[1;37;49mTesting unit/hotkeys[0m
+[[0;31;49merr[0m]: HOTKEYS START - METRICS required in tests/unit/hotkeys.tcl
+Expected 'ERR unknown command' to match '*METRICS parameter is required*' (context: type source line 15 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/hotkeys.tcl cmd {assert_match "*METRICS parameter is required*" $err} proc ::test) 
+[[0;31;49merr[0m]: HOTKEYS START - METRICS with CPU only in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 CPU"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS START - METRICS with NET only in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 NET"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS START - METRICS with both CPU and NET in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS START - Error: session already started in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 CPU"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS START - Error: invalid METRICS count in tests/unit/hotkeys.tcl
+Expected 'ERR unknown command' to match '*METRICS count*' (context: type source line 85 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/hotkeys.tcl cmd {assert_match "*METRICS count*" $err} proc ::test) 
+[[0;31;49merr[0m]: HOTKEYS START - Error: METRICS count mismatch in tests/unit/hotkeys.tcl
+Expected 'ERR unknown command' to match '*METRICS count does not match number of metric types provided*' (context: type source line 92 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/hotkeys.tcl cmd {assert_match "*METRICS count does not match number of metric types provided*" $err} proc ::test) 
+[[0;31;49merr[0m]: HOTKEYS START - Error: METRICS invalid metrics in tests/unit/hotkeys.tcl
+Expected 'ERR unknown command' to match '*METRICS no valid metrics*' (context: type source line 101 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/hotkeys.tcl cmd {assert_match "*METRICS no valid metrics*" $err} proc ::test) 
+[[0;31;49merr[0m]: HOTKEYS START - Error: METRICS same parameter in tests/unit/hotkeys.tcl
+Expected 'ERR unknown command' to match '*METRICS CPU*' (context: type source line 114 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/hotkeys.tcl cmd {assert_match "*METRICS CPU*" $err} proc ::test) 
+[[0;31;49merr[0m]: HOTKEYS START - with COUNT parameter in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET COUNT 20"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS START - Error: COUNT out of range in tests/unit/hotkeys.tcl
+Expected 'ERR unknown command' to match '*COUNT must be between 1 and 64*' (context: type source line 148 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/hotkeys.tcl cmd {assert_match "*COUNT must be between 1 and 64*" $err} proc ::test) 
+[[0;31;49merr[0m]: HOTKEYS START - with DURATION parameter in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 CPU DURATION 1"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS START - with SAMPLE parameter in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET SAMPLE 10"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS START - Error: SAMPLE ratio invalid in tests/unit/hotkeys.tcl
+Expected 'ERR unknown command' to match '*SAMPLE ratio must be positive*' (context: type source line 174 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/hotkeys.tcl cmd {assert_match "*SAMPLE ratio must be positive*" $err} proc ::test) 
+[[0;31;49merr[0m]: HOTKEYS START - Error: SLOTS not allowed in non-cluster mode in tests/unit/hotkeys.tcl
+Expected 'ERR unknown command' to match '*SLOTS parameter cannot be used in non-cluster mode*' (context: type source line 179 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/hotkeys.tcl cmd {assert_match "*SLOTS parameter cannot be used in non-cluster mode*" $err} proc ::test) 
+[[0;31;49merr[0m]: HOTKEYS STOP - basic functionality in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS RESET - basic functionality in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 CPU"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS RESET - Error: session in progress in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 CPU"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS GET - returns nil when not started in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys get"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS GET - sample-ratio field in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET SAMPLE 5"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS - nested commands in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 NET"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS - commands inside MULTI/EXEC in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS - EVAL inside MULTI/EXEC with nested calls in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 NET"
+    ("uplevel" body line 5)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS GET - no conditional fields without selected slots in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET SAMPLE 10"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS detection with biased key access, sample ratio = 1 in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET SAMPLE $sample_ratio"
+    ("uplevel" body line 14)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS detection with biased key access, sample ratio = 100 in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET SAMPLE $sample_ratio"
+    ("uplevel" body line 14)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS detection with biased key access, sample ratio = 500 in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET SAMPLE $sample_ratio"
+    ("uplevel" body line 14)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS detection with biased key access, sample ratio = 1000 in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET SAMPLE $sample_ratio"
+    ("uplevel" body line 14)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS GET - RESP3 returns map with flat array values for hotkeys in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 2 CPU NET"
+    ("uplevel" body line 4)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: HOTKEYS GET - selected-slots returns full range in non-cluster mode in tests/unit/hotkeys.tcl
+n command
+ERR unknown command
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r hotkeys start METRICS 1 CPU"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: nstance has cluster support disabled
+ERR This instance has cluster support disabled
+    while executing
+"[Rn $n] {*}$args"
+    (procedure "R" line 2)
+    invoked from within
+"R $j cluster addslotsrange $slot_start $slot_end"
+    (procedure "continuous_slot_allocation" line 6)
+    invoked from within
+"$slot_allocator $masters"
+    (procedure "cluster_setup" line 16)
+    invoked from within
+"cluster_setup 1 1 continuous_slot_allocation {
+
+    test {HOTKEYS START - with SLOTS parameter in cluster mode} {
+        assert_equal {OK} [R 0 hotke..."
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel 1 $code "
+[[0;31;49mexception[0m]: Executing test client: key "pid" not known in dictionary.
+key "pid" not known in dictionary
+    while executing
+"dict get $config pid"
+    (procedure "kill_server" line 11)
+    invoked from within
+"kill_server $srv"
+    (procedure "start_server" line 343)
+    invoked from within
+"start_server $options $code"
+    (procedure "start_server" line 75)
+    invoked from within
+"start_server {overrides {cluster-enabled yes cluster-ping-interval 100 cluster-node-timeout 3000 cluster-slot-stats-enabled yes} tags {external:skip c..."
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel 1 $code"
+    (procedure "start_multiple_servers" line 5)
+    invoked from within
+"start_multiple_servers $node_count $options $code"
+    (procedure "start_cluster" line 18)
+    invoked from within
+"start_cluster 1 0 {tags {external:skip cluster hotkeys}} {
+
+    test {HOTKEYS START - with SLOTS parameter in cluster mode} {
+        assert_equal {OK..."
+    (file "tests/unit/hotkeys.tcl" line 470)
+    invoked from within
+"source $path"
+    (procedure "execute_test_file" line 4)
+    invoked from within
+"execute_test_file $data"
+    (procedure "test_client_main" line 10)
+    invoked from within
+"test_client_main $::test_server_port "

@@ -1,0 +1,18 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 57674
+[1;37;49mTesting unit/limits[0m
+[[0;31;49merr[0m]: Check if maxclients works refusing connections in tests/unit/limits.tcl
+Expected 50 > 8 && 50 <= 10 (context: type source line 18 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/limits.tcl cmd {assert {$c > 8 && $c <= 10}} proc ::test)
+[[0;32;49mok[0m]: Check for memory leaks (pid 57678) (434 ms)
+[1/1 [0;33;49mdone[0m]: unit/limits (6 seconds)
+
+                   The End
+
+Execution time of different units:
+  6 seconds - unit/limits
+
+[1;31;49m!!! WARNING[0m The following tests failed:
+
+*** [[0;31;49merr[0m]: Check if maxclients works refusing connections in tests/unit/limits.tcl
+Expected 50 > 8 && 50 <= 10 (context: type source line 18 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/limits.tcl cmd {assert {$c > 8 && $c <= 10}} proc ::test)

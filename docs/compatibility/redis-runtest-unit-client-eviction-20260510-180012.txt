@@ -1,0 +1,19 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 53876
+[1;37;49mTesting unit/client-eviction[0m
+[[0;31;49merr[0m]: client evicted due to large argv in tests/unit/client-eviction.tcl
+Expected ![client_exists tst_L4Xf] (context: type source line 64 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/client-eviction.tcl cmd {assert {![client_exists $cname]}} proc ::test)
+[[0;31;49mTIMEOUT[0m]: clients state report follows.
+sock6 => (IN PROGRESS) client evicted due to large query buf
+
+                   The End
+
+Execution time of different units:
+
+[1;31;49m!!! WARNING[0m The following tests failed:
+
+*** [[0;31;49merr[0m]: client evicted due to large argv in tests/unit/client-eviction.tcl
+Expected ![client_exists tst_L4Xf] (context: type source line 64 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/client-eviction.tcl cmd {assert {![client_exists $cname]}} proc ::test)
+*** [[0;31;49mTIMEOUT[0m]: clients state report follows.
+warning: runtest exceeded wall timeout (900s); aborting command

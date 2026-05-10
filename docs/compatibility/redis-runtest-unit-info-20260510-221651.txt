@@ -1,0 +1,93 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 56272
+[1;37;49mTesting unit/info[0m
+[[0;31;49merr[0m]: latencystats: disable/enable in tests/unit/info.tcl
+Expected '' to match '*p50=*,p99=*,p99.9=*' (context: type source line 37 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*p50=*,p99=*,p99.9=*} [latency_percentiles_usec set]} proc ::test) 
+[[0;31;49merr[0m]: latencystats: configure percentiles in tests/unit/info.tcl
+Expected '' to match '*p50=*,p99=*,p99.9=*' (context: type source line 48 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*p50=*,p99=*,p99.9=*} [latency_percentiles_usec set]} proc ::test) 
+[[0;31;49merr[0m]: latencystats: bad configure percentiles in tests/unit/info.tcl
+Expected 'OK' to match 'ERR CONFIG SET failed*' (context: type source line 62 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {ERR CONFIG SET failed*} $e} proc ::test) 
+[[0;31;49merr[0m]: latencystats: blocking commands in tests/unit/info.tcl
+Expected '' to match '*p50=*,p99=*,p99.9=*' (context: type source line 88 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*p50=*,p99=*,p99.9=*} [latency_percentiles_usec blpop]} proc ::test) 
+[[0;31;49merr[0m]: latencystats: subcommands in tests/unit/info.tcl
+Expected '' to match '*p50=*,p99=*,p99.9=*' (context: type source line 98 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*p50=*,p99=*,p99.9=*} [latency_percentiles_usec client\\|id]} proc ::test) 
+[[0;31;49merr[0m]: latencystats: measure latency in tests/unit/info.tcl
+ "p50_debug": no such variable
+can't read "p50_debug": no such variable
+    while executing
+"expr {$p50_debug >= 50000}"
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel 1 [list expr $condition]"
+    (procedure "assert" line 2)
+    invoked from within
+"assert {$p50_debug >= 50000}"
+    ("uplevel" body line 11)
+    invoked from within
+"uplevel 1 $code"
+[[0;32;49mok[0m]: errorstats: failed call authentication error (2 ms)
+[[0;31;49merr[0m]: errorstats: failed call within MULTI/EXEC in tests/unit/info.tcl
+Expected '' to match '*count=1*' (context: type source line 139 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*count=1*} [errorstat ERR]} proc ::test) 
+[[0;31;49merr[0m]: errorstats: failed call within LUA in tests/unit/info.tcl
+Expected '' to match '*calls=1,*,rejected_calls=0,failed_calls=1*' (context: type source line 159 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat xgroup\\|createconsumer]} proc ::test) 
+[[0;32;49mok[0m]: errorstats: failed call NOSCRIPT error (1 ms)
+[[0;31;49merr[0m]: errorstats: failed call NOGROUP error in tests/unit/info.tcl
+Expected '' to match '*calls=1,*,rejected_calls=0,failed_calls=1*' (context: type source line 191 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat xgroup\\|createconsumer]} proc ::test) 
+[[0;32;49mok[0m]: errorstats: rejected call unknown command (1 ms)
+[[0;31;49merr[0m]: errorstats: rejected call within MULTI/EXEC in tests/unit/info.tcl
+Expected 'ERR wrong number of arguments for 'SET' command' to match 'ERR wrong number of arguments for 'set' command' (context: type source line 214 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {ERR wrong number of arguments for 'set' command} $e} proc ::test) 
+[[0;31;49merr[0m]: errorstats: rejected call due to wrong arity in tests/unit/info.tcl
+Expected '' to be equal to '0' (context: type source line 230 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_equal [s total_error_replies] 0} proc ::test)
+[[0;31;49merr[0m]: errorstats: rejected call by OOM error in tests/unit/info.tcl
+Expected '' to be equal to '0' (context: type source line 245 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_equal [s total_error_replies] 0} proc ::test)
+[[0;31;49merr[0m]: errorstats: rejected call by authorization error in tests/unit/info.tcl
+Expected '' to be equal to '0' (context: type source line 260 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_equal [s total_error_replies] 0} proc ::test)
+[[0;31;49mTIMEOUT[0m]: clients state report follows.
+sock6 => (IN PROGRESS) errorstats: blocking commands
+
+                   The End
+
+Execution time of different units:
+
+[1;31;49m!!! WARNING[0m The following tests failed:
+
+*** [[0;31;49merr[0m]: latencystats: disable/enable in tests/unit/info.tcl
+Expected '' to match '*p50=*,p99=*,p99.9=*' (context: type source line 37 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*p50=*,p99=*,p99.9=*} [latency_percentiles_usec set]} proc ::test) 
+*** [[0;31;49merr[0m]: latencystats: configure percentiles in tests/unit/info.tcl
+Expected '' to match '*p50=*,p99=*,p99.9=*' (context: type source line 48 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*p50=*,p99=*,p99.9=*} [latency_percentiles_usec set]} proc ::test) 
+*** [[0;31;49merr[0m]: latencystats: bad configure percentiles in tests/unit/info.tcl
+Expected 'OK' to match 'ERR CONFIG SET failed*' (context: type source line 62 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {ERR CONFIG SET failed*} $e} proc ::test) 
+*** [[0;31;49merr[0m]: latencystats: blocking commands in tests/unit/info.tcl
+Expected '' to match '*p50=*,p99=*,p99.9=*' (context: type source line 88 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*p50=*,p99=*,p99.9=*} [latency_percentiles_usec blpop]} proc ::test) 
+*** [[0;31;49merr[0m]: latencystats: subcommands in tests/unit/info.tcl
+Expected '' to match '*p50=*,p99=*,p99.9=*' (context: type source line 98 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*p50=*,p99=*,p99.9=*} [latency_percentiles_usec client\\|id]} proc ::test) 
+*** [[0;31;49merr[0m]: latencystats: measure latency in tests/unit/info.tcl
+ "p50_debug": no such variable
+can't read "p50_debug": no such variable
+    while executing
+"expr {$p50_debug >= 50000}"
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel 1 [list expr $condition]"
+    (procedure "assert" line 2)
+    invoked from within
+"assert {$p50_debug >= 50000}"
+    ("uplevel" body line 11)
+    invoked from within
+"uplevel 1 $code"
+*** [[0;31;49merr[0m]: errorstats: failed call within MULTI/EXEC in tests/unit/info.tcl
+Expected '' to match '*count=1*' (context: type source line 139 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*count=1*} [errorstat ERR]} proc ::test) 
+*** [[0;31;49merr[0m]: errorstats: failed call within LUA in tests/unit/info.tcl
+Expected '' to match '*calls=1,*,rejected_calls=0,failed_calls=1*' (context: type source line 159 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat xgroup\\|createconsumer]} proc ::test) 
+*** [[0;31;49merr[0m]: errorstats: failed call NOGROUP error in tests/unit/info.tcl
+Expected '' to match '*calls=1,*,rejected_calls=0,failed_calls=1*' (context: type source line 191 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {*calls=1,*,rejected_calls=0,failed_calls=1*} [cmdstat xgroup\\|createconsumer]} proc ::test) 
+*** [[0;31;49merr[0m]: errorstats: rejected call within MULTI/EXEC in tests/unit/info.tcl
+Expected 'ERR wrong number of arguments for 'SET' command' to match 'ERR wrong number of arguments for 'set' command' (context: type source line 214 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_match {ERR wrong number of arguments for 'set' command} $e} proc ::test) 
+*** [[0;31;49merr[0m]: errorstats: rejected call due to wrong arity in tests/unit/info.tcl
+Expected '' to be equal to '0' (context: type source line 230 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_equal [s total_error_replies] 0} proc ::test)
+*** [[0;31;49merr[0m]: errorstats: rejected call by OOM error in tests/unit/info.tcl
+Expected '' to be equal to '0' (context: type source line 245 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_equal [s total_error_replies] 0} proc ::test)
+*** [[0;31;49merr[0m]: errorstats: rejected call by authorization error in tests/unit/info.tcl
+Expected '' to be equal to '0' (context: type source line 260 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info.tcl cmd {assert_equal [s total_error_replies] 0} proc ::test)
+*** [[0;31;49mTIMEOUT[0m]: clients state report follows.

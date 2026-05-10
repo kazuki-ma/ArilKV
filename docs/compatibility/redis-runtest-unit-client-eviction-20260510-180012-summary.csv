@@ -1,0 +1,4 @@
+case,status,details
+redis_runtest_unit_client-eviction_external,FAIL,mode=full; large_memory=0; isolated_unit=unit/client-eviction; timeout_seconds=120; exit_code=124; exit_reason=wall_timeout; wall_timeout_seconds=900; ok=0; err=1; timeout=1; ignore=0; failed_tests=2 
+redis_cli_type_probe,PASS,redis-cli TYPE probe passed 
+redis_cli_scripting_probe,PASS,scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok 

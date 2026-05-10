@@ -1017,6 +1017,14 @@ pub(crate) async fn handle_connection(
                 consumed += 1;
                 continue;
             }
+            if !client_state.authenticated
+                && let Some(error) =
+                    unauthenticated_protocol_limit_error(&receive_buffer[consumed..])
+            {
+                append_error_line(&mut responses, error);
+                stream.write_all(&responses).await?;
+                return Ok(());
+            }
 
             let mut inline_frame = Vec::new();
             let (argument_count, frame_bytes_consumed) = match parse_resp_command_arg_slices_dynamic(
@@ -6376,6 +6384,43 @@ fn consume_negative_multibulk_frame(input: &[u8]) -> Option<usize> {
     None
 }
 
+fn unauthenticated_protocol_limit_error(input: &[u8]) -> Option<&'static [u8]> {
+    const UNAUTHENTICATED_MAX_MULTIBULK_LEN: i64 = 10;
+    const UNAUTHENTICATED_MAX_BULK_LEN: i64 = 16 * 1024;
+
+    if !input.starts_with(b"*") {
+        return None;
+    }
+    let first_line_end = input.iter().position(|byte| *byte == b'\n')?;
+    let first_line = input[1..first_line_end]
+        .strip_suffix(b"\r")
+        .unwrap_or(&input[1..first_line_end]);
+    let multibulk_len = parse_i64_ascii_bytes(first_line)?;
+    if multibulk_len > UNAUTHENTICATED_MAX_MULTIBULK_LEN {
+        return Some(b"ERR Protocol error: unauthenticated multibulk length");
+    }
+
+    let bulk_header_start = first_line_end + 1;
+    if bulk_header_start >= input.len() || input[bulk_header_start] != b'$' {
+        return None;
+    }
+    let Some(relative_bulk_line_end) = input[bulk_header_start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+    else {
+        return None;
+    };
+    let bulk_line_end = bulk_header_start + relative_bulk_line_end;
+    let bulk_line = input[bulk_header_start + 1..bulk_line_end]
+        .strip_suffix(b"\r")
+        .unwrap_or(&input[bulk_header_start + 1..bulk_line_end]);
+    let bulk_len = parse_i64_ascii_bytes(bulk_line)?;
+    if bulk_len > UNAUTHENTICATED_MAX_BULK_LEN {
+        return Some(b"ERR Protocol error: unauthenticated bulk length");
+    }
+    None
+}
+
 fn append_resp_parse_error(response_out: &mut Vec<u8>, error: RespParseError) {
     match error {
         RespParseError::InvalidArrayLength
@@ -8007,6 +8052,22 @@ mod tests {
         let mut out = Vec::new();
         append_integer_frame(&mut out, i64::MIN);
         assert_eq!(out, b":-9223372036854775808\r\n");
+    }
+
+    #[test]
+    fn unauthenticated_protocol_limits_match_redis_error_points() {
+        assert_eq!(
+            unauthenticated_protocol_limit_error(b"*100\r\n"),
+            Some(b"ERR Protocol error: unauthenticated multibulk length".as_slice())
+        );
+        assert_eq!(
+            unauthenticated_protocol_limit_error(b"*1\r\n$100000000\r\n"),
+            Some(b"ERR Protocol error: unauthenticated bulk length".as_slice())
+        );
+        assert_eq!(
+            unauthenticated_protocol_limit_error(b"*1\r\n$4\r\nPING\r\n"),
+            None
+        );
     }
 
     #[test]

@@ -1387,6 +1387,32 @@ fn executes_set_then_get_roundtrip() {
 }
 
 #[test]
+fn auth_requirepass_matches_redis_single_arg_auth_semantics() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_error(
+        &processor,
+        "AUTH foo",
+        b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
+    );
+    assert_command_error(&processor, "AUTH a b c", b"-ERR syntax error\r\n");
+    assert_command_response(&processor, "CONFIG SET requirepass foobar", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "AUTH wrong!",
+        b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
+    );
+    assert_command_response(&processor, "AUTH foobar", b"+OK\r\n");
+    let clear_requirepass = encode_resp(&[b"CONFIG", b"SET", b"requirepass", b""]);
+    assert_eq!(execute_frame(&processor, &clear_requirepass), b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "AUTH foobar",
+        b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
+    );
+}
+
+#[test]
 fn debug_sync_points_can_force_get_set_ordering_between_threads() {
     let _test_guard = debug_concurrency::SYNC_TEST_MUTEX.lock().unwrap();
     debug_concurrency::reset_sync_points();
@@ -13345,14 +13371,18 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
 
     let auth = b"*2\r\n$4\r\nAUTH\r\n$3\r\npwd\r\n";
     let meta = parse_resp_command_arg_slices(auth, &mut args).unwrap();
-    processor
+    let err = processor
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
             DbName::fixture(),
         )
-        .unwrap();
-    assert_eq!(response, b"+OK\r\n");
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n"
+    );
 
     response.clear();
     let select_zero = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";

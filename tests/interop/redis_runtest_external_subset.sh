@@ -164,6 +164,7 @@ dbfilename=""
 appendonly=""
 appendfilename=""
 appendfsync=""
+requirepass=""
 users=()
 
 while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
@@ -186,6 +187,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         appendonly) appendonly="${value}" ;;
         appendfilename) appendfilename="${value}" ;;
         appendfsync) appendfsync="${value}" ;;
+        requirepass) requirepass="${value}" ;;
         user) users+=("${value}") ;;
     esac
 done < "${config_file}"
@@ -206,6 +208,9 @@ export GARNET_CONFIG_FILE="${config_file}"
 [[ -n "${appendonly}" ]] && export GARNET_APPENDONLY="${appendonly}"
 [[ -n "${appendfilename}" ]] && export GARNET_APPENDFILENAME="${appendfilename}"
 [[ -n "${appendfsync}" ]] && export GARNET_APPENDFSYNC="${appendfsync}"
+if [[ -n "${requirepass}" ]]; then
+    users+=("default on >${requirepass} ~* &* +@all")
+fi
 if ((${#users[@]} > 0)); then
     GARNET_USERS="$(printf '%s\n' "${users[@]}")"
     export GARNET_USERS
@@ -221,7 +226,8 @@ cleanup() {
 trap cleanup TERM INT
 
 for _ in $(seq 1 1200); do
-    if redis-cli -h 127.0.0.1 -p "${port}" PING >/dev/null 2>&1; then
+    ping_output="$(redis-cli -h 127.0.0.1 -p "${port}" PING 2>&1 || true)"
+    if [[ "${ping_output}" == *PONG* || "${ping_output}" == *NOAUTH* || "${ping_output}" == *WRONGPASS* ]]; then
         echo " PID: ${child_pid} Server initialized"
         echo "Ready to accept"
         wait "${child_pid}"
@@ -358,7 +364,7 @@ new = """    # If we are running against an external server, we just push the
             $::env(GARNET_EXTERNAL_ALLOW_SKIP) eq "1" &&
             [info exists ::env(GARNET_EXTERNAL_SPAWN_SERVER)] &&
             $::env(GARNET_EXTERNAL_SPAWN_SERVER) eq "1" &&
-            ([lsearch $::tags "repl"] >= 0 || [string first "restart_server" $code] >= 0)} {
+            ([lsearch $::tags "repl"] >= 0 || [string first "restart_server" $code] >= 0 || [llength $overrides] > 0)} {
             set ::tags [lrange $::tags 0 end-[llength $tags]]
             set saved_external $::external
             set ::external 0

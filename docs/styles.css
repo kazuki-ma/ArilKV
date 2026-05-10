@@ -548,6 +548,14 @@ h1 {
   line-height: 1.55;
 }
 
+.suite-case .case-evidence {
+  margin-top: 0.55rem;
+  color: rgba(255, 250, 243, 0.52);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
 .case-meta {
   display: grid;
   align-content: space-between;

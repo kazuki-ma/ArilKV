@@ -1,0 +1,4 @@
+case,status,details
+redis_runtest_unit_aofrw_external,FAIL,mode=full; large_memory=0; isolated_unit=unit/aofrw; timeout_seconds=120; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=900; ok=18; err=4; timeout=0; ignore=0; failed_tests=4 
+redis_cli_type_probe,PASS,redis-cli TYPE probe passed 
+redis_cli_scripting_probe,PASS,scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok 

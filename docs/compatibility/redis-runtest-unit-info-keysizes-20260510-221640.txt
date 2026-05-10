@@ -1,0 +1,163 @@
+Cleanup: may take some time... OK
+Starting test server at port 21079
+[ready]: 55969
+[1;37;49mTesting unit/info-keysizes[0m
+[[0;32;49mok[0m]: KEYSIZES - Test i'th bin counts keysizes between (2^i) and (2^(i+1)-1) as expected  (2 ms)
+[[0;32;49mok[0m]: KEYSIZES - Histogram values of Bytes, Kilo and Mega  (12 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test hyperloglog  (2782 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test List  (79 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test SET  (80 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test ZSET  (84 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test STRING  (80 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test UNLINK (async deletion)  (4 ms)
+[[0;32;49mok[0m]: KEYSIZES - Test complex dataset  (599 ms)
+[[0;31;49merr[0m]: KEYSIZES - Test DEBUG KEYSIZES-HIST-ASSERT command in tests/unit/info-keysizes.tcl
+n subcommand
+ERR unknown subcommand
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r DEBUG KEYSIZES-HIST-ASSERT 1"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: mmand name "::redis::redisHandle1"
+invalid command name "::redis::redisHandle1"
+    while executing
+"$server config set hash-max-listpack-entries 512"
+    (procedure "test_all_keysizes" line 383)
+    invoked from within
+"test_all_keysizes 0"
+    ("uplevel" body line 3)
+    invoked from within
+"uplevel 2 $code"
+[[0;32;49mok[0m]: KEY-MEMORY-STATS - Empty database should have empty key memory histogram (0 ms)
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - List keys should appear in key memory histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:4=1
+
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - All data types should appear in key memory histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:2=1
+db9_distrib_zsets_items:2=1
+db9_distrib_hashes_items:1=1
+
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - Histogram bins should use power-of-2 labels in tests/unit/info-keysizes.tcl
+Expected [regexp {distrib_hashes_sizes:([0-9]+[KMGTPE]?)=} # Keysizes
+db9_distrib_hashes_items:1=1
+ -> label] (context: type source line 866 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info-keysizes.tcl cmd {assert {[regexp {distrib_hashes_sizes:([0-9]+[KMGTPE]?)=} $info -> label]}} proc ::test)
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - DEL should remove key from key memory histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:2=1
+
+[[0;32;49mok[0m]: KEY-MEMORY-STATS - Modifying a list should update key memory histogram (60 ms)
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - FLUSHALL clears key memory histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:2=2,512=1
+
+[[0;32;49mok[0m]: KEY-MEMORY-STATS - Larger allocations go to higher bins (36 ms)
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - EXPIRE eventually removes from histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:2=1
+
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - Test RESTORE adds to histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:4=1
+
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - DEBUG RELOAD preserves key memory histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:4=1
+db9_distrib_hashes_items:1=1
+
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - RENAME should preserve key memory histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:4=1
+
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - Test DEBUG KEYSIZES-HIST-ASSERT command in tests/unit/info-keysizes.tcl
+n subcommand
+ERR unknown subcommand
+    while executing
+"[srv $level "client"] {*}$args"
+    (procedure "r" line 7)
+    invoked from within
+"r DEBUG KEYSIZES-HIST-ASSERT 1"
+    ("uplevel" body line 2)
+    invoked from within
+"uplevel 1 $code"
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - RDB save and restart preserves key memory histogram in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type lists but not found in: # Keysizes
+db9_distrib_lists_items:4=1
+db9_distrib_zsets_items:2=1
+db9_distrib_hashes_items:2=1
+
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - Hash field lazy expiration (listpackex) in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type hashes but not found in: # Keysizes
+db9_distrib_hashes_items:2=1
+
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - Hash field lazy expiration (hashtable) in tests/unit/info-keysizes.tcl
+Expected key memory histogram for type hashes but not found in: # Keysizes
+db9_distrib_hashes_items:2=1
+
+[[0;32;49mok[0m]: Check for memory leaks (pid 55995) (411 ms)
+[[0;32;49mok[0m]: KEY-MEMORY-STATS disabled - key memory histogram should not appear (0 ms)
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - cannot enable key-memory-histograms at runtime when disabled at startup in tests/unit/info-keysizes.tcl
+Expected '' to be equal to 'key-memory-histograms no' (context: type source line 1041 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info-keysizes.tcl cmd {assert_equal [r config get key-memory-histograms] {key-memory-histograms no}} proc ::test)
+[[0;32;49mok[0m]: Check for memory leaks (pid 56021) (416 ms)
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - can disable key-memory-histograms at runtime and distrib_*_sizes disappear in tests/unit/info-keysizes.tcl
+Expected '' to be equal to 'key-memory-histograms yes' (context: type source line 1057 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info-keysizes.tcl cmd {assert_equal [r config get key-memory-histograms] {key-memory-histograms yes}} proc ::test)
+[[0;31;49merr[0m]: KEY-MEMORY-STATS - cannot re-enable key-memory-histograms at runtime after disabling in tests/unit/info-keysizes.tcl
+Expected 'OK' to match '*cannot be enabled at runtime*' (context: type source line 1084 file /Users/kazuki-matsuda/dev/src/github.com/redis/redis/tests/unit/info-keysizes.tcl cmd {assert_match "*cannot be enabled at runtime*" $err} proc ::test) 
+[[0;32;49mok[0m]: Check for memory leaks (pid 56046) (415 ms)
+[[0;31;49merr[0m]: nstance has cluster support disabled
+ERR This instance has cluster support disabled
+    while executing
+"[Rn $n] {*}$args"
+    (procedure "R" line 2)
+    invoked from within
+"R $j cluster addslotsrange $slot_start $slot_end"
+    (procedure "continuous_slot_allocation" line 6)
+    invoked from within
+"$slot_allocator $masters"
+    (procedure "cluster_setup" line 16)
+    invoked from within
+"cluster_setup 1 1 continuous_slot_allocation {
+
+    test "SLOT-ALLOCSIZE - Test DEBUG ALLOCSIZE-SLOTS-ASSERT command" {
+        r DEBUG ALLOCSIZE-SLOT..."
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel 1 $code "
+[[0;31;49mexception[0m]: Executing test client: key "pid" not known in dictionary.
+key "pid" not known in dictionary
+    while executing
+"dict get $config pid"
+    (procedure "kill_server" line 11)
+    invoked from within
+"kill_server $srv"
+    (procedure "start_server" line 343)
+    invoked from within
+"start_server $options $code"
+    (procedure "start_server" line 75)
+    invoked from within
+"start_server {overrides {cluster-enabled yes cluster-ping-interval 100 cluster-node-timeout 3000 cluster-slot-stats-enabled yes} tags {external:skip c..."
+    ("uplevel" body line 1)
+    invoked from within
+"uplevel 1 $code"
+    (procedure "start_multiple_servers" line 5)
+    invoked from within
+"start_multiple_servers $node_count $options $code"
+    (procedure "start_cluster" line 18)
+    invoked from within
+"start_cluster 1 0 {tags {external:skip cluster needs:debug} overrides {cluster-slot-stats-enabled yes}} {
+
+    test "SLOT-ALLOCSIZE - Test DEBUG ALLOC..."
+    (file "tests/unit/info-keysizes.tcl" line 1092)
+    invoked from within
+"source $path"
+    (procedure "execute_test_file" line 4)
+    invoked from within
+"execute_test_file $data"
+    (procedure "test_client_main" line 10)
+    invoked from within
+"test_client_main $::test_server_port "
