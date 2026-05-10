@@ -1,7 +1,7 @@
 schema_version: 1
 last_updated: "2026-05-10"
 source: "redis_runtest_external_full"
-source_log: "docs/compatibility/redis-runtest-full-20260510-092535.log"
+source_log: "docs/compatibility/redis-runtest-full-20260510-092535.txt"
 summary:
   redis_command_count: 267
   arilkv_declared_count: 259
