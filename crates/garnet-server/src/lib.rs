@@ -502,6 +502,7 @@ pub(crate) struct ClientHotMetrics {
     total_output_bytes: AtomicU64,
     total_commands: AtomicU64,
     last_activity_micros: AtomicU64,
+    killed: AtomicBool,
 }
 
 impl ClientHotMetrics {
@@ -511,6 +512,7 @@ impl ClientHotMetrics {
             total_output_bytes: AtomicU64::new(0),
             total_commands: AtomicU64::new(0),
             last_activity_micros: AtomicU64::new(now_micros),
+            killed: AtomicBool::new(false),
         }
     }
 
@@ -553,6 +555,16 @@ impl ClientHotMetrics {
         cached_request_instant_from_elapsed_micros(
             self.last_activity_micros.load(Ordering::Relaxed),
         )
+    }
+
+    #[inline]
+    pub(crate) fn mark_killed(&self) {
+        self.killed.store(true, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(crate) fn is_killed(&self) -> bool {
+        self.killed.load(Ordering::Relaxed)
     }
 }
 
@@ -1045,6 +1057,7 @@ impl ServerMetrics {
                 && !client.killed
             {
                 client.killed = true;
+                client.hot_metrics.mark_killed();
                 self.visible_connected_clients
                     .fetch_sub(1, Ordering::Relaxed);
             }
@@ -1121,6 +1134,23 @@ impl ServerMetrics {
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.hot_metrics.observe_output(bytes, now_micros);
+            if client.reply_buffer_size == REPLY_BUFFER_CHUNK_BYTES {
+                client.observe_reply_bytes_at_chunk_capacity(bytes as usize, now);
+                return;
+            }
+            let settings = self.reply_buffer_settings_snapshot();
+            client.observe_reply_bytes(bytes as usize, settings, now);
+        }
+    }
+
+    pub(crate) fn observe_client_reply_buffer_bytes(&self, client_id: ClientId, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let now = current_request_activity_instant();
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
             if client.reply_buffer_size == REPLY_BUFFER_CHUNK_BYTES {
                 client.observe_reply_bytes_at_chunk_capacity(bytes as usize, now);
                 return;
@@ -1324,6 +1354,7 @@ impl ServerMetrics {
                 }
             }
             client.killed = true;
+            client.hot_metrics.mark_killed();
             self.visible_connected_clients
                 .fetch_sub(1, Ordering::Relaxed);
             killed.push(*client_id);

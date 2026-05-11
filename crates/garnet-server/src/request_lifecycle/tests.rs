@@ -1269,10 +1269,16 @@ fn parse_scan_match_count_options_rejects_zero_count() {
 
 #[test]
 fn derives_default_string_store_shards_from_owner_thread_hint() {
-    assert_eq!(string_store_shard_count_from_values(None, None), 2);
+    assert_eq!(
+        string_store_shard_count_from_values(None, None),
+        super::DEFAULT_STRING_STORE_SHARDS
+    );
     assert_eq!(string_store_shard_count_from_values(Some(4), None), 4);
     assert_eq!(string_store_shard_count_from_values(None, Some(1)), 1);
-    assert_eq!(string_store_shard_count_from_values(None, Some(8)), 2);
+    assert_eq!(
+        string_store_shard_count_from_values(None, Some(8)),
+        super::DEFAULT_STRING_STORE_SHARDS
+    );
     assert_eq!(string_store_shard_count_from_values(Some(3), Some(8)), 3);
 }
 

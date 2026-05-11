@@ -29,6 +29,7 @@ use tokio::time::Instant as TokioInstant;
 use tokio::time::sleep;
 use tsavorite::AofOffset;
 
+use crate::ClientHotMetrics;
 use crate::ClientId;
 use crate::ClientKillFilter;
 use crate::ClientTypeFilter;
@@ -934,7 +935,7 @@ pub(crate) async fn handle_connection(
 
     loop {
         processor.set_connected_clients(metrics.connected_client_count());
-        if metrics.is_client_killed(client_id) {
+        if client_hot_metrics.is_killed() {
             return Ok(());
         }
         flush_monitor_events(&mut stream, &mut monitor_receiver).await?;
@@ -955,7 +956,7 @@ pub(crate) async fn handle_connection(
             {
                 ConnectionReadWake::BytesRead(bytes_read) => bytes_read,
                 ConnectionReadWake::PendingPubsub | ConnectionReadWake::KilledClientPoll => {
-                    if metrics.is_client_killed(client_id) {
+                    if client_hot_metrics.is_killed() {
                         return Ok(());
                     }
                     flush_pending_pubsub_messages(
@@ -1132,8 +1133,7 @@ pub(crate) async fn handle_connection(
             if argument_count == 0 {
                 responses.extend_from_slice(b"-ERR unknown command\r\n");
                 let _ = finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1236,8 +1236,7 @@ pub(crate) async fn handle_connection(
                     }
                 }
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1262,8 +1261,7 @@ pub(crate) async fn handle_connection(
                     &mut responses,
                 );
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1286,8 +1284,7 @@ pub(crate) async fn handle_connection(
                     monitor_receiver = Some(metrics.monitor_subscribe());
                 }
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1306,8 +1303,7 @@ pub(crate) async fn handle_connection(
                 append_simple_string(&mut responses, b"OK");
                 command_outcome.disconnect_after_reply = true;
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1326,8 +1322,7 @@ pub(crate) async fn handle_connection(
             {
                 append_resp2_subscribed_context_error(&mut responses, command_name);
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1370,8 +1365,7 @@ pub(crate) async fn handle_connection(
                     }
                 }
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1415,8 +1409,7 @@ pub(crate) async fn handle_connection(
                     }
                 }
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1451,8 +1444,7 @@ pub(crate) async fn handle_connection(
                 }
                 append_simple_string(&mut responses, b"OK");
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1482,8 +1474,7 @@ pub(crate) async fn handle_connection(
                     }
                 }
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1510,8 +1501,7 @@ pub(crate) async fn handle_connection(
                     }
                 }
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1545,8 +1535,7 @@ pub(crate) async fn handle_connection(
                     append_simple_string(&mut responses, b"OK");
                 }
                 disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
+                    client_hot_metrics.as_ref(),
                     &mut responses,
                     response_mark,
                     &mut client_state,
@@ -1575,8 +1564,7 @@ pub(crate) async fn handle_connection(
                 if let Some(redirection_error) = redirection_error {
                     append_error_line(&mut responses, redirection_error.as_bytes());
                     disconnect_after_write |= finalize_client_command(
-                        &metrics,
-                        client_id,
+                        client_hot_metrics.as_ref(),
                         &mut responses,
                         response_mark,
                         &mut client_state,
@@ -1628,8 +1616,7 @@ pub(crate) async fn handle_connection(
                             }
                         }
                         disconnect_after_write |= finalize_client_command(
-                            &metrics,
-                            client_id,
+                            client_hot_metrics.as_ref(),
                             &mut responses,
                             response_mark,
                             &mut client_state,
@@ -1856,8 +1843,7 @@ pub(crate) async fn handle_connection(
                                 );
                                 RequestExecutionError::BusyScript.append_resp_error(&mut responses);
                                 disconnect_after_write |= finalize_client_command(
-                                    &metrics,
-                                    client_id,
+                                    client_hot_metrics.as_ref(),
                                     &mut responses,
                                     response_mark,
                                     &mut client_state,
@@ -1877,8 +1863,7 @@ pub(crate) async fn handle_connection(
                                 processor.record_error_reply(error.info_error_name());
                                 error.append_resp_error(&mut responses);
                                 disconnect_after_write |= finalize_client_command(
-                                    &metrics,
-                                    client_id,
+                                    client_hot_metrics.as_ref(),
                                     &mut responses,
                                     response_mark,
                                     &mut client_state,
@@ -1897,8 +1882,7 @@ pub(crate) async fn handle_connection(
                             transaction.aborted = true;
                             responses.extend_from_slice(b"-ERR unknown command\r\n");
                             disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
+                                client_hot_metrics.as_ref(),
                                 &mut responses,
                                 response_mark,
                                 &mut client_state,
@@ -1916,8 +1900,7 @@ pub(crate) async fn handle_connection(
                             transaction.aborted = true;
                             append_wrong_arity_error_for_command(&mut responses, command);
                             disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
+                                client_hot_metrics.as_ref(),
                                 &mut responses,
                                 response_mark,
                                 &mut client_state,
@@ -1964,8 +1947,7 @@ pub(crate) async fn handle_connection(
                                     }
                                 }
                                 disconnect_after_write |= finalize_client_command(
-                                    &metrics,
-                                    client_id,
+                                    client_hot_metrics.as_ref(),
                                     &mut responses,
                                     response_mark,
                                     &mut client_state,
@@ -1987,8 +1969,7 @@ pub(crate) async fn handle_connection(
                                 b"ERR Command not allowed inside a transaction",
                             );
                             disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
+                                client_hot_metrics.as_ref(),
                                 &mut responses,
                                 response_mark,
                                 &mut client_state,
@@ -2013,8 +1994,7 @@ pub(crate) async fn handle_connection(
                                     b"OOM command not allowed when used memory > 'maxmemory'.",
                                 );
                                 disconnect_after_write |= finalize_client_command(
-                                    &metrics,
-                                    client_id,
+                                    client_hot_metrics.as_ref(),
                                     &mut responses,
                                     response_mark,
                                     &mut client_state,
@@ -2034,8 +2014,7 @@ pub(crate) async fn handle_connection(
                                 processor.record_error_reply(error.info_error_name());
                                 error.append_resp_error(&mut responses);
                                 disconnect_after_write |= finalize_client_command(
-                                    &metrics,
-                                    client_id,
+                                    client_hot_metrics.as_ref(),
                                     &mut responses,
                                     response_mark,
                                     &mut client_state,
@@ -2058,8 +2037,7 @@ pub(crate) async fn handle_connection(
                                 b"-READONLY You can't write against a read only replica.\r\n",
                             );
                             disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
+                                client_hot_metrics.as_ref(),
                                 &mut responses,
                                 response_mark,
                                 &mut client_state,
@@ -2082,8 +2060,7 @@ pub(crate) async fn handle_connection(
                                 b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
                             );
                             disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
+                                client_hot_metrics.as_ref(),
                                 &mut responses,
                                 response_mark,
                                 &mut client_state,
@@ -2185,8 +2162,7 @@ pub(crate) async fn handle_connection(
                                 b"-MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'.\r\n",
                             );
                             disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
+                                client_hot_metrics.as_ref(),
                                 &mut responses,
                                 response_mark,
                                 &mut client_state,
@@ -2208,8 +2184,7 @@ pub(crate) async fn handle_connection(
                                 b"-READONLY You can't write against a read only replica.\r\n",
                             );
                             disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
+                                client_hot_metrics.as_ref(),
                                 &mut responses,
                                 response_mark,
                                 &mut client_state,
@@ -2237,8 +2212,7 @@ pub(crate) async fn handle_connection(
                                 b"-NOREPLICAS Not enough good replicas to write.\r\n",
                             );
                             disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
+                                client_hot_metrics.as_ref(),
                                 &mut responses,
                                 response_mark,
                                 &mut client_state,
@@ -2341,6 +2315,7 @@ pub(crate) async fn handle_connection(
                             let execution = execute_blocking_frame_on_owner_thread(
                                 &processor,
                                 &metrics,
+                                client_hot_metrics.as_ref(),
                                 &owner_thread_pool,
                                 &replication,
                                 &args[..argument_count],
@@ -2536,8 +2511,7 @@ pub(crate) async fn handle_connection(
                         commands_processed =
                             command_execution_delta(&processor, execution_count_before, command);
                         disconnect_after_write |= finalize_client_command(
-                            &metrics,
-                            client_id,
+                            client_hot_metrics.as_ref(),
                             &mut responses,
                             response_mark,
                             &mut client_state,
@@ -2570,8 +2544,7 @@ pub(crate) async fn handle_connection(
             commands_processed =
                 command_execution_delta(&processor, execution_count_before, command);
             disconnect_after_write |= finalize_client_command(
-                &metrics,
-                client_id,
+                client_hot_metrics.as_ref(),
                 &mut responses,
                 response_mark,
                 &mut client_state,
@@ -2621,6 +2594,7 @@ pub(crate) async fn handle_connection(
         if !responses.is_empty() {
             // TLA+ : ServerProcessOne (reply publication)
             // Makes command replies visible to the client-side read loop.
+            metrics.observe_client_reply_buffer_bytes(client_id, responses.len() as u64);
             stream.write_all(&responses).await?;
         }
         // Flush any pubsub messages that were generated during command
@@ -2818,6 +2792,7 @@ async fn execute_frame_on_owner_thread_async(
 async fn execute_blocking_frame_on_owner_thread(
     processor: &Arc<RequestProcessor>,
     metrics: &Arc<ServerMetrics>,
+    client_hot_metrics: &ClientHotMetrics,
     owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     replication: &Arc<RedisReplicationCoordinator>,
     args: &[ArgSlice],
@@ -2857,7 +2832,7 @@ async fn execute_blocking_frame_on_owner_thread(
         processor.clear_client_unblock_request(client_id);
     }
     loop {
-        if metrics.is_client_killed(client_id) {
+        if client_hot_metrics.is_killed() {
             clear_blocking_request_state(processor, metrics, client_id, blocked, &blocking_keys);
             if pause_blocked_marker_active {
                 processor.unregister_pause_blocked_blocking_client(client_id);
@@ -5377,8 +5352,7 @@ fn maybe_apply_auth_side_effects(
 
 #[allow(clippy::too_many_arguments)]
 fn finalize_client_command(
-    metrics: &ServerMetrics,
-    client_id: ClientId,
+    client_hot_metrics: &ClientHotMetrics,
     responses: &mut Vec<u8>,
     response_mark: usize,
     client_state: &mut ClientConnectionState,
@@ -5412,11 +5386,13 @@ fn finalize_client_command(
     }
 
     let output_delta = responses.len().saturating_sub(response_mark) as u64;
-    metrics.add_client_output_bytes(client_id, output_delta);
+    if output_delta > 0 {
+        client_hot_metrics.observe_output(output_delta, cached_monotonic_micros());
+    }
 
     let minimum_delta = if command == CommandId::Client { 1 } else { 0 };
     let applied_commands = commands_processed.max(minimum_delta);
-    metrics.add_client_commands_processed(client_id, applied_commands);
+    client_hot_metrics.observe_commands(applied_commands);
 
     outcome.disconnect_after_reply
 }
@@ -6404,12 +6380,9 @@ fn unauthenticated_protocol_limit_error(input: &[u8]) -> Option<&'static [u8]> {
     if bulk_header_start >= input.len() || input[bulk_header_start] != b'$' {
         return None;
     }
-    let Some(relative_bulk_line_end) = input[bulk_header_start..]
+    let relative_bulk_line_end = input[bulk_header_start..]
         .iter()
-        .position(|byte| *byte == b'\n')
-    else {
-        return None;
-    };
+        .position(|byte| *byte == b'\n')?;
     let bulk_line_end = bulk_header_start + relative_bulk_line_end;
     let bulk_line = input[bulk_header_start + 1..bulk_line_end]
         .strip_suffix(b"\r")

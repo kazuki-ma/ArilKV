@@ -68,9 +68,7 @@ fn resolve_tokio_worker_threads(
     if let Some(explicit) = parse_tokio_worker_threads(raw)? {
         return Ok(explicit);
     }
-    Ok(available_parallelism
-        .max(1)
-        .min(DEFAULT_MAX_TOKIO_WORKER_THREADS))
+    Ok(available_parallelism.clamp(1, DEFAULT_MAX_TOKIO_WORKER_THREADS))
 }
 
 #[cfg(test)]

@@ -147,7 +147,10 @@ const DEFAULT_SET_MAX_LISTPACK_VALUE: usize = 64;
 const DEFAULT_SET_MAX_INTSET_ENTRIES: usize = 512;
 const DEFAULT_PROTO_MAX_BULK_LEN: usize = 512 * 1024 * 1024;
 const DEFAULT_CONFIGURED_DATABASES: usize = 16;
+#[cfg(debug_assertions)]
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
+#[cfg(not(debug_assertions))]
+const DEFAULT_STRING_STORE_SHARDS: usize = 32;
 const DEFAULT_SLOWLOG_THRESHOLD_MICROS: i64 = 10_000;
 const DEFAULT_SLOWLOG_MAX_LEN: usize = 128;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
