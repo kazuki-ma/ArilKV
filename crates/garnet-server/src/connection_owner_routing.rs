@@ -153,51 +153,36 @@ pub(crate) fn execute_frame_on_owner_thread(
     owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     args: &[ArgSlice],
     command: CommandId,
-    frame: &[u8],
+    _frame: &[u8],
     request_time_snapshot: RequestTimeSnapshot,
     client_no_touch: bool,
     client_tracks_reads: bool,
     client_id: Option<ClientId>,
     selected_db: DbName,
 ) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
-    if owner_thread_pool.is_inline_execution() {
-        let _request_time_scope = RequestTimeSnapshotScope::enter(request_time_snapshot);
-        let mut response = Vec::new();
-        let execution_effects = processor
-            .execute_with_client_tracking_context_and_effects_in_db(
-                args,
-                &mut response,
-                client_no_touch,
-                client_tracks_reads,
-                client_id,
-                false,
-                selected_db,
-            )
-            .map_err(OwnerThreadExecutionError::Request)?;
-        return Ok(OwnedExecutionOutcome {
-            frame_response: response,
-            connection_effects: execution_effects.connection_effects,
-            deferred_replication_frames: execution_effects.deferred_replication_frames,
-        });
-    }
-
     let shard_index = owner_shard_for_command(processor, args, command);
-    let owned_args = capture_owned_frame_args(frame, args).map_err(map_routed_owner_error)?;
-    let routed_processor = Arc::clone(processor);
     owner_thread_pool
-        .execute_sync(shard_index, move || {
-            execute_owned_frame_args_via_processor(
-                &routed_processor,
-                &owned_args,
-                request_time_snapshot,
-                client_no_touch,
-                client_tracks_reads,
-                client_id,
-                selected_db,
-            )
+        .execute_sync(shard_index, || {
+            let _request_time_scope = RequestTimeSnapshotScope::enter(request_time_snapshot);
+            let mut response = Vec::new();
+            let execution_effects = processor
+                .execute_with_client_tracking_context_and_effects_in_db(
+                    args,
+                    &mut response,
+                    client_no_touch,
+                    client_tracks_reads,
+                    client_id,
+                    false,
+                    selected_db,
+                )
+                .map_err(OwnerThreadExecutionError::Request)?;
+            return Ok(OwnedExecutionOutcome {
+                frame_response: response,
+                connection_effects: execution_effects.connection_effects,
+                deferred_replication_frames: execution_effects.deferred_replication_frames,
+            });
         })
         .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?
-        .map_err(map_routed_owner_error)
 }
 
 #[cfg(test)]

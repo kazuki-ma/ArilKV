@@ -80,10 +80,9 @@ THREADS=8 CONNS=16 REQUESTS=50000 PRELOAD_REQUESTS=50000 PIPELINE=1 \
   benches/docker_linux_perf_diff_profile.sh
 ```
 
-Garnet uses inline owner execution by default. This is the preferred
-single-process performance path and avoids the older listener-to-owner
-cross-thread handoff. Set `GARNET_OWNER_EXECUTION_INLINE=0` only when
-intentionally measuring that legacy pooled-owner path.
+Garnet uses owner-node execution as its only server startup path. Each bind
+address runs on its own current-thread runtime, and `GARNET_OWNER_NODE_COUNT`
+expands one base bind address into sequential owner-node ports.
 
 For a quick smoke after a fresh checkout:
 

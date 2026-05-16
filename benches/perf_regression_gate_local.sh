@@ -17,7 +17,6 @@ SIZE_RANGE="${SIZE_RANGE:-1-1024}"
 HASH_INDEX_SIZE_BITS="${HASH_INDEX_SIZE_BITS:-25}"
 MAX_IN_MEMORY_PAGES="${MAX_IN_MEMORY_PAGES:-1048576}"
 STRING_STORE_SHARDS="${STRING_STORE_SHARDS:-}"
-OWNER_THREADS="${OWNER_THREADS:-${GARNET_STRING_OWNER_THREADS:-}}"
 RUNS="${RUNS:-5}"
 OUTDIR="${OUTDIR:-/tmp/garnet-perf-gate-$(date +%Y%m%d-%H%M%S)}"
 
@@ -73,10 +72,6 @@ start_server() {
     if [[ -n "${STRING_STORE_SHARDS}" ]]; then
         env_args+=("GARNET_TSAVORITE_STRING_STORE_SHARDS=${STRING_STORE_SHARDS}")
     fi
-    if [[ -n "${OWNER_THREADS}" ]]; then
-        env_args+=("GARNET_STRING_OWNER_THREADS=${OWNER_THREADS}")
-    fi
-
     env "${env_args[@]}" "${SERVER_BIN}" >"${server_log}" 2>&1 &
     SERVER_PID=$!
 

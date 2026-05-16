@@ -211,11 +211,6 @@ It can map thread hints (`--minthreads` / `--maxthreads`) into
 `CACHE_BENCH_GARNET_AUTO_STRING_STORE_SHARDS=1` is set and
 `GARNET_TSAVORITE_STRING_STORE_SHARDS` is not explicitly set.
 
-It can also map thread hints into owner-thread routing via
-`GARNET_STRING_OWNER_THREADS` when
-`CACHE_BENCH_GARNET_AUTO_OWNER_THREADS=1` is set and
-`GARNET_STRING_OWNER_THREADS` is not explicitly set.
-
 For lock-striping experiments on string keys, set
 `GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `2`) to a higher value, e.g.
 `8` or `16`.
@@ -223,11 +218,9 @@ Server-side hash-index default sizing is
 `GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS=16` (when unset); override it explicitly
 for A/B runs.
 
-Owner-thread routing uses inline execution by default, so the listener executes
-single-key string command work directly on the owner path without a cross-thread
-handoff. Set `GARNET_OWNER_EXECUTION_INLINE=0` only for legacy pooled-owner
-experiments, and set `GARNET_STRING_OWNER_THREADS=<n>` when explicitly testing
-pooled owner-thread counts.
+Owner-node execution is the only server startup path. Use
+`GARNET_OWNER_NODE_COUNT=<n>` or explicit `GARNET_BIND_ADDRS` when benchmarking
+multi-owner, multi-port cluster mode.
 
 ### Minimal run (single benchmark)
 
@@ -351,12 +344,11 @@ IPv6 fallback noise.
 ## String-store shard policy matrix (local)
 
 Use `sweep_string_store_policy_matrix_local.sh` to run a workload matrix over
-shard counts and owner-thread modes, then emit recommendation artifacts.
+shard counts, then emit recommendation artifacts.
 
 ```bash
 cd .
 chmod +x benches/sweep_string_store_policy_matrix_local.sh
-OWNER_THREAD_COUNTS="0 16" \
 WORKLOAD_MATRIX="w1:1:4:20000 w2:4:8:20000 w3:8:16:20000" \
 ./benches/sweep_string_store_policy_matrix_local.sh
 ```
@@ -447,14 +439,8 @@ Optional Garnet tuning env vars are forwarded into the container, including:
 
 - `GARNET_TSAVORITE_STRING_STORE_SHARDS`
 - `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES`
-- `GARNET_STRING_OWNER_THREADS`
 - `GARNET_OWNER_THREAD_PINNING`
 - `GARNET_OWNER_THREAD_CPU_SET`
-- `GARNET_OWNER_EXECUTION_INLINE`
-
-`GARNET_OWNER_EXECUTION_INLINE` defaults to inline owner execution in normal
-server startup. Set it to `0` only when intentionally measuring the older
-cross-thread owner-pool path.
 
 Outputs are still written under `benches/results/` on the host.
 Latest published differential analysis:

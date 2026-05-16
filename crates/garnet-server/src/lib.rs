@@ -55,7 +55,6 @@ pub use command_dispatch::dispatch_from_resp_args;
 pub use command_spec::CommandId;
 pub(crate) use connection_handler::build_owner_thread_pool;
 pub(crate) use connection_handler::handle_connection;
-pub use connection_handler::set_owner_execution_inline_default;
 #[cfg(test)]
 pub(crate) use connection_owner_routing::RoutedExecutionError;
 #[cfg(test)]
@@ -319,6 +318,24 @@ pub struct ServerMetrics {
     reply_buffer_resizing_enabled: AtomicBool,
     reply_buffer_copy_avoidance_enabled: AtomicBool,
     monitor_broadcast: broadcast::Sender<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClientMetricsHandle {
+    client_id: ClientId,
+    hot_metrics: Arc<ClientHotMetrics>,
+}
+
+impl ClientMetricsHandle {
+    #[inline]
+    pub(crate) fn client_id(&self) -> ClientId {
+        self.client_id
+    }
+
+    #[inline]
+    pub(crate) fn hot_metrics(&self) -> &Arc<ClientHotMetrics> {
+        &self.hot_metrics
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -881,13 +898,27 @@ impl ServerMetrics {
         remote_addr: Option<SocketAddr>,
         local_addr: Option<SocketAddr>,
     ) -> ClientId {
+        self.register_client_with_handle(remote_addr, local_addr)
+            .client_id
+    }
+
+    pub(crate) fn register_client_with_handle(
+        &self,
+        remote_addr: Option<SocketAddr>,
+        local_addr: Option<SocketAddr>,
+    ) -> ClientMetricsHandle {
         let id = ClientId::new(self.next_client_id.fetch_add(1, Ordering::Relaxed) + 1);
+        let client = ClientRuntimeInfo::new(remote_addr, local_addr);
+        let hot_metrics = Arc::clone(&client.hot_metrics);
         if let Ok(mut clients) = self.clients.lock() {
-            clients.insert(id, ClientRuntimeInfo::new(remote_addr, local_addr));
+            clients.insert(id, client);
             self.visible_connected_clients
                 .fetch_add(1, Ordering::Relaxed);
         }
-        id
+        ClientMetricsHandle {
+            client_id: id,
+            hot_metrics,
+        }
     }
 
     pub fn unregister_client(&self, client_id: ClientId) {
@@ -1158,6 +1189,20 @@ impl ServerMetrics {
             let settings = self.reply_buffer_settings_snapshot();
             client.observe_reply_bytes(bytes as usize, settings, now);
         }
+    }
+
+    pub(crate) fn observe_client_output_with_handle(
+        &self,
+        client_metrics: &ClientMetricsHandle,
+        bytes: u64,
+    ) {
+        if bytes == 0 {
+            return;
+        }
+        client_metrics
+            .hot_metrics
+            .observe_output(bytes, cached_monotonic_micros());
+        self.observe_client_reply_buffer_bytes(client_metrics.client_id, bytes);
     }
 
     pub fn update_client_buffer_info(

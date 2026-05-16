@@ -22,7 +22,6 @@ PORT="${PORT:-16389}"
 HASH_INDEX_SIZE_BITS="${HASH_INDEX_SIZE_BITS:-25}"
 MAX_IN_MEMORY_PAGES="${MAX_IN_MEMORY_PAGES:-262144}"
 STRING_STORE_SHARDS="${STRING_STORE_SHARDS:-}"
-OWNER_THREADS="${OWNER_THREADS:-}"
 
 if [[ ! -x "${GATE_SCRIPT}" ]]; then
     echo "missing executable perf gate script: ${GATE_SCRIPT}" >&2
@@ -83,10 +82,6 @@ run_gate() {
     if [[ -n "${STRING_STORE_SHARDS}" ]]; then
         gate_env+=("STRING_STORE_SHARDS=${STRING_STORE_SHARDS}")
     fi
-    if [[ -n "${OWNER_THREADS}" ]]; then
-        gate_env+=("OWNER_THREADS=${OWNER_THREADS}")
-    fi
-
     env "${gate_env[@]}" "${GATE_SCRIPT}" >/dev/null
 }
 

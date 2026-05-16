@@ -4900,6 +4900,26 @@ fn client_last_activity_only_tracks_input_and_output_not_internal_bookkeeping() 
 }
 
 #[test]
+fn registered_client_metrics_handle_updates_hot_counters_without_lookup() {
+    let metrics = ServerMetrics::default();
+    let client_metrics = metrics.register_client_with_handle(None, None);
+    let client_id = client_metrics.client_id();
+
+    assert_eq!(metrics.connected_client_count(), 1);
+    client_metrics
+        .hot_metrics()
+        .observe_input(11, cached_monotonic_micros());
+    metrics.observe_client_output_with_handle(&client_metrics, 13);
+    client_metrics.hot_metrics().observe_commands(17);
+
+    let clients = metrics.clients.lock().unwrap();
+    let client = clients.get(&client_id).unwrap();
+    assert_eq!(client.hot_metrics.total_input_bytes(), 11);
+    assert_eq!(client.hot_metrics.total_output_bytes(), 13);
+    assert_eq!(client.hot_metrics.total_commands(), 17);
+}
+
+#[test]
 fn connected_client_count_tracks_mark_killed_and_unregister_without_double_counting() {
     let metrics = ServerMetrics::default();
     let client_a = metrics.register_client(None, None);

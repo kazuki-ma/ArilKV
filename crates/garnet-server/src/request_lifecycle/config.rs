@@ -11,9 +11,7 @@ use super::GARNET_SCRIPTING_ENABLED_ENV;
 use super::GARNET_SCRIPTING_MAX_EXECUTION_MILLIS_ENV;
 use super::GARNET_SCRIPTING_MAX_MEMORY_BYTES_ENV;
 use super::GARNET_SCRIPTING_MAX_SCRIPT_BYTES_ENV;
-use super::GARNET_STRING_OWNER_THREADS_ENV;
 use super::GARNET_STRING_STORE_SHARDS_ENV;
-use super::SINGLE_OWNER_THREAD_STRING_STORE_SHARDS;
 use super::ScriptingRuntimeConfig;
 
 pub(super) fn tsavorite_config_from_env() -> TsavoriteKvConfig {
@@ -54,8 +52,7 @@ pub(super) fn tsavorite_config_from_values(
 pub(super) fn string_store_shard_count_from_env() -> usize {
     let explicit_shards =
         parse_env_usize(GARNET_STRING_STORE_SHARDS_ENV).filter(|count| *count > 0);
-    let owner_threads = parse_env_usize(GARNET_STRING_OWNER_THREADS_ENV).filter(|count| *count > 0);
-    string_store_shard_count_from_values(explicit_shards, owner_threads)
+    string_store_shard_count_from_values(explicit_shards)
 }
 
 pub(super) fn scripting_enabled_from_env() -> bool {
@@ -89,19 +86,12 @@ pub(super) fn scripting_runtime_config_from_values(
     }
 }
 
-pub(super) fn string_store_shard_count_from_values(
-    explicit_shards: Option<usize>,
-    owner_threads: Option<usize>,
-) -> usize {
+pub(super) fn string_store_shard_count_from_values(explicit_shards: Option<usize>) -> usize {
     if let Some(explicit) = explicit_shards {
         return explicit;
     }
 
-    match owner_threads {
-        Some(1) => SINGLE_OWNER_THREAD_STRING_STORE_SHARDS,
-        Some(_) => DEFAULT_STRING_STORE_SHARDS,
-        None => DEFAULT_STRING_STORE_SHARDS,
-    }
+    DEFAULT_STRING_STORE_SHARDS
 }
 
 pub(super) fn scale_hash_index_bits_for_shards(base_bits: u8, shard_count: usize) -> u8 {

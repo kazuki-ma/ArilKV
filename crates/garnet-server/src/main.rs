@@ -1,11 +1,7 @@
+#[cfg(test)]
 use garnet_server::ServerConfig;
-use garnet_server::ServerMetrics;
-use garnet_server::run;
-use garnet_server::run_with_cluster;
-use garnet_server::set_owner_execution_inline_default;
 #[cfg(test)]
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 const TOKIO_WORKER_THREADS_ENV: &str = "TOKIO_WORKER_THREADS";
 const DEFAULT_MAX_TOKIO_WORKER_THREADS: usize = 4;
@@ -13,6 +9,7 @@ const DEFAULT_MAX_TOKIO_WORKER_THREADS: usize = 4;
 mod multi_port_runtime;
 mod server_launch_config;
 
+#[cfg(test)]
 use crate::multi_port_runtime::build_multi_port_cluster_stores;
 #[cfg(test)]
 use crate::multi_port_runtime::resolve_core_assignments_from_available;
@@ -113,26 +110,6 @@ fn main() -> std::io::Result<()> {
 async fn async_main() -> std::io::Result<()> {
     let launch = parse_server_launch_config_from_env()?;
     validate_server_launch_config(&launch)?;
-    if launch.bind_addrs.len() == 1 && !launch.owner_thread_pinning.enabled {
-        let config = ServerConfig {
-            bind_addr: launch.bind_addrs[0],
-            read_buffer_size: launch.read_buffer_size,
-            startup_config_overrides: launch.startup_config_overrides.clone(),
-        };
-        let metrics = Arc::new(ServerMetrics::default());
-        if launch.multi_port_cluster_mode {
-            let cluster_store =
-                build_multi_port_cluster_stores(&launch.bind_addrs, launch.multi_port_slot_policy)?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| {
-                        std::io::Error::other("failed to build cluster store for single-port mode")
-                    })?;
-            return run_with_cluster(config, metrics, cluster_store).await;
-        }
-        return run(config, metrics).await;
-    }
-    set_owner_execution_inline_default(true);
     run_multi_bind_addrs(launch)
 }
 

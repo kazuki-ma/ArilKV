@@ -8,6 +8,7 @@ use garnet_cluster::WorkerId;
 use garnet_cluster::WorkerRole;
 use garnet_server::ServerConfig;
 use garnet_server::ServerMetrics;
+use garnet_server::StartupConfigOverrides;
 use garnet_server::run_with_shutdown_and_cluster_config;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -197,6 +198,7 @@ fn pin_current_thread_to_cpu(cpu_id: usize) -> std::io::Result<()> {
 fn spawn_listener_thread(
     bind_addr: SocketAddr,
     read_buffer_size: usize,
+    startup_config_overrides: StartupConfigOverrides,
     pinned_cpu: Option<usize>,
     cluster_config: Option<Arc<ClusterConfigStore>>,
     result_tx: mpsc::Sender<ListenerThreadResult>,
@@ -219,7 +221,7 @@ fn spawn_listener_thread(
                     let config = ServerConfig {
                         bind_addr,
                         read_buffer_size,
-                        startup_config_overrides: Default::default(),
+                        startup_config_overrides,
                     };
                     let metrics = Arc::new(ServerMetrics::default());
                     run_with_shutdown_and_cluster_config(
@@ -294,6 +296,7 @@ pub(super) fn run_multi_bind_addrs(launch: ServerLaunchConfig) -> std::io::Resul
         match spawn_listener_thread(
             bind_addr,
             launch.read_buffer_size,
+            launch.startup_config_overrides.clone(),
             pinned_cpus[index],
             cluster_store,
             result_tx.clone(),

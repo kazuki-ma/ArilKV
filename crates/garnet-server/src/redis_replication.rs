@@ -1599,9 +1599,8 @@ mod tests {
         let processor = Arc::new(
             RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap(),
         );
-        let owner_thread_pool = Arc::new(
-            ShardOwnerThreadPool::new_inline(processor.string_store_shard_count()).unwrap(),
-        );
+        let owner_thread_pool =
+            Arc::new(ShardOwnerThreadPool::new(processor.string_store_shard_count()).unwrap());
         RedisReplicationCoordinator::new(processor, owner_thread_pool)
     }
 

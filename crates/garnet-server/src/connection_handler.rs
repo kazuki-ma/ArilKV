@@ -11,7 +11,6 @@ use std::borrow::Cow;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
@@ -32,6 +31,7 @@ use tsavorite::AofOffset;
 use crate::ClientHotMetrics;
 use crate::ClientId;
 use crate::ClientKillFilter;
+use crate::ClientMetricsHandle;
 use crate::ClientTypeFilter;
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
@@ -83,11 +83,8 @@ use crate::request_lifecycle::RequestConnectionEffects;
 use crate::request_lifecycle::RespProtocolVersion;
 use crate::request_lifecycle::WatchedKey;
 
-const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
-const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
-const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const BUSY_SCRIPT_RESPONSE_PREFIX: &[u8] =
     b"-BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.\r\n";
@@ -135,40 +132,10 @@ const CLIENT_HELP_LINES: [&[u8]; 37] = [
     b"UNPAUSE",
     b"    Resume clients after a CLIENT PAUSE.",
 ];
-const OWNER_EXECUTION_INLINE_DEFAULT_UNSET: u8 = 0;
-const OWNER_EXECUTION_INLINE_DEFAULT_FALSE: u8 = 1;
-const OWNER_EXECUTION_INLINE_DEFAULT_TRUE: u8 = 2;
-static OWNER_EXECUTION_INLINE_DEFAULT: AtomicU8 =
-    AtomicU8::new(OWNER_EXECUTION_INLINE_DEFAULT_UNSET);
-
 enum ConnectionReadWake {
     BytesRead(usize),
     PendingPubsub,
     KilledClientPoll,
-}
-
-pub fn set_owner_execution_inline_default(enabled: bool) {
-    let encoded = if enabled {
-        OWNER_EXECUTION_INLINE_DEFAULT_TRUE
-    } else {
-        OWNER_EXECUTION_INLINE_DEFAULT_FALSE
-    };
-    OWNER_EXECUTION_INLINE_DEFAULT.store(encoded, Ordering::Relaxed);
-}
-
-fn owner_execution_inline_default() -> Option<bool> {
-    match OWNER_EXECUTION_INLINE_DEFAULT.load(Ordering::Relaxed) {
-        OWNER_EXECUTION_INLINE_DEFAULT_FALSE => Some(false),
-        OWNER_EXECUTION_INLINE_DEFAULT_TRUE => Some(true),
-        _ => None,
-    }
-}
-
-fn resolve_owner_execution_inline(raw_env: Option<&str>) -> io::Result<bool> {
-    if let Some(raw) = raw_env {
-        return parse_bool_env_flag(Some(raw), GARNET_OWNER_EXECUTION_INLINE_ENV);
-    }
-    Ok(owner_execution_inline_default().unwrap_or(true))
 }
 
 #[inline]
@@ -897,10 +864,9 @@ pub(crate) async fn handle_connection(
 ) -> io::Result<()> {
     let remote_addr = stream.peer_addr().ok();
     let local_addr = stream.local_addr().ok();
-    let client_id = metrics.register_client(remote_addr, local_addr);
-    let client_hot_metrics = metrics
-        .client_hot_metrics_handle(client_id)
-        .expect("registered client must have hot metrics");
+    let client_metrics = metrics.register_client_with_handle(remote_addr, local_addr);
+    let client_id = client_metrics.client_id();
+    let client_hot_metrics = Arc::clone(client_metrics.hot_metrics());
     processor.attach_metrics(Arc::clone(&metrics));
     processor.set_connected_clients(metrics.connected_client_count());
     metrics.set_client_authenticated(client_id, processor.default_user_starts_authenticated());
@@ -963,6 +929,7 @@ pub(crate) async fn handle_connection(
                         &mut stream,
                         &processor,
                         &metrics,
+                        &client_metrics,
                         client_id,
                         &client_state,
                     )
@@ -986,6 +953,7 @@ pub(crate) async fn handle_connection(
                         &mut stream,
                         &processor,
                         &metrics,
+                        &client_metrics,
                         client_id,
                         &client_state,
                     )
@@ -1159,6 +1127,7 @@ pub(crate) async fn handle_connection(
                     &mut stream,
                     &processor,
                     &metrics,
+                    &client_metrics,
                     client_id,
                     &client_state,
                 )
@@ -2601,8 +2570,15 @@ pub(crate) async fn handle_connection(
         // execution (e.g. PUBLISH inside MULTI/EXEC).  Without this,
         // subscribers only see the messages on the next read-timeout cycle,
         // which breaks clients that expect immediate delivery after EXEC.
-        flush_pending_pubsub_messages(&mut stream, &processor, &metrics, client_id, &client_state)
-            .await?;
+        flush_pending_pubsub_messages(
+            &mut stream,
+            &processor,
+            &metrics,
+            &client_metrics,
+            client_id,
+            &client_state,
+        )
+        .await?;
         if disconnect_after_write {
             return Ok(());
         }
@@ -2712,6 +2688,7 @@ async fn flush_pending_pubsub_messages(
     stream: &mut TcpStream,
     processor: &RequestProcessor,
     metrics: &ServerMetrics,
+    client_metrics: &ClientMetricsHandle,
     client_id: ClientId,
     client_state: &ClientConnectionState,
 ) -> io::Result<()> {
@@ -2723,7 +2700,7 @@ async fn flush_pending_pubsub_messages(
             continue;
         }
         stream.write_all(&message).await?;
-        metrics.add_client_output_bytes(client_id, message.len() as u64);
+        metrics.observe_client_output_with_handle(client_metrics, message.len() as u64);
     }
     Ok(())
 }
@@ -6268,28 +6245,11 @@ fn parse_resp_decimal(input: &[u8], cursor: usize) -> Option<ParsedDecimal> {
 pub(crate) fn build_owner_thread_pool(
     processor: &Arc<RequestProcessor>,
 ) -> io::Result<Arc<ShardOwnerThreadPool>> {
-    let inline_owner_execution = resolve_owner_execution_inline(
-        std::env::var(GARNET_OWNER_EXECUTION_INLINE_ENV)
-            .ok()
-            .as_deref(),
-    )?;
-    let owner_threads = parse_positive_env_usize(GARNET_STRING_OWNER_THREADS_ENV)
-        .unwrap_or(DEFAULT_OWNER_THREAD_COUNT);
     let shard_count = processor.string_store_shard_count();
-    if inline_owner_execution {
-        let pool = ShardOwnerThreadPool::new_inline(shard_count).map_err(|error| {
-            io::Error::other(format!(
-                "owner-thread inline initialization failed (shards={}): {}",
-                shard_count, error
-            ))
-        })?;
-        return Ok(Arc::new(pool));
-    }
-    let owner_threads = owner_threads.min(shard_count);
-    let pool = ShardOwnerThreadPool::new(owner_threads, shard_count).map_err(|error| {
+    let pool = ShardOwnerThreadPool::new(shard_count).map_err(|error| {
         io::Error::other(format!(
-            "owner-thread pool initialization failed (threads={}, shards={}): {}",
-            owner_threads, shard_count, error
+            "owner-thread initialization failed (shards={}): {}",
+            shard_count, error
         ))
     })?;
     Ok(Arc::new(pool))
@@ -6559,25 +6519,6 @@ fn parse_positive_env_usize(key: &str) -> Option<usize> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-}
-
-fn parse_bool_env_flag(raw: Option<&str>, key: &str) -> io::Result<bool> {
-    match raw {
-        None => Ok(false),
-        Some(value) => {
-            let normalized = value.trim().to_ascii_lowercase();
-            match normalized.as_str() {
-                "1" | "true" | "yes" | "on" => Ok(true),
-                "0" | "false" | "no" | "off" => Ok(false),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "invalid {key} `{value}`: expected one of 1/0/true/false/yes/no/on/off"
-                    ),
-                )),
-            }
-        }
-    }
 }
 
 fn append_too_many_arguments_error(output: &mut Vec<u8>, max_resp_arguments: usize) {
@@ -8075,18 +8016,5 @@ mod tests {
         );
         assert!(!client_state.authenticated);
         assert_eq!(client_state.authenticated_user, b"default");
-    }
-
-    #[test]
-    fn owner_execution_inline_defaults_to_enabled_and_env_can_disable() {
-        set_owner_execution_inline_default(true);
-        assert!(resolve_owner_execution_inline(None).unwrap());
-        assert!(!resolve_owner_execution_inline(Some("0")).unwrap());
-        assert!(resolve_owner_execution_inline(Some("1")).unwrap());
-
-        set_owner_execution_inline_default(false);
-        assert!(!resolve_owner_execution_inline(None).unwrap());
-
-        set_owner_execution_inline_default(true);
     }
 }
