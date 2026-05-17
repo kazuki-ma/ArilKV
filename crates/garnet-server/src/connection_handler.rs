@@ -50,11 +50,9 @@ use crate::command_spec::command_is_write_pause_affected_with_script;
 use crate::command_spec::command_name_upper;
 use crate::command_spec::command_transaction_control;
 use crate::command_spec::eval_script_shebang_flags;
-use crate::connection_owner_routing::OwnedExecutionOutcome;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
 use crate::connection_owner_routing::RoutedExecutionError;
 use crate::connection_owner_routing::capture_owned_frame_args;
-use crate::connection_owner_routing::execute_frame_on_owner_thread;
 use crate::connection_owner_routing::execute_owned_frame_args_via_processor;
 use crate::connection_protocol::append_error_line;
 use crate::connection_protocol::append_simple_string;
@@ -78,8 +76,10 @@ use crate::request_lifecycle::ClientTrackingModeSetting;
 use crate::request_lifecycle::ClientUnblockMode;
 use crate::request_lifecycle::DbKeyRef;
 use crate::request_lifecycle::DbName;
+use crate::request_lifecycle::DeferredReplicationFrame;
 use crate::request_lifecycle::RedisKey;
 use crate::request_lifecycle::RequestConnectionEffects;
+use crate::request_lifecycle::RequestTimeSnapshotScope;
 use crate::request_lifecycle::RespProtocolVersion;
 use crate::request_lifecycle::WatchedKey;
 
@@ -2281,28 +2281,46 @@ pub(crate) async fn handle_connection(
                             };
                         let blocking_slowlog_started_at = Instant::now();
                         let blocking_outcome = loop {
-                            let execution = execute_blocking_frame_on_owner_thread(
-                                &processor,
-                                &metrics,
-                                client_hot_metrics.as_ref(),
-                                &owner_thread_pool,
-                                &replication,
-                                &args[..argument_count],
-                                command,
-                                command_mutating,
-                                frame,
-                                client_state.no_touch,
-                                client_state.should_track_reads(),
-                                client_id,
-                                client_state.authenticated,
-                                client_state.authenticated_user.as_slice(),
-                                client_state.selected_db,
-                                wait_target_offset_for_connection,
-                                local_aof_wait_target_offset_for_connection,
-                                &mut stream,
-                                resumed_blocking_command_after_pause,
-                            )
-                            .await;
+                            let execution =
+                                if blocking_request || resumed_blocking_command_after_pause {
+                                    execute_frame_with_blocking_wait(
+                                        &processor,
+                                        &metrics,
+                                        client_hot_metrics.as_ref(),
+                                        &replication,
+                                        &args[..argument_count],
+                                        command,
+                                        command_mutating,
+                                        frame,
+                                        client_state.no_touch,
+                                        client_state.should_track_reads(),
+                                        client_id,
+                                        client_state.authenticated,
+                                        client_state.authenticated_user.as_slice(),
+                                        client_state.selected_db,
+                                        wait_target_offset_for_connection,
+                                        local_aof_wait_target_offset_for_connection,
+                                        &mut stream,
+                                        resumed_blocking_command_after_pause,
+                                    )
+                                    .await
+                                } else {
+                                    execute_nonblocking_frame(
+                                        &processor,
+                                        &replication,
+                                        &args[..argument_count],
+                                        command,
+                                        command_mutating,
+                                        frame,
+                                        client_state.no_touch,
+                                        client_state.should_track_reads(),
+                                        client_id,
+                                        client_state.selected_db,
+                                        wait_target_offset_for_connection,
+                                        local_aof_wait_target_offset_for_connection,
+                                    )
+                                    .await
+                                };
                             if matches!(
                                 &execution,
                                 Ok(BlockingExecutionOutcome { frame_response, .. })
@@ -2719,58 +2737,151 @@ fn map_routed_error_to_owner(error: RoutedExecutionError) -> OwnerThreadExecutio
     }
 }
 
-async fn execute_frame_on_owner_thread_async(
-    processor: &Arc<RequestProcessor>,
-    owner_thread_pool: &Arc<ShardOwnerThreadPool>,
+fn execute_connection_frame_sync(
+    processor: &RequestProcessor,
     args: &[ArgSlice],
-    command: CommandId,
+    request_time_snapshot: RequestTimeSnapshot,
+    client_no_touch: bool,
+    client_tracks_reads: bool,
+    client_id: Option<ClientId>,
+    selected_db: DbName,
+) -> Result<ConnectionFrameExecution, OwnerThreadExecutionError> {
+    let _request_time_scope = RequestTimeSnapshotScope::enter(request_time_snapshot);
+    let mut frame_response = Vec::new();
+    let execution_effects = processor
+        .execute_with_client_tracking_context_and_effects_in_db(
+            args,
+            &mut frame_response,
+            client_no_touch,
+            client_tracks_reads,
+            client_id,
+            false,
+            selected_db,
+        )
+        .map_err(OwnerThreadExecutionError::Request)?;
+    Ok(ConnectionFrameExecution {
+        frame_response,
+        connection_effects: execution_effects.connection_effects,
+        deferred_replication_frames: execution_effects.deferred_replication_frames,
+    })
+}
+
+async fn execute_scripting_frame_async(
+    processor: &Arc<RequestProcessor>,
+    args: &[ArgSlice],
     frame: &[u8],
     request_time_snapshot: RequestTimeSnapshot,
     client_no_touch: bool,
     client_tracks_reads: bool,
     client_id: Option<ClientId>,
     selected_db: DbName,
-) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
-    if command_is_scripting_family(command) {
-        let owned_args =
-            capture_owned_frame_args(frame, args).map_err(map_routed_error_to_owner)?;
-        let task_processor = Arc::clone(processor);
-        let result = tokio::task::spawn_blocking(move || {
-            execute_owned_frame_args_via_processor(
-                &task_processor,
-                &owned_args,
-                request_time_snapshot,
-                client_no_touch,
-                client_tracks_reads,
-                client_id,
-                selected_db,
-            )
-        })
-        .await
-        .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?;
-        return result.map_err(map_routed_error_to_owner);
-    }
-
-    execute_frame_on_owner_thread(
-        processor,
-        owner_thread_pool,
-        args,
-        command,
-        frame,
-        request_time_snapshot,
-        client_no_touch,
-        client_tracks_reads,
-        client_id,
-        selected_db,
-    )
+) -> Result<ConnectionFrameExecution, OwnerThreadExecutionError> {
+    let owned_args = capture_owned_frame_args(frame, args).map_err(map_routed_error_to_owner)?;
+    let task_processor = Arc::clone(processor);
+    let result = tokio::task::spawn_blocking(move || {
+        execute_owned_frame_args_via_processor(
+            &task_processor,
+            &owned_args,
+            request_time_snapshot,
+            client_no_touch,
+            client_tracks_reads,
+            client_id,
+            selected_db,
+        )
+    })
+    .await
+    .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?;
+    let outcome = result.map_err(map_routed_error_to_owner)?;
+    Ok(ConnectionFrameExecution {
+        frame_response: outcome.frame_response,
+        connection_effects: outcome.connection_effects,
+        deferred_replication_frames: outcome.deferred_replication_frames,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_blocking_frame_on_owner_thread(
+async fn execute_nonblocking_frame(
+    processor: &Arc<RequestProcessor>,
+    replication: &Arc<RedisReplicationCoordinator>,
+    args: &[ArgSlice],
+    command: CommandId,
+    command_mutating: bool,
+    frame: &[u8],
+    client_no_touch: bool,
+    client_tracks_reads: bool,
+    client_id: ClientId,
+    selected_db: DbName,
+    wait_target_offset_for_connection: u64,
+    local_aof_wait_target_offset_for_connection: u64,
+) -> Result<BlockingExecutionOutcome, OwnerThreadExecutionError> {
+    let pre_string_len =
+        pre_string_len_for_mutation_detection(processor, command, args, selected_db);
+    let request_time_snapshot = RequestTimeSnapshot::capture();
+    let frame_execution = if command_is_scripting_family(command) {
+        execute_scripting_frame_async(
+            processor,
+            args,
+            frame,
+            request_time_snapshot,
+            client_no_touch,
+            client_tracks_reads,
+            Some(client_id),
+            selected_db,
+        )
+        .await?
+    } else {
+        execute_connection_frame_sync(
+            processor,
+            args,
+            request_time_snapshot,
+            client_no_touch,
+            client_tracks_reads,
+            Some(client_id),
+            selected_db,
+        )?
+    };
+
+    let mut frame_response = frame_execution.frame_response;
+    let connection_effects = frame_execution.connection_effects;
+    let deferred_replication_frames = frame_execution.deferred_replication_frames;
+    materialize_wait_response_if_needed(
+        replication,
+        &mut frame_response,
+        connection_effects,
+        wait_target_offset_for_connection,
+    )
+    .await;
+    materialize_waitaof_response_if_needed(
+        processor,
+        replication,
+        &mut frame_response,
+        connection_effects,
+        wait_target_offset_for_connection,
+        local_aof_wait_target_offset_for_connection,
+    )
+    .await;
+
+    let should_replicate = command_mutating
+        && command_effectively_mutated_for_replication(
+            processor,
+            command,
+            args,
+            &frame_response,
+            pre_string_len,
+        );
+    Ok(BlockingExecutionOutcome {
+        frame_response,
+        should_replicate,
+        connection_effects,
+        deferred_replication_frames,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_frame_with_blocking_wait(
     processor: &Arc<RequestProcessor>,
     metrics: &Arc<ServerMetrics>,
     client_hot_metrics: &ClientHotMetrics,
-    owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     replication: &Arc<RedisReplicationCoordinator>,
     args: &[ArgSlice],
     command: CommandId,
@@ -3008,25 +3119,35 @@ async fn execute_blocking_frame_on_owner_thread(
         let pre_string_len =
             pre_string_len_for_mutation_detection(processor, command, args, selected_db);
         let request_time_snapshot = RequestTimeSnapshot::capture();
-        let owned_execution = match execute_frame_on_owner_thread_async(
-            processor,
-            owner_thread_pool,
-            args,
-            command,
-            frame,
-            request_time_snapshot,
-            client_no_touch,
-            client_tracks_reads,
-            Some(client_id),
-            selected_db,
-        )
-        .await
-        {
+        let frame_execution_result = if command_is_scripting_family(command) {
+            execute_scripting_frame_async(
+                processor,
+                args,
+                frame,
+                request_time_snapshot,
+                client_no_touch,
+                client_tracks_reads,
+                Some(client_id),
+                selected_db,
+            )
+            .await
+        } else {
+            execute_connection_frame_sync(
+                processor,
+                args,
+                request_time_snapshot,
+                client_no_touch,
+                client_tracks_reads,
+                Some(client_id),
+                selected_db,
+            )
+        };
+        let frame_execution = match frame_execution_result {
             Ok(outcome) => outcome,
             Err(OwnerThreadExecutionError::Request(RequestExecutionError::WrongType))
                 if blocked && ignore_wrongtype_while_blocked(command) =>
             {
-                OwnedExecutionOutcome {
+                ConnectionFrameExecution {
                     frame_response: blocking_empty_response_for_command(
                         command,
                         processor.resp_protocol_version().is_resp3(),
@@ -3050,9 +3171,9 @@ async fn execute_blocking_frame_on_owner_thread(
                 return Err(error);
             }
         };
-        let mut frame_response = owned_execution.frame_response;
-        let connection_effects = owned_execution.connection_effects;
-        let deferred_replication_frames = owned_execution.deferred_replication_frames;
+        let mut frame_response = frame_execution.frame_response;
+        let connection_effects = frame_execution.connection_effects;
+        let deferred_replication_frames = frame_execution.deferred_replication_frames;
         materialize_wait_response_if_needed(
             replication,
             &mut frame_response,
@@ -3149,7 +3270,13 @@ struct BlockingExecutionOutcome {
     frame_response: Vec<u8>,
     should_replicate: bool,
     connection_effects: RequestConnectionEffects,
-    deferred_replication_frames: Vec<crate::request_lifecycle::DeferredReplicationFrame>,
+    deferred_replication_frames: Vec<DeferredReplicationFrame>,
+}
+
+struct ConnectionFrameExecution {
+    frame_response: Vec<u8>,
+    connection_effects: RequestConnectionEffects,
+    deferred_replication_frames: Vec<DeferredReplicationFrame>,
 }
 
 fn blocking_empty_retry_should_sleep(command: CommandId) -> bool {

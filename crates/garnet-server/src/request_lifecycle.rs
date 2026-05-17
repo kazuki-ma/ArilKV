@@ -2573,6 +2573,8 @@ pub struct RequestProcessor {
     rdb_key_save_delay_micros: AtomicU64,
     rdb_bgsave_deadline_unix_millis: AtomicU64,
     rdb_bgsave_child: Mutex<Option<Child>>,
+    command_get_calls: AtomicU64,
+    command_set_calls: AtomicU64,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
     command_rejected_calls: Mutex<HashMap<Vec<u8>, u64>>,
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
@@ -3107,6 +3109,8 @@ impl RequestProcessor {
             rdb_key_save_delay_micros: AtomicU64::new(0),
             rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
             rdb_bgsave_child: Mutex::new(None),
+            command_get_calls: AtomicU64::new(0),
+            command_set_calls: AtomicU64::new(0),
             command_calls: Mutex::new(HashMap::new()),
             command_rejected_calls: Mutex::new(HashMap::new()),
             command_failed_calls: Mutex::new(HashMap::new()),
@@ -5999,6 +6003,10 @@ impl RequestProcessor {
         if command_name.is_empty() {
             return;
         }
+        if let Some(counter) = self.hot_command_call_counter(command_name, None) {
+            counter.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         increment_command_stats_counter(&self.command_calls, command_name, None);
     }
 
@@ -6010,17 +6018,24 @@ impl RequestProcessor {
         if command_name.is_empty() {
             return;
         }
+        if let Some(counter) = self.hot_command_call_counter(command_name, subcommand_name) {
+            counter.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         increment_command_stats_counter(&self.command_calls, command_name, subcommand_name);
     }
 
     pub(crate) fn command_call_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
         let Ok(calls) = self.command_calls.lock() else {
-            return Vec::new();
+            let mut ordered = BTreeMap::new();
+            self.insert_hot_command_call_counts(&mut ordered);
+            return ordered.into_iter().collect();
         };
         let mut ordered = BTreeMap::new();
         for (command, count) in calls.iter() {
             ordered.insert(command.clone(), *count);
         }
+        self.insert_hot_command_call_counts(&mut ordered);
         ordered.into_iter().collect()
     }
 
@@ -6219,6 +6234,8 @@ impl RequestProcessor {
     }
 
     pub(crate) fn reset_commandstats(&self) {
+        self.command_get_calls.store(0, Ordering::Relaxed);
+        self.command_set_calls.store(0, Ordering::Relaxed);
         if let Ok(mut calls) = self.command_calls.lock() {
             calls.clear();
         }
@@ -6299,6 +6316,12 @@ impl RequestProcessor {
         if command_name.is_empty() {
             return;
         }
+        if let Some(counter) = self.hot_command_call_counter(command_name, None) {
+            let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                (count > 0).then_some(count - 1)
+            });
+            return;
+        }
         let normalized = normalize_ascii_lower(command_name);
         let Ok(mut calls) = self.command_calls.lock() else {
             return;
@@ -6310,6 +6333,35 @@ impl RequestProcessor {
             calls.remove(&normalized);
         } else {
             *count -= 1;
+        }
+    }
+
+    #[inline]
+    fn hot_command_call_counter(
+        &self,
+        command_name: &[u8],
+        subcommand_name: Option<&[u8]>,
+    ) -> Option<&AtomicU64> {
+        if subcommand_name.is_some_and(|name| !name.is_empty()) {
+            return None;
+        }
+        if command_name.eq_ignore_ascii_case(b"get") {
+            return Some(&self.command_get_calls);
+        }
+        if command_name.eq_ignore_ascii_case(b"set") {
+            return Some(&self.command_set_calls);
+        }
+        None
+    }
+
+    fn insert_hot_command_call_counts(&self, ordered: &mut BTreeMap<Vec<u8>, u64>) {
+        let get_calls = self.command_get_calls.load(Ordering::Relaxed);
+        if get_calls > 0 {
+            ordered.insert(b"get".to_vec(), get_calls);
+        }
+        let set_calls = self.command_set_calls.load(Ordering::Relaxed);
+        if set_calls > 0 {
+            ordered.insert(b"set".to_vec(), set_calls);
         }
     }
 
