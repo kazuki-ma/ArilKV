@@ -75,7 +75,8 @@ function parseYamlSubset(source) {
         throw new Error(`invalid YAML sequence at line ${lineIndex + 1}`);
       }
 
-      const keyValue = itemText.match(/^([^:]+):(.*)$/);
+      const scalarStartsQuoted = itemText.startsWith("\"") || itemText.startsWith("'");
+      const keyValue = scalarStartsQuoted ? null : itemText.match(/^([^:]+):(.*)$/);
       if (keyValue) {
         const item = {};
         parent.push(item);
