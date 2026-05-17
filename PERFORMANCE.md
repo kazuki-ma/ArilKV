@@ -28,6 +28,9 @@ For external comparisons, record whether the following are present and enabled:
 
 The public checklist lives at:
 `docs/benchmarking-notes.html` / <https://kazuki-ma.github.io/ArilKV/benchmarking-notes.html>.
+The researched claims that feed the page live in
+`docs/benchmarking/benchmarking-surface.yaml`, with references attached to each
+claim.
 
 ## Current Default Policy
 

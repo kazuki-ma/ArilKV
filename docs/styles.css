@@ -636,6 +636,35 @@ h1 {
   font-weight: 800;
 }
 
+.surface-row p {
+  margin: 0;
+}
+
+.claim-references {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.7rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.claim-references li {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.claim-references a {
+  color: #fff4cf;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.claim-references code {
+  color: rgba(255, 250, 243, 0.58);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
 .surface-head {
   color: rgba(255, 250, 243, 0.52);
   font-size: 0.72rem;

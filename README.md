@@ -34,7 +34,9 @@ client tracking, replication wait semantics, and persistence-related command
 surface in the same codebase; some benchmark-focused products document only a
 smaller subset or a different equivalent. See
 [Benchmarking Notes](https://kazuki-ma.github.io/ArilKV/benchmarking-notes.html)
-for the public comparison checklist.
+for the public comparison checklist. The researched comparison claims are kept
+in `docs/benchmarking/benchmarking-surface.yaml`, with references attached to
+each claim.
 
 ## Status
 
