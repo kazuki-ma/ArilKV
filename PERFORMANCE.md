@@ -7,6 +7,28 @@ benchmark shapes used for comparison. Numbers below were collected on a macOS
 host through Docker Desktop's Linux runtime, so they are useful as directional
 evidence for implementation choices, not as absolute production Linux capacity.
 
+## Compatibility-Surface Caveat
+
+Simple `SET`/`GET` benchmarks are useful, but they can hide product-shape
+differences. ArilKV keeps Redis-compatible ACL checks, ACL audit logging, slow
+log tracking, command statistics, client tracking, monitor/replication hooks,
+WAIT/WAITAOF semantics, and persistence-related command surface in the same
+server that is being benchmarked. Some high-throughput Redis-compatible systems
+either implement a narrower subset, provide a different equivalent, or publish
+headline benchmarks against a thinner hot path.
+
+For external comparisons, record whether the following are present and enabled:
+
+- ACL user/rule enforcement and ACL LOG style security auditing.
+- Slow log and command statistics accounting.
+- CLIENT TRACKING, MONITOR, key access metadata, and client bookkeeping.
+- Replication, WAIT/WAITAOF, AOF/RDB/snapshot, and maxmemory/eviction behavior.
+- Pipeline batching strategy: command-at-a-time execution versus classified
+  single-key batch execution.
+
+The public checklist lives at:
+`docs/benchmarking-notes.html` / <https://kazuki-ma.github.io/ArilKV/benchmarking-notes.html>.
+
 ## Current Default Policy
 
 Garnet uses inline owner execution by default. In this mode, the listener
@@ -121,4 +143,3 @@ DRAGONFLY_PROACTOR_THREADS=1 DRAGONFLY_CONN_IO_THREADS=1 \
 TARGETS="garnet dragonfly valkey" WORKLOADS="set get" \
 benches/docker_linux_perf_diff_profile.sh
 ```
-

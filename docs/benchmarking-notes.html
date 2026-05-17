@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="ArilKV benchmarking notes for Redis-compatible product comparisons, including ACL, slow log, command stats, client tracking, replication, and pipeline batching caveats.">
+    <meta name="theme-color" content="#15100f">
+    <link rel="canonical" href="https://kazuki-ma.github.io/ArilKV/benchmarking-notes.html">
+    <meta property="og:title" content="ArilKV Benchmarking Notes">
+    <meta property="og:description" content="A public checklist for comparing Redis-compatible benchmarks with their compatibility surface in view.">
+    <meta property="og:type" content="article">
+    <meta property="og:url" content="https://kazuki-ma.github.io/ArilKV/benchmarking-notes.html">
+    <meta property="og:image" content="https://kazuki-ma.github.io/ArilKV/assets/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:site_name" content="ArilKV">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="ArilKV Benchmarking Notes">
+    <meta name="twitter:description" content="A public checklist for comparing Redis-compatible benchmarks with their compatibility surface in view.">
+    <meta name="twitter:image" content="https://kazuki-ma.github.io/ArilKV/assets/og-image.png">
+    <title>Benchmarking Notes - ArilKV</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body class="benchmarking-page">
+    <canvas id="aril-field" aria-hidden="true"></canvas>
+
+    <header class="site-header compact">
+      <a class="brand" href="index.html" aria-label="ArilKV home">
+        <span class="brand-mark"></span>
+        <span>ArilKV</span>
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="index.html#performance">Performance</a>
+        <a href="compatibility.html">Compatibility</a>
+        <a href="benchmarking-notes.html">Benchmarking</a>
+        <a href="https://github.com/kazuki-ma/ArilKV">GitHub</a>
+      </nav>
+    </header>
+
+    <main class="benchmark-shell">
+      <section class="benchmark-hero" aria-labelledby="benchmark-title">
+        <div>
+          <p class="eyebrow">Comparison checklist</p>
+          <h1 id="benchmark-title">Benchmark the surface, not just the command.</h1>
+          <p>
+            High-throughput Redis-compatible products often publish excellent
+            simple string results. Those results are useful, but the numbers are
+            easiest to interpret when the enabled compatibility and observability
+            surface is recorded next to the workload.
+          </p>
+        </div>
+        <aside class="benchmark-note" aria-label="Current scope">
+          <span>Scope</span>
+          <strong>Last reviewed: 2026-05-17</strong>
+          <p>
+            The matrix below is based on public documentation and source trees
+            available at review time. Treat it as a measurement checklist, not a
+            permanent product scorecard.
+          </p>
+        </aside>
+      </section>
+
+      <section class="benchmark-section" aria-labelledby="why-title">
+        <div class="section-heading">
+          <p class="eyebrow">Why this matters</p>
+          <h2 id="why-title">Redis compatibility has fixed costs.</h2>
+        </div>
+        <div id="benchmark-cards" class="benchmark-card-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="benchmark-section" aria-labelledby="matrix-title">
+        <div class="section-heading">
+          <p class="eyebrow">Public feature surface</p>
+          <h2 id="matrix-title">What to record before comparing throughput.</h2>
+        </div>
+        <div id="surface-table" class="surface-table" role="table" aria-label="Benchmark feature surface matrix" aria-live="polite"></div>
+      </section>
+
+      <section class="benchmark-section" aria-labelledby="guidance-title">
+        <div class="section-heading">
+          <p class="eyebrow">Recommended benchmark notes</p>
+          <h2 id="guidance-title">Publish these with every comparison.</h2>
+        </div>
+        <ol id="benchmark-guidance" class="benchmark-list" aria-live="polite"></ol>
+      </section>
+
+      <section class="benchmark-section sources" aria-labelledby="sources-title">
+        <div class="section-heading">
+          <p class="eyebrow">Sources</p>
+          <h2 id="sources-title">References used for this checklist.</h2>
+        </div>
+        <ul id="benchmark-sources" aria-live="polite"></ul>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>ArilKV</span>
+      <span>Benchmark comparisons need compatibility context.</span>
+    </footer>
+
+    <script src="main.js"></script>
+    <script src="benchmarking-notes.js"></script>
+  </body>
+</html>

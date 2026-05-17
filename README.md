@@ -27,6 +27,15 @@ Pipeline scaling snapshot for Garnet on the same single-server-core shape:
 `PIPELINE=64` reached SET `778,973.94` / GET `1,345,967.48` ops/sec. In this
 Docker Desktop run, GET crossed 1M ops/sec; SET did not.
 
+When comparing with high-throughput Redis-compatible products, also compare the
+enabled compatibility surface, not only `SET`/`GET` throughput. ArilKV keeps
+Redis-style ACL checks, ACL audit logging, slow log tracking, command stats,
+client tracking, replication wait semantics, and persistence-related command
+surface in the same codebase; some benchmark-focused products document only a
+smaller subset or a different equivalent. See
+[Benchmarking Notes](https://kazuki-ma.github.io/ArilKV/benchmarking-notes.html)
+for the public comparison checklist.
+
 ## Status
 
 The project is experimental and under active development. Compatibility and performance-sensitive changes should be backed by targeted regression tests and benchmark evidence.

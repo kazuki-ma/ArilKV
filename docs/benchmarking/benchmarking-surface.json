@@ -1,0 +1,149 @@
+{
+  "reviewed_at": "2026-05-17",
+  "products": ["ArilKV", "Valkey", "Dragonfly", "Lux", "FeOx server"],
+  "overview_cards": [
+    {
+      "title": "Access control",
+      "body": "ACL checks, ACL categories, key/channel/database rules, failed-auth accounting, and ACL LOG entries are useful production behavior. They also add request lifecycle work that a password-only fast path does not pay."
+    },
+    {
+      "title": "Observability",
+      "body": "Slow log, commandstats, MONITOR, client info, and tracking metadata make a server easier to operate. Benchmarks should say whether those hooks are implemented and enabled."
+    },
+    {
+      "title": "Durability and replication",
+      "body": "AOF/RDB/snapshot, replication offsets, WAIT, WAITAOF, and maxmemory enforcement change what a write must account for before a reply can be emitted."
+    },
+    {
+      "title": "Batching shape",
+      "body": "Pipeline depth rewards products that classify and batch simple single-key commands. A command-at-a-time compatible executor can be correct while still losing headline P64 throughput."
+    }
+  ],
+  "surface_rows": [
+    {
+      "feature": "ACL users and command/key rules",
+      "cells": {
+        "ArilKV": "Supported in current command matrix.",
+        "Valkey": "Core command surface includes ACL.",
+        "Dragonfly": "Supported, with historical release notes showing ACL rollout and later key support.",
+        "Lux": "Password auth documented; Redis ACL users/rules not observed in reviewed tree.",
+        "FeOx server": "Password auth documented; command metadata has ACL categories, but Redis ACL users/rules not observed."
+      }
+    },
+    {
+      "feature": "ACL audit log",
+      "cells": {
+        "ArilKV": "Supported: ACL LOG tests and command declaration are present.",
+        "Valkey": "Supported through ACL LOG.",
+        "Dragonfly": "Supported in recent releases; verify exact version under test.",
+        "Lux": "Not observed in reviewed public tree.",
+        "FeOx server": "Not observed in reviewed public tree."
+      }
+    },
+    {
+      "feature": "Slow log / command logging",
+      "cells": {
+        "ArilKV": "Supported: SLOWLOG command declaration and runtime tracking.",
+        "Valkey": "Supported through SLOWLOG; Valkey also documents COMMANDLOG as an alternative.",
+        "Dragonfly": "Dragonfly has slowlog-related implementation history; verify exact command behavior for the target version.",
+        "Lux": "Not observed as Redis SLOWLOG in reviewed public tree.",
+        "FeOx server": "Not observed as Redis SLOWLOG in reviewed public tree."
+      }
+    },
+    {
+      "feature": "Command statistics and client metadata",
+      "cells": {
+        "ArilKV": "Supported through INFO commandstats, client metrics, CLIENT INFO/LIST.",
+        "Valkey": "Expected Redis-compatible operational surface.",
+        "Dragonfly": "Broad Redis-compatible operational surface; verify the fields used by your tooling.",
+        "Lux": "Monitoring is advertised for cloud, but Redis commandstats parity was not observed in local tree.",
+        "FeOx server": "INFO counters and CLIENT commands are documented; full commandstats parity was not observed."
+      }
+    },
+    {
+      "feature": "CLIENT TRACKING / MONITOR",
+      "cells": {
+        "ArilKV": "Supported in current command matrix.",
+        "Valkey": "Redis-compatible surface includes these commands.",
+        "Dragonfly": "Release notes mention initial client tracking and MONITOR fixes; verify target version.",
+        "Lux": "Lux documents KSUB/KUNSUB as a different key-change subscription model, not Redis CLIENT TRACKING.",
+        "FeOx server": "Not observed in reviewed public tree."
+      }
+    },
+    {
+      "feature": "Replication, WAIT/WAITAOF, persistence",
+      "cells": {
+        "ArilKV": "Replication and WAIT/WAITAOF command surface are present; persistence commands are part of the server surface.",
+        "Valkey": "Full Redis-derived replication and persistence surface.",
+        "Dragonfly": "Snapshots and replication are documented; exact WAIT/WAITAOF parity should be tested per version.",
+        "Lux": "Automatic snapshots, WAL, and tiered storage are documented; Redis replication parity was not observed.",
+        "FeOx server": "Persistent data path is documented; Redis replication and WAIT/WAITAOF parity were not observed."
+      }
+    },
+    {
+      "feature": "Pipeline batching strategy",
+      "cells": {
+        "ArilKV": "Owner-thread execution is default; current hot path still executes simple commands mostly command-by-command.",
+        "Valkey": "Single event-loop execution unless configured otherwise; highly optimized baseline.",
+        "Dragonfly": "Pipeline squashing and multi-threaded shared-nothing architecture are part of the product story.",
+        "Lux": "Docs explicitly describe batching consecutive same-shard commands under one lock.",
+        "FeOx server": "Source shows inline SET/GET fast paths in the connection loop."
+      }
+    }
+  ],
+  "guidance": [
+    "Exact server versions or commit hashes, plus container image digests when Docker is used.",
+    "Whether ACLs are disabled, password-only, or full Redis ACL users/rules with ACL LOG.",
+    "Whether slow log, commandstats, MONITOR, CLIENT TRACKING, and client metadata are active.",
+    "Persistence and replication mode: no durability, snapshot/WAL/AOF, replica configured, WAIT/WAITAOF tested or not.",
+    "Pipeline strategy and client shape: pipeline depth, clients, benchmark threads, cluster mode, key distribution, and hit ratio.",
+    "CPU and isolation details: core pinning, performance-core selection on heterogeneous CPUs, Docker limits, and whether client/server share cores."
+  ],
+  "sources": [
+    {
+      "label": "ArilKV command status matrix",
+      "url": "https://github.com/kazuki-ma/ArilKV/blob/main/docs/compatibility/redis-command-status.csv",
+      "note": "Local command declaration status for the ArilKV tree."
+    },
+    {
+      "label": "Valkey documentation index",
+      "url": "https://valkey.io/docs/",
+      "note": "Entry point for the Valkey command reference."
+    },
+    {
+      "label": "Valkey ACL LOG",
+      "url": "https://valkey.io/commands/acl-log/",
+      "note": "Reference for ACL security-event logging."
+    },
+    {
+      "label": "Valkey SLOWLOG",
+      "url": "https://valkey.io/commands/slowlog/",
+      "note": "Reference for slow log command surface and COMMANDLOG alternative."
+    },
+    {
+      "label": "Dragonfly docs",
+      "url": "https://www.dragonflydb.io/docs",
+      "note": "Product documentation and Redis-compatible positioning."
+    },
+    {
+      "label": "Dragonfly repository",
+      "url": "https://github.com/dragonflydb/dragonfly",
+      "note": "Public source and README benchmark/compatibility notes."
+    },
+    {
+      "label": "Dragonfly v1.9.0 release note",
+      "url": "https://github.com/dragonflydb/dragonfly/releases/tag/v1.9.0",
+      "note": "Historical ACL rollout and pipeline-squashing release evidence."
+    },
+    {
+      "label": "Lux reviewed tree",
+      "url": "https://github.com/lux-db/lux/tree/8adc0e72cf177239616cc2922f1ee72ed55a31b0",
+      "note": "Reviewed commit for README, benchmark notes, and command source."
+    },
+    {
+      "label": "FeOx server reviewed tree",
+      "url": "https://github.com/mehrantsi/feox-server/tree/8871393633109255eafbd404ebaa25b77bd5ddc6",
+      "note": "Reviewed commit for README, command table, connection loop, and executor source."
+    }
+  ]
+}
